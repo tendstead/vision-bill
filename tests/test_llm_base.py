@@ -40,6 +40,9 @@ class _ConcreteProvider(LLMProvider):
     async def analyse_receipt_from_model(self, model_id, image, tags=None):
         raise NotImplementedError
 
+    async def analyse_receipt_from_ocr_text(self, model_id, ocr_result, tags=None):
+        raise NotImplementedError
+
     async def send_message(self, model_id, messages):
         raise NotImplementedError
 
@@ -121,6 +124,9 @@ async def test_analyse_receipt_with_metadata_forwards_tags() -> None:
                 subtotal=Decimal("1.00"),
                 total=Decimal("1.00"),
             )
+
+        async def analyse_receipt_from_ocr_text(self, model_id, ocr_result, tags=None):
+            raise NotImplementedError
 
     provider = _RecordingProvider()
     await provider.analyse_receipt_with_metadata("m", Path("x.png"), tags=["coffee"])

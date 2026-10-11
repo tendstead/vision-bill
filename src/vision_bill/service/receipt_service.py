@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
@@ -24,6 +25,7 @@ from ..provider.db.receipt_db import ReceiptDB
 from ..provider.db.user_db import UserDB
 from ..provider.llm.base import LLMProvider, ModelInfo
 from ..provider.llm.errors import AnalysisTimeoutError
+from ..provider.ocr.base import OcrProvider
 from .image_service import ImageService
 
 logger = logging.getLogger(__name__)
@@ -47,9 +49,14 @@ class ReceiptService:
     """
 
     def __init__(
-        self, image_settings: ImageSettings, pg_settings: PGSettings, provider: LLMProvider
+        self,
+        image_settings: ImageSettings,
+        pg_settings: PGSettings,
+        provider: LLMProvider,
+        ocr_provider: OcrProvider | None = None,
     ):
         self._provider: LLMProvider = provider
+        self._ocr_provider: OcrProvider | None = ocr_provider
         self._image_service = ImageService(image_settings)
         self._db = ReceiptDB(pg_settings)
         self._image_db = ImageDB(pg_settings)
@@ -349,6 +356,63 @@ class ReceiptService:
     async def _available_tags(self) -> list[str]:
         """The tag vocabulary for the prompt; empty when the database is unavailable."""
         return await self._db.list_tags() if self.db_ready else []
+
+    async def analyse_receipt_with_ocr(self, model_id: str, image_path: Path) -> Receipt:
+        """Two-stage analysis: OCR extraction followed by LLM formatting.
+
+        If OCR is not available or fails, falls back to direct LLM analysis.
+        """
+        logger.info("Starting two-stage OCR+LLM analysis for image %s", image_path.name)
+
+        if self._ocr_provider is None:
+            logger.info("OCR provider not configured, using direct LLM analysis")
+            return await self.analyse_receipt_from_path(model_id, image_path)
+
+        # Stage 1: OCR text extraction
+        logger.info("Stage 1/2: Running OCR extraction on image %s", image_path.name)
+        try:
+            ocr_start = time.time()
+            ocr_result = await self._ocr_provider.extract_text(image_path)
+            ocr_elapsed = time.time() - ocr_start
+            logger.info(
+                "OCR extraction completed in %.2fs. Result type: %s, keys: %s",
+                ocr_elapsed,
+                type(ocr_result).__name__,
+                list(ocr_result.keys()) if isinstance(ocr_result, dict) else "N/A",
+            )
+        except (httpx.HTTPError, OSError, ValueError) as exc:
+            logger.warning(
+                "OCR extraction failed (%s), falling back to direct LLM analysis: %s",
+                type(exc).__name__,
+                exc,
+            )
+            return await self.analyse_receipt_from_path(model_id, image_path)
+
+        # Stage 2: LLM formatting of OCR text
+        logger.info("Stage 2/2: Sending OCR text to LLM for formatting (model: %s)", model_id)
+        tags = await self._available_tags()
+        try:
+            llm_start = time.time()
+            async with asyncio.timeout(self._provider.analysis_timeout_seconds):
+                result = await self._provider.analyse_receipt_from_ocr_text(
+                    model_id, ocr_result, tags=tags
+                )
+            llm_elapsed = time.time() - llm_start
+            logger.info(
+                "OCR+LLM pipeline completed in %.2fs total (OCR: %.2fs, LLM: %.2fs). "
+                "Merchant: %s, Total: %s",
+                ocr_elapsed + llm_elapsed,
+                ocr_elapsed,
+                llm_elapsed,
+                result.merchant_name,
+                result.total,
+            )
+            return result
+        except (TimeoutError, httpx.TimeoutException, APITimeoutError) as exc:
+            raise AnalysisTimeoutError("The LLM request timed out. Please try again.") from exc
+        except Exception:
+            logger.exception("Failed to analyse receipt with OCR+LLM pipeline")
+            raise
 
     async def analyse_receipt_from_path(
         self, model_id: str, image_path: Path | Sequence[Path]

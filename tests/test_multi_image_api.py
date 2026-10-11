@@ -116,7 +116,7 @@ async def test_worker_records_terminal_errors(scheduler_context, tmp_path, error
     photo = tmp_path / "top.jpg"
     photo.write_bytes(JPEG_BYTES)
     db.mark_terminal = AsyncMock()
-    service.analyse_receipt_from_path.side_effect = error
+    service.analyse_receipt_with_ocr.side_effect = error
     result = await scheduler._analyze_one(_pending_image(IMAGE_ID, photo), "test")
     assert result.status == status
     db.mark_terminal.assert_awaited_once_with(IMAGE_ID, status, str(error))

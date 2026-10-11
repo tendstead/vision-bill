@@ -160,10 +160,11 @@ class AnalysisScheduler:
             return PendingImageResult(image_id=image.id, status="failed", error=error)
 
         try:
-            paths = [Path(part.image_path) for part in image.parts()]
-            receipt = await self._receipt_service.analyse_receipt_from_path(
-                model_id, paths if image.additional_images else image_path
-            )
+            if image.additional_images:
+                paths = [Path(part.image_path) for part in image.parts()]
+                receipt = await self._receipt_service.analyse_receipt_from_path(model_id, paths)
+            else:
+                receipt = await self._receipt_service.analyse_receipt_with_ocr(model_id, image_path)
         except (AnalysisTimeoutError, UnreadableReceiptError) as exc:
             status = "timed_out" if isinstance(exc, AnalysisTimeoutError) else "unreadable"
             await self._image_db.mark_terminal(image.id, status, str(exc))

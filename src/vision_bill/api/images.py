@@ -72,8 +72,10 @@ async def upload_image(
                 raise HTTPException(status_code=415, detail="Unsupported image type") from exc
             path = image_service.store_tmp_image(content)
             part = ImagePart(
-                image_path=str(path), original_filename=upload.filename,
-                media_type=info.media_type, size_bytes=info.size_bytes,
+                image_path=str(path),
+                original_filename=upload.filename,
+                media_type=info.media_type,
+                size_bytes=info.size_bytes,
             )
             parts.append(part)
             thumb = image_service.generate_thumbnail(path)
@@ -116,7 +118,8 @@ async def upload_image(
     if len(parts) > 1:
         analysis_scheduler.trigger()
         return JSONResponse(
-            status_code=202, headers={"Location": _location(image_row.id)},
+            status_code=202,
+            headers={"Location": _location(image_row.id)},
             content={"image_id": str(image_row.id), "status": "pending"},
         )
 
@@ -155,7 +158,7 @@ async def upload_image(
         else models[0].id
     )
     try:
-        llm_response = await receipt_service.analyse_receipt_from_path(chosen_model, tmp_path)
+        llm_response = await receipt_service.analyse_receipt_with_ocr(chosen_model, tmp_path)
     except (AnalysisTimeoutError, UnreadableReceiptError) as exc:
         status = "timed_out" if isinstance(exc, AnalysisTimeoutError) else "unreadable"
         await receipt_service.mark_image_terminal(image_row.id, status, str(exc))
@@ -327,7 +330,9 @@ async def delete_image(
     if image is None:
         raise HTTPException(status_code=404, detail="Image not found")
     if image.status not in ("pending", "failed", "timed_out", "unreadable"):
-        raise HTTPException(status_code=409, detail="Cannot delete an active or analyzed submission")
+        raise HTTPException(
+            status_code=409, detail="Cannot delete an active or analyzed submission"
+        )
 
     await receipt_service.delete_image_row(image_id)
     for part in image.parts():

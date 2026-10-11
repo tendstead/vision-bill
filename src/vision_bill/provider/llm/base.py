@@ -57,6 +57,16 @@ class LLMProvider(ABC):
         """
 
     @abstractmethod
+    async def analyse_receipt_from_ocr_text(
+        self, model_id: str, ocr_result: dict[str, Any], tags: Sequence[str] | None = None
+    ) -> Receipt:
+        """Send OCR text + prompt to the given model and return the result.
+
+        Used in the two-stage OCR → LLM pipeline where OCR has already
+        extracted text from the image and the LLM formats it into a Receipt.
+        """
+
+    @abstractmethod
     async def send_message(self, model_id: str, messages: Sequence[Mapping[str, Any]]) -> str:
         """Send a message to the given model and return the response."""
 
@@ -90,9 +100,7 @@ class LLMProvider(ABC):
             )
         else:
             tag_instruction = "Add short free-form tags to each line_item when useful."
-        categories = "; ".join(
-            f"{code}: {CATEGORY_DEFINITIONS[code]}" for code in CATEGORY_CODES
-        )
+        categories = "; ".join(f"{code}: {CATEGORY_DEFINITIONS[code]}" for code in CATEGORY_CODES)
         schema = MultiImageReceipt if image_count > 1 else Receipt
         overlap_instruction = (
             "Extract EVERY purchased row separately from EACH photo, including overlap rows. "
@@ -103,7 +111,8 @@ class LLMProvider(ABC):
             "Include the entire ordered overlap, not isolated matching products. "
             "Use an empty candidate list when there is no clear visual overlap. "
             "Receipt-level totals must come from the printed receipt, not the duplicated rows."
-            if image_count > 1 else "List line_items in the exact top-to-bottom order on the receipt."
+            if image_count > 1
+            else "List line_items in the exact top-to-bottom order on the receipt."
         )
         return f"""You are a receipt analyser. You will be given one or more images of ONE receipt.
     Images are ordered from top to bottom and may overlap. Return ONE complete receipt.

@@ -59,7 +59,10 @@ def _is_vision_capable(entry: dict[str, Any], capabilities: list[str] | None) ->
 
 class OpenAIProvider(LLMProvider):
     def __init__(
-        self, host: str, api_key: str, temperature: float = 0.0,
+        self,
+        host: str,
+        api_key: str,
+        temperature: float = 0.0,
         analysis_timeout_seconds: float = 600,
     ):
         self.analysis_timeout_seconds = analysis_timeout_seconds
@@ -184,6 +187,91 @@ class OpenAIProvider(LLMProvider):
         self, model_id: str, image: Path | Sequence[Path], tags: Sequence[str] | None = None
     ) -> Receipt:
         return (await self.analyse_receipt_with_metadata(model_id, image, tags=tags)).receipt
+
+    async def analyse_receipt_from_ocr_text(
+        self, model_id: str, ocr_result: dict[str, Any], tags: Sequence[str] | None = None
+    ) -> Receipt:
+        """Send OCR text to the LLM for formatting into a Receipt."""
+        logger.info("Sending OCR text to model %s for formatting", model_id)
+
+        # Convert OCR result to text format for the LLM
+        ocr_text = self._ocr_result_to_text(ocr_result)
+        logger.debug("OCR text length: %d characters", len(ocr_text))
+        if len(ocr_text) > 200:
+            logger.debug("OCR text (first 200 chars): %s...", ocr_text[:200])
+        else:
+            logger.debug("OCR text: %s", ocr_text)
+
+        messages: list[dict[str, Any]] = [
+            {
+                "role": "user",
+                "content": self._build_ocr_formatting_prompt(ocr_text, tags),
+            }
+        ]
+
+        last_error: Exception | None = None
+        for attempt in range(1, RETRY_LIMIT + 1):
+            logger.info("LLM attempt %d/%d for OCR text formatting", attempt, RETRY_LIMIT)
+            content = await self.send_message(model_id, messages)
+
+            if not content:
+                logger.warning("Attempt %d/%d: model returned no content", attempt, RETRY_LIMIT)
+                last_error = ValueError("Empty response from model")
+                continue
+
+            logger.debug("LLM response length: %d characters", len(content))
+            try:
+                return self.parse_llm_response(content)
+            except ValueError as e:
+                logger.warning(
+                    "Attempt %d/%d: failed to parse LLM response: %s",
+                    attempt,
+                    RETRY_LIMIT,
+                    e,
+                )
+                last_error = e
+                messages = self._append_repair_message(messages, content, e)
+
+        raise ValueError(
+            f"Failed to get a valid response from model '{model_id}' after {RETRY_LIMIT} attempts"
+        ) from last_error
+
+    def _ocr_result_to_text(self, ocr_result: dict[str, Any]) -> str:
+        """Convert OCR result dict to plain text for the LLM."""
+        # Handle different OCR result formats
+        if "text" in ocr_result:
+            text = ocr_result["text"]
+            if isinstance(text, str):
+                return text
+            return str(text)
+
+        # PaddleOCR-VL format with blocks
+        if "blocks" in ocr_result:
+            lines: list[str] = []
+            for block in ocr_result["blocks"]:
+                if "text" in block:
+                    block_text = block["text"]
+                    if isinstance(block_text, str):
+                        lines.append(block_text)
+                    else:
+                        lines.append(str(block_text))
+            return "\n".join(lines)
+
+        # Fallback: convert entire dict to string
+        return str(ocr_result)
+
+    def _build_ocr_formatting_prompt(self, ocr_text: str, tags: Sequence[str] | None = None) -> str:
+        """Build a prompt for formatting OCR text into a Receipt."""
+        base_prompt = self.build_prompt(tags)
+        return f"""{base_prompt}
+
+Here is the OCR-extracted text from the receipt:
+
+---
+{ocr_text}
+---
+
+Parse this text and return the structured JSON receipt."""
 
     async def analyse_receipt_with_metadata(
         self, model_id: str, image: Path | Sequence[Path], tags: Sequence[str] | None = None
