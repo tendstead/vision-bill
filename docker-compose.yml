@@ -10,7 +10,7 @@ services:
       PG__HOST: db
       PG__PORT: "5432"
       OCR__SERVICE_URL: http://paddleocr-service:8082
-      OCR__TIMEOUT_SECONDS: "300"
+      OCR__TIMEOUT_SECONDS: "900"
     ports:
       - "${API__PORT:-8080}:8080"
     extra_hosts:
@@ -34,6 +34,7 @@ services:
     environment:
       OMP_NUM_THREADS: "4"
       OCR_PORT: "8082"
+      OCR_TIMEOUT_SECONDS: "900"
     volumes:
       - ./server_data/ocr-models:/root/.paddleocr/models
     networks:

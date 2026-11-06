@@ -39,6 +39,56 @@ make script-create-benchmark ARGS="--model glm-ocr:latest --limit 10"
 make script-create-benchmark ARGS="--receipt-id 125b2a52-60ac-4e1f-b9bf-d223f15c8cd1"
 ```
 
+## Standalone benchmark (no API required)
+
+Run a benchmark directly against the database and services without starting
+the Vision Bill API. Useful for testing against remote databases or NAS data.
+
+```bash
+# Basic usage with environment variables
+make script-standalone-benchmark ARGS="--model glm-ocr:latest --limit 20"
+
+# Specify database connection
+make script-standalone-benchmark ARGS="--model glm-ocr:latest --db-host 192.168.1.100 --limit 20"
+
+# Output results to JSON file
+make script-standalone-benchmark ARGS="--model glm-ocr:latest --limit 20 --output benchmark-results.json"
+```
+
+Required environment variables (or command-line options):
+- `LLM__MODEL_NAME` or `--model` - Model to use
+- `PG__HOST`, `PG__USER`, `PG__PASSWORD`, `PG__DB` - Database connection (or `--db-*` options)
+
+Optional:
+- `OCR__SERVICE_URL` or `--ocr-url` - PaddleOCR service URL (default: `http://localhost:8082`)
+- `LLM__HOST` or `--llm-host` - LLM host (default: `http://localhost:11434`)
+- `OCR__TIMEOUT_SECONDS` - OCR timeout in seconds (default: 300)
+
+## Test the OCR service (no API, no LLM)
+
+Send the local receipt images in `tests/data/` straight to the PaddleOCR
+service and print the raw JSON it returns. This exercises only the OCR stage
+of the two-stage pipeline — it never calls the LLM. Useful for checking that
+the service is up and returning sane layout/text blocks before wiring it into
+extraction.
+
+```bash
+make script-test-ocr
+make script-test-ocr ARGS="--ocr-url http://localhost:8082"
+make script-test-ocr ARGS="--quiet --output /tmp/ocr-results.json"
+```
+
+Options:
+- `--ocr-url URL` - PaddleOCR service URL (default: `OCR__SERVICE_URL` or `http://localhost:8082`)
+- `--timeout N` - request timeout in seconds (default: `OCR__TIMEOUT_SECONDS` or 300)
+- `--data-dir DIR` - directory with test images (default: `tests/data`)
+- `--output FILE` - write all raw results to a JSON file
+- `--quiet` - print per-image status and a summary only, not the raw JSON
+
+The service must be reachable (e.g. `docker compose up paddleocr-service`).
+Keep the URL pointed at the local service to preserve Vision Bill's privacy
+model.
+
 ## Generate thumbnails for existing images
 
 Creates a WebP thumbnail (`images.thumbnail_path`) for any image that does not

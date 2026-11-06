@@ -71,6 +71,9 @@ script-create-benchmark: ## Queue a benchmark API run (ARGS="...")
 script-standalone-benchmark: ## Run benchmark directly without API (ARGS="...")
 	@$(WITH_SCRIPTS_ENV) uv run python scripts/standalone_benchmark.py $(ARGS)
 
+script-test-ocr: ## Test the PaddleOCR service with local images (ARGS="...")
+	@$(WITH_SCRIPTS_ENV) uv run python scripts/test_ocr_service.py $(ARGS)
+
 db-configure-roles: ## Create/update PostgreSQL runtime and read-only group roles
 	@$(WITH_SCRIPTS_ENV) test -n "$$MIGRATION_DATABASE_URL" || { echo "Set MIGRATION_DATABASE_URL in $(SCRIPTS_ENV)"; exit 2; }; \
 		psql "$$MIGRATION_DATABASE_URL" -v database_name="$${PG__DB:-vision_bill}" -f scripts/configure_db_roles.sql
