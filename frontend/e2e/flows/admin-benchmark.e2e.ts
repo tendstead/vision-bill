@@ -26,6 +26,14 @@ test.describe('admin: benchmarks', () => {
 		await expect(page.getByText('Completed', { exact: true })).toBeVisible();
 		await expect(page.getByText('1 / 1')).toBeVisible({ timeout: 60_000 });
 		await expect(page.getByText('e2e-vision')).toBeVisible();
+		await page.getByRole('button', { name: 'Load individual results' }).click();
+		const individual = page.locator('summary').filter({ hasText: receiptId });
+		await expect(individual).toContainText('Extraction 100.0%');
+		await individual.click();
+		await expect(page.getByText(/Strict:/)).toBeVisible();
+		await page.getByRole('link', { name: 'Reuse this receipt selection' }).click();
+		await expect(page).toHaveURL(/\/benchmarks$/);
+		await expect(page.getByPlaceholder('Comma-separated receipt UUIDs')).toHaveValue(receiptId);
 	});
 
 	test('receipt used in a benchmark run cannot be deleted', async ({ page, context }) => {

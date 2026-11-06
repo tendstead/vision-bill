@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 import asyncpg
@@ -26,6 +27,10 @@ from ..provider.llm.base import LLMProvider, ModelInfo
 from ..provider.llm.errors import AnalysisTimeoutError
 from .image_service import ImageService
 
+if TYPE_CHECKING:
+    from ..model.experiment import ExperimentOptions
+    from .experiment_execution import ExperimentResult
+
 logger = logging.getLogger(__name__)
 
 
@@ -45,6 +50,8 @@ class ReceiptService:
 
     All database access is delegated to the ``ReceiptDB`` provider.
     """
+
+    _experiment_tags: list[str] | None = None
 
     def __init__(
         self, image_settings: ImageSettings, pg_settings: PGSettings, provider: LLMProvider
@@ -348,6 +355,8 @@ class ReceiptService:
 
     async def _available_tags(self) -> list[str]:
         """The tag vocabulary for the prompt; empty when the database is unavailable."""
+        if self._experiment_tags is not None:
+            return list(self._experiment_tags)
         return await self._db.list_tags() if self.db_ready else []
 
     async def analyse_receipt_from_path(
@@ -408,3 +417,10 @@ class ReceiptService:
 
         logger.info("Completed concurrent extraction across all models")
         return results
+
+    async def analyse_submission_with_metadata(
+        self, model_id: str, paths: list[Path], options: "ExperimentOptions", tags: list[str]
+    ) -> "ExperimentResult":
+        """Run an isolated experiment through normal upload extraction paths."""
+        from .experiment_execution import execute_submission
+        return await execute_submission(self, model_id, paths, options, tags)

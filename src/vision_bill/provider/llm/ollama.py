@@ -2,6 +2,7 @@ import logging
 import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 import httpx
@@ -12,6 +13,7 @@ setup_logging()
 
 from ...model.receipt import Receipt
 from ...provider.llm.base import AnalysisResult, LLMProvider, ModelInfo
+from .experiment import chat_telemetry
 
 try:
     from ollama import AsyncClient, ListResponse, ResponseError
@@ -36,6 +38,7 @@ class OllamaProvider(LLMProvider):
         self.analysis_timeout_seconds = analysis_timeout_seconds
         self._client = AsyncClient(host=host, timeout=httpx.Timeout(analysis_timeout_seconds, connect=5))
         self._temperature = temperature
+        self.supports_thinking_control = True
 
     def update_runtime_settings(self, *, temperature: float) -> None:
         self._temperature = temperature
@@ -131,13 +134,19 @@ class OllamaProvider(LLMProvider):
         ) from last_error
 
     async def send_message(self, model_id: str, messages: Sequence[Mapping[str, Any]]) -> str:
+        started = perf_counter()
+        extra: dict[str, Any] = {}
+        if self.experiment_options and self.experiment_options.think is not None:
+            extra["think"] = self.experiment_options.think
         response = await self._client.chat(
             model=model_id,
             # format=Receipt.model_json_schema(),
             messages=messages,
             options={"temperature": self._temperature},
+            **extra,
         )
-
+        if self.experiment_trace is not None:
+            self.experiment_trace.append(chat_telemetry(response, messages, (perf_counter() - started) * 1000))
         return response.message.content or ""
 
     def _build_image_messages(
