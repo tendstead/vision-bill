@@ -1,0 +1,25 @@
+# Optional Donut experiment; leaves the application's canonical Makefile alone.
+.DEFAULT_GOAL := donut-help
+DONUT_COMPOSE := docker compose -f docker-compose.donut.yml
+.PHONY: donut-help donut-up donut-down donut-logs donut-test donut-reference
+
+donut-help:
+	@echo 'make -f Makefile.donut donut-up|donut-down|donut-logs|donut-test'
+	@echo 'DONUT_RECEIPT_DIR=/path/to/receipts make -f Makefile.donut donut-reference ARGS="/receipts/example.jpg"'
+
+donut-up:
+	$(DONUT_COMPOSE) up -d --build donut-service
+
+donut-down:
+	$(DONUT_COMPOSE) down
+
+donut-logs:
+	$(DONUT_COMPOSE) logs -f donut-service
+
+donut-test:
+	docker build --target test -t vision-bill-donut-reference-tests:local ./donut-service
+	docker run --rm vision-bill-donut-reference-tests:local
+	docker run --rm vision-bill-donut-reference-tests:local ruff check server.py decoding.py reference.py tests
+
+donut-reference:
+	@$(DONUT_COMPOSE) run --rm --no-deps -T donut-reference $(ARGS)

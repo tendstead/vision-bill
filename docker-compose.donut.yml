@@ -1,0 +1,37 @@
+# Independent experiment: no app, database or Paddle dependency.
+services:
+  donut-service:
+    build:
+      context: ./donut-service
+      target: runtime
+    image: vision-bill-donut-reference:local
+    environment:
+      DONUT_MODEL: ${DONUT_MODEL:-naver-clova-ix/donut-base-finetuned-cord-v2}
+      DONUT_REVISION: ${DONUT_REVISION:-}
+      DONUT_TASK_PROMPT: ${DONUT_TASK_PROMPT:-<s_cord-v2>}
+      DONUT_CPU_THREADS: ${DONUT_CPU_THREADS:-2}
+      DONUT_MAX_NEW_TOKENS: ${DONUT_MAX_NEW_TOKENS:-768}
+      HF_HUB_OFFLINE: ${DONUT_OFFLINE:-0}
+      HF_HUB_DISABLE_TELEMETRY: "1"
+    ports:
+      - "127.0.0.1:${DONUT_PORT:-8083}:8083"
+    volumes:
+      - donut-models:/models
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8083/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10m
+
+  donut-reference:
+    profiles: [tools]
+    image: vision-bill-donut-reference:local
+    entrypoint: [python, /app/reference.py]
+    volumes:
+      - "${DONUT_RECEIPT_DIR:-./tests/data}:/receipts:ro"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  donut-models:
