@@ -112,6 +112,13 @@
 	--ts-focus: var(--vb-primary);
 }
 
+/* The shared shell's decorative letter mark is replaced by our product logo. */
+.ts-shell .ts-brand-mark {
+	border: 0;
+	font-size: 0;
+	background: url('/favicon.svg') center / contain no-repeat;
+}
+
 @theme inline {
 	--color-primary: var(--vb-primary);
 	--color-on-primary: var(--vb-on-primary);
