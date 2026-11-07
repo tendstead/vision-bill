@@ -25,6 +25,7 @@ services:
     volumes:
       - ./server_data/logs:/app/logs
       - ./server_data/uploads:/app/uploads
+      - ./server_data/uploads_tmp:/app/uploads_tmp
       - ./server_data/config:/app/config
 
   paddleocr-service:

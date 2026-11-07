@@ -1,0 +1,89 @@
+diff --git a/node_modules/@tendstead/ui/dist/AppShell.svelte b/node_modules/@tendstead/ui/dist/AppShell.svelte
+index 443c3c4..6274f66 100644
+--- a/node_modules/@tendstead/ui/dist/AppShell.svelte
++++ b/node_modules/@tendstead/ui/dist/AppShell.svelte
+@@ -6,7 +6,14 @@
+   import NavigationList from './internal/NavigationList.svelte';
+   import DestinationLink from './internal/DestinationLink.svelte';
+   import Action from './internal/Action.svelte';
+-  let { brand, appLabel, pageTitle, pathname, destinations, groups=[], mobilePrimaryIds=[], primaryAction, serviceLinks=[], onNavigate, children, pageActions, account }:AppShellProps=$props();
++  let { brand, appLabel, pageTitle, pathname, destinations, groups=[], mobilePrimaryIds=[], primaryAction, serviceLinks=[], onNavigate, children, pageActions, account, labels={} }:AppShellProps=$props();
++  let text=$derived({
++    menu:'Menu', closeMenu:'Close menu', allDestinations:'All destinations',
++    skipToContent:'Skip to content', sidebar:'Application sidebar',
++    mainNavigation:'Main navigation', mobileNavigation:'Mobile navigation',
++    allNavigation:'All navigation', connectedServices:'Connected services',
++    sidebarNote:'A little more in order.', ...labels
++  });
+   const uid=$props.id();
+   const {elements:{trigger,overlay,content,title,description,close},states:{open}}=createDialog({portal:null});
+   let available=$derived(availableDestinations(destinations));
+@@ -50,8 +57,8 @@
+ {/snippet}
+ {#snippet servicesBlock()}
+   {#if services.length}
+-    <nav class="ts-services" aria-label="Connected services">
+-      <h2 class="ts-section-label">Connected services</h2>
++    <nav class="ts-services" aria-label={text.connectedServices}>
++      <h2 class="ts-section-label">{text.connectedServices}</h2>
+       {#each services as service (service.id)}
+         <a class="ts-nav-link" href={service.href}>
+           {#if service.icon}<service.icon size={21} aria-hidden="true"/>{/if}
+@@ -65,13 +72,13 @@
+ <div class="ts-shell" style:--ts-mobile-space={`${barHeight+24}px`}>
+   <div class="ts-shell-background" data-shell-background inert={$open}>
+-    <a class="ts-skip" href={`#${uid}-content`}>Skip to content</a>
++    <a class="ts-skip" href={`#${uid}-content`}>{text.skipToContent}</a>
+     <!-- svelte-ignore a11y_no_noninteractive_tabindex (The named overflow region must support native keyboard scrolling.) -->
+-    <aside class="ts-sidebar" aria-label="Application sidebar" tabindex="0">
++    <aside class="ts-sidebar" aria-label={text.sidebar} tabindex="0">
+       {@render brandBlock()}
+-      <nav class="ts-main-nav" aria-label="Main navigation"><NavigationList destinations={available} {groups} activeId={active?.id} onclick={navigate}/></nav>
++      <nav class="ts-main-nav" aria-label={text.mainNavigation}><NavigationList destinations={available} {groups} activeId={active?.id} onclick={navigate}/></nav>
+       {@render servicesBlock()}
+       {#if account && !$open}<div class="ts-account">{@render account()}</div>{/if}
+-      <p class="ts-sidebar-note">A little more in order.</p>
++      <p class="ts-sidebar-note">{text.sidebarNote}</p>
+     </aside>
+     <div class="ts-workspace">
+       <header class="ts-header">
+@@ -80,23 +87,23 @@
+       </header>
+       <main id={`${uid}-content`} class="ts-page-content" tabindex="-1">{@render children()}</main>
+     </div>
+-    <nav class="ts-mobile-bar" bind:this={mobileBar} aria-label="Mobile navigation">
++    <nav class="ts-mobile-bar" bind:this={mobileBar} aria-label={text.mobileNavigation}>
+       {#each mobile as destination,index (destination.id)}
+         {#if primaryAction && index===Math.ceil(mobile.length/2)}<Action action={primaryAction} mobile/>{/if}
+         <DestinationLink {destination} active={active?.id===destination.id} onclick={navigate}/>
+       {/each}
+       {#if primaryAction && mobile.length<2}<Action action={primaryAction} mobile/>{/if}
+       <button class="ts-menu-trigger" {...$trigger} use:trigger>
+-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg><span>Menu</span>
++        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg><span>{text.menu}</span>
+       </button>
+     </nav>
+   </div>
+   {#if $open}
+     <div class="ts-overlay" data-drawer-overlay {...$overlay} use:overlay></div>
+     <div class="ts-drawer" {...$content} use:content use:recoverDetachedFocus>
+-      <div class="ts-drawer-heading"><h2 {...$title} use:title>All destinations</h2><button class="ts-icon-button" aria-label="Close menu" {...$close} use:close>✕</button></div>
++      <div class="ts-drawer-heading"><h2 {...$title} use:title>{text.allDestinations}</h2><button class="ts-icon-button" aria-label={text.closeMenu} {...$close} use:close>✕</button></div>
+       <p class="ts-drawer-description" {...$description} use:description>{brand} · {appLabel}</p>
+-      <nav class="ts-drawer-nav" aria-label="All navigation"><NavigationList destinations={available} {groups} activeId={active?.id} onclick={navigate}/></nav>
++      <nav class="ts-drawer-nav" aria-label={text.allNavigation}><NavigationList destinations={available} {groups} activeId={active?.id} onclick={navigate}/></nav>
+       {@render servicesBlock()}
+       {#if account}<div class="ts-account">{@render account()}</div>{/if}
+     </div>
+diff --git a/node_modules/@tendstead/ui/dist/types.d.ts b/node_modules/@tendstead/ui/dist/types.d.ts
+index 8faa04c..d0dd33f 100644
+--- a/node_modules/@tendstead/ui/dist/types.d.ts
++++ b/node_modules/@tendstead/ui/dist/types.d.ts
+@@ -32,6 +32,7 @@ export interface PrimaryAction {
+     onclick?: (event: MouseEvent) => void;
+ }
+ export interface AppShellProps {
++    labels?: Partial<Record<'menu' | 'closeMenu' | 'allDestinations' | 'skipToContent' | 'sidebar' | 'mainNavigation' | 'mobileNavigation' | 'allNavigation' | 'connectedServices' | 'sidebarNote', string>>;
+     brand: string;
+     appLabel: string;
+     pageTitle: string;

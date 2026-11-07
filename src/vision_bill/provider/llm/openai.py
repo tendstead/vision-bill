@@ -5,6 +5,7 @@ import mimetypes
 import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Literal, cast
 
 from ...helper.logging_config import setup_logging
@@ -13,6 +14,7 @@ setup_logging()
 
 from ...model.receipt import Receipt
 from ...provider.llm.base import AnalysisResult, LLMProvider, ModelInfo
+from .experiment import chat_telemetry
 
 try:
     from openai import APIConnectionError, APIStatusError, AsyncOpenAI
@@ -153,12 +155,15 @@ class OpenAIProvider(LLMProvider):
     async def send_message(self, model_id: str, messages: Sequence[Mapping[str, Any]]) -> str:
         # Plain dicts are exactly what the SDK serializes (verified against
         # the live server); cast() satisfies the TypedDict-parameter overloads.
+        started = perf_counter()
         response = await self._client.chat.completions.create(
             model=model_id,
             messages=cast(Any, messages),
             temperature=self._temperature,
             reasoning_effort=REASONING_EFFORT,
         )
+        if self.experiment_trace is not None:
+            self.experiment_trace.append(chat_telemetry(response, messages, (perf_counter() - started) * 1000))
         return response.choices[0].message.content or ""
 
     def _build_image_messages(

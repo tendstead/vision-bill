@@ -1,6 +1,7 @@
 import json
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
+from copy import copy
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
@@ -8,10 +9,12 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from ...model.experiment import ExperimentOptions
 from ...model.item_category import CATEGORY_CODES, CATEGORY_DEFINITIONS
 from ...model.receipt import Receipt
 from ...model.receipt_extraction import MultiImageReceipt
 from .errors import UnreadableReceiptError
+from .experiment import extraction_prompt
 
 
 @dataclass
@@ -37,7 +40,21 @@ class AnalysisResult:
 class LLMProvider(ABC):
     """Interface every LLM backend must implement."""
 
+    supports_thinking_control: bool = False
     analysis_timeout_seconds: float = 600
+    experiment_options: ExperimentOptions | None = None
+    experiment_trace: list[dict[str, Any]] | None = None
+
+    def for_experiment(self, options: ExperimentOptions) -> "LLMProvider":
+        """Copy request settings; never mutate the live upload provider."""
+        probe = copy(self)
+        temperature = options.temperature
+        if temperature is None:
+            temperature = getattr(self, "_temperature", 0.0)
+        probe.experiment_options = options.model_copy(update={"temperature": temperature})
+        probe.experiment_trace = []
+        probe.update_runtime_settings(temperature=temperature)
+        return probe
 
     def update_runtime_settings(self, *, temperature: float) -> None:
         """Apply settings which are safe to change without rebuilding a provider."""
@@ -91,6 +108,8 @@ class LLMProvider(ABC):
         vocabulary and lets it suggest one new tag when nothing fits; otherwise
         the model may invent short free-form tags.
         """
+        if self.experiment_options and not self.experiment_options.include_classification:
+            return extraction_prompt(image_count)
         if tags:
             tag_instruction = (
                 "Add short tags to each line_item when useful. Prefer tags from this list: "

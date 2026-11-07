@@ -3,7 +3,11 @@
 	import { resolve } from '$app/paths';
 	import { onMount } from 'svelte';
 	import { session } from '$lib/auth';
+	import BenchmarkExperimentControls from '$lib/ui/BenchmarkExperimentControls.svelte';
+	import { defaultExperiment, experimentRequest } from '$lib/benchmark-experiments';
 
+	let experiment = $state(defaultExperiment());
+	let capabilities = $state({ ocr_available: false, thinking_control: false });
 	type Model = { id: string };
 	let models = $state<Model[]>([]),
 		selected = $state<string[]>([]),
@@ -26,6 +30,18 @@
 		}
 	});
 	onMount(async () => {
+		receiptIds = window.sessionStorage.getItem('benchmark-reuse-receipts') ?? '';
+		window.sessionStorage.removeItem('benchmark-reuse-receipts');
+		const reuse = new URLSearchParams(window.location.search).get('reuse');
+		if (reuse) {
+			const previous = await fetch(`/api/v1/benchmarks/${encodeURIComponent(reuse)}`);
+			if (previous.ok) {
+				const data = await previous.json();
+				receiptIds = data.run.receipt_ids.join(',');
+			}
+		}
+		const available = await fetch('/api/v1/benchmarks/capabilities').catch(() => null);
+		if (available?.ok) capabilities = await available.json();
 		try {
 			const response = await fetch('/api/v1/llm/models');
 			if (!response.ok) throw new Error();
@@ -47,6 +63,7 @@
 			.filter(Boolean);
 		const body: Record<string, unknown> = {
 			model_ids: selected,
+			experiment: experimentRequest(experiment),
 			request_timeout_seconds: timeout,
 			council_policy: policy,
 			apply_council_flags: applyFlags
@@ -132,6 +149,11 @@
 				>
 			</div>
 		</fieldset>
+		<BenchmarkExperimentControls
+			bind:settings={experiment}
+			ocrAvailable={capabilities.ocr_available}
+			thinkingControl={capabilities.thinking_control}
+		/>
 		<fieldset class="rounded-xl border border-outline-variant p-4">
 			<legend class="px-1 font-medium">Execution and council</legend>
 			<div class="grid gap-3 sm:grid-cols-2">

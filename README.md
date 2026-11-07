@@ -13,6 +13,9 @@
 - **Non-sequential identifiers:** Users, receipts, images, line items, taxes, tags, and benchmark runs use UUIDs throughout the database and API.
 
 ### 🛠️ Quickstart (Docker)
+Versioned container publishing is available through the manual Release workflow;
+see [release setup, image references, and recovery](RELEASES.md).
+
 The fastest way to get started is using Docker Compose:
 ```bash
 cp .env.example .env   # then set AUTH__SECRET_KEY (required) and your model/DB values
