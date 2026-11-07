@@ -166,6 +166,18 @@
 			pathname={activePath}
 			{destinations}
 			mobilePrimaryIds={['dashboard', 'upload', 'receipts']}
+			labels={{
+				menu: $t('nav.menu'),
+				closeMenu: $t('nav.closeMenu'),
+				allDestinations: $t('nav.allDestinations'),
+				skipToContent: $t('nav.skipToContent'),
+				sidebar: $t('nav.sidebar'),
+				mainNavigation: $t('nav.mainNavigation'),
+				mobileNavigation: $t('nav.mobileNavigation'),
+				allNavigation: $t('nav.allNavigation'),
+				connectedServices: $t('nav.connectedServices'),
+				sidebarNote: $t('nav.sidebarNote')
+			}}
 		>
 			{#snippet pageActions()}
 				{#if activeCollection}

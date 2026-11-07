@@ -1,5 +1,48 @@
 import { expect, test } from '@playwright/test';
 
+test('shell controls follow the selected language while the mobile drawer is open', async ({
+	page
+}) => {
+	await page.route('**/api/v1/**', async (route) => {
+		const path = new URL(route.request().url()).pathname;
+		if (path.endsWith('/auth/me')) {
+			await route.fulfill({ json: { id: 'test-user', username: 'reviewer', is_admin: false } });
+		} else if (path.endsWith('/collections/active')) {
+			await route.fulfill({ status: 204 });
+		} else if (path.endsWith('/system/ui-config')) {
+			await route.fulfill({ json: { bypass_review_default: false, registration_open: true } });
+		} else {
+			await route.fulfill({ json: [] });
+		}
+	});
+	await page.setViewportSize({ width: 375, height: 812 });
+	await page.goto('/upload');
+	await page.getByRole('button', { name: 'Menu', exact: true }).click();
+	const drawer = page.getByRole('dialog');
+	await drawer.locator('#locale-select').selectOption('de');
+	await expect(drawer).toHaveAccessibleName('Alle Ziele');
+	await expect(
+		drawer.getByRole('navigation', { name: 'Gesamte Navigation', exact: true })
+	).toBeVisible();
+	await drawer.getByRole('button', { name: 'Menü schließen', exact: true }).click();
+	await expect(page.getByRole('button', { name: 'Menü', exact: true })).toBeFocused();
+	await expect(
+		page.getByRole('navigation', { name: 'Mobile Navigation', exact: true })
+	).toBeVisible();
+	await page.reload();
+	await page.getByRole('button', { name: 'Menü', exact: true }).click();
+	await drawer.locator('#locale-select').selectOption('en');
+	await expect(drawer).toHaveAccessibleName('All destinations');
+	await drawer.getByRole('button', { name: 'Close menu', exact: true }).click();
+	await expect(page.getByRole('button', { name: 'Menu', exact: true })).toBeFocused();
+	await page.setViewportSize({ width: 1280, height: 900 });
+	await page.locator('#locale-select').selectOption('de');
+	await expect(
+		page.getByRole('navigation', { name: 'Hauptnavigation', exact: true })
+	).toBeVisible();
+	await expect(page.getByRole('link', { name: 'Zum Inhalt springen', exact: true })).toHaveCount(1);
+});
+
 // Exercise the real layout/shell with deterministic session and API responses.
 // A missing destination, inconsistent ordering or leaked admin link must fail.
 for (const admin of [false, true]) {

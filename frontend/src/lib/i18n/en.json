@@ -24,6 +24,16 @@
 		"name": "Vision Bill"
 	},
 	"nav": {
+		"menu": "Menu",
+		"closeMenu": "Close menu",
+		"allDestinations": "All destinations",
+		"skipToContent": "Skip to content",
+		"sidebar": "Application sidebar",
+		"mainNavigation": "Main navigation",
+		"mobileNavigation": "Mobile navigation",
+		"allNavigation": "All navigation",
+		"connectedServices": "Connected services",
+		"sidebarNote": "A little more in order.",
 		"search": "Search",
 		"dashboard": "Dashboard",
 		"more": "More",
