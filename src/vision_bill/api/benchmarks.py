@@ -34,7 +34,7 @@ async def create_benchmark_run(
     """Queue a benchmark run and return immediately with its durable run id."""
     try:
         run = await benchmark_service.create_run(request)
-    except ValueError as error:
+    except (ValueError, FileNotFoundError) as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     response.headers["Location"] = _location(run.id)
     return run
@@ -49,6 +49,26 @@ async def list_benchmark_runs(
     """Return benchmark history, newest first."""
     runs = await benchmark_service.list_runs()
     return runs[offset : offset + limit]
+
+
+@router.get("/capabilities")
+async def experiment_capabilities(
+    benchmark_service: BenchmarkService = Depends(get_benchmark_service),  # noqa: B008
+) -> dict[str, bool]:
+    return benchmark_service.capabilities()
+
+
+@router.get("/{run_id}/results")
+async def individual_results(
+    run_id: UUID,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    benchmark_service: BenchmarkService = Depends(get_benchmark_service),  # noqa: B008
+) -> list[dict[str, Any]]:
+    try:
+        return await benchmark_service.results(run_id, limit=limit, offset=offset)
+    except ValueError as error:
+        raise HTTPException(404, detail=str(error)) from error
 
 
 @router.get("/{run_id}", response_model=BenchmarkStatus)
@@ -80,4 +100,6 @@ async def reevaluate_receipt(
         raise HTTPException(status_code=404, detail=str(error)) from error
     except FileNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
+    except TimeoutError as error:
+        raise HTTPException(status_code=504, detail="Benchmark reevaluation exceeded its run timeout") from error
     return result

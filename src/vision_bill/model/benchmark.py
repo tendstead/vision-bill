@@ -1,9 +1,12 @@
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+
+from .experiment import ExperimentOptions
 
 
 class CouncilPolicy(str, Enum):
@@ -15,6 +18,7 @@ class CouncilPolicy(str, Enum):
 class BenchmarkCreate(BaseModel):
     """A durable, local-only benchmark request."""
 
+    experiment: ExperimentOptions = Field(default_factory=ExperimentOptions)
     model_ids: list[str] | None = None
     receipt_ids: list[UUID] | None = None
     category: str | None = None
@@ -39,6 +43,7 @@ class BenchmarkRun(BaseModel):
     apply_council_flags: bool
     created_at: datetime
     completed_at: datetime | None = None
+    experiment: dict[str, Any] | None = None
 
 
 class BenchmarkSummary(BaseModel):
