@@ -7,6 +7,7 @@ WORKDIR /build/frontend
 
 # Locked dependencies first so this layer is cached until the lockfile changes.
 COPY frontend/package.json frontend/package-lock.json frontend/.npmrc ./
+COPY frontend/patches/ ./patches/
 RUN npm ci --no-audit --no-fund
 
 # Full frontend source, then produce the static SPA in /build/frontend/out.

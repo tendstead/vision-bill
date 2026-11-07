@@ -96,6 +96,29 @@
 	--vb-shadow-elevation-5: 0 4px 4px rgba(0, 0, 0, 0.6), 0 8px 12px 6px rgba(0, 0, 0, 0.4);
 }
 
+:root,
+[data-theme] {
+	--ts-primary: var(--vb-primary);
+	--ts-on-primary: var(--vb-on-primary);
+	--ts-nav: var(--vb-surface-container-low);
+	--ts-on-nav: var(--vb-on-surface);
+	--ts-selection: var(--vb-primary-container);
+	--ts-on-selection: var(--vb-on-primary-container);
+	--ts-surface: var(--vb-surface);
+	--ts-surface-subtle: var(--vb-surface-container);
+	--ts-text: var(--vb-on-surface);
+	--ts-muted: var(--vb-on-surface-variant);
+	--ts-border: var(--vb-outline-variant);
+	--ts-focus: var(--vb-primary);
+}
+
+/* The shared shell's decorative letter mark is replaced by our product logo. */
+.ts-shell .ts-brand-mark {
+	border: 0;
+	font-size: 0;
+	background: url('/favicon.svg') center / contain no-repeat;
+}
+
 @theme inline {
 	--color-primary: var(--vb-primary);
 	--color-on-primary: var(--vb-on-primary);

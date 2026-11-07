@@ -72,6 +72,10 @@ db-configure-roles: ## Create/update PostgreSQL runtime and read-only group role
 	@$(WITH_SCRIPTS_ENV) test -n "$$MIGRATION_DATABASE_URL" || { echo "Set MIGRATION_DATABASE_URL in $(SCRIPTS_ENV)"; exit 2; }; \
 		psql "$$MIGRATION_DATABASE_URL" -v database_name="$${PG__DB:-vision_bill}" -f scripts/configure_db_roles.sql
 
+.PHONY: release-test
+release-test: ## Test manual release allocation and publishing safeguards (no publication)
+	$(NODE) node --test scripts/release.test.mjs
+
 context-budget: script-context-budget ## Alias for script-context-budget
 
 # --- Frontend (SvelteKit SPA) -------------------------------------------

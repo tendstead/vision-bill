@@ -16,13 +16,14 @@ test.describe('app chrome', () => {
 		await page.setViewportSize({ width: 375, height: 812 });
 		await page.goto('/');
 
-		// Bottom nav is visible, sidebar is hidden at this width.
-		await expect(page.getByRole('link', { name: 'Search' })).toBeVisible();
-		await page.getByRole('button', { name: 'More' }).click();
-		await expect(page.getByRole('menuitem', { name: 'Sign out' })).toBeVisible();
-		await expect(page.getByRole('menuitem', { name: 'Toggle theme' })).toBeVisible();
+		await expect(page.getByRole('navigation', { name: 'Mobile navigation' })).toBeVisible();
+		await page.getByRole('button', { name: 'Menu', exact: true }).click();
+		const drawer = page.getByRole('dialog');
+		await expect(drawer.getByRole('link', { name: 'Search', exact: true })).toBeVisible();
+		await expect(drawer.getByRole('button', { name: 'Sign out' })).toBeVisible();
+		await expect(drawer.getByRole('button', { name: 'Toggle theme' })).toBeVisible();
 
-		await page.getByRole('menuitem', { name: 'Sign out' }).click();
+		await drawer.getByRole('button', { name: 'Sign out' }).click();
 		await expect(page).toHaveURL(/\/login$/);
 	});
 });

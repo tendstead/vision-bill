@@ -7,6 +7,7 @@
 		"dev": "vite dev",
 		"build": "vite build",
 		"preview": "vite preview",
+		"postinstall": "patch-package --error-on-fail",
 		"prepare": "svelte-kit sync || echo ''",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
@@ -30,6 +31,7 @@
 		"eslint-plugin-svelte": "^3.23.0",
 		"globals": "^17.11.0",
 		"jsdom": "^30.0.1",
+		"patch-package": "8.0.1",
 		"prettier": "^3.9.6",
 		"prettier-plugin-svelte": "^4.1.1",
 		"svelte": "^5.56.1",
@@ -42,8 +44,10 @@
 		"vitest": "^4.1.11"
 	},
 	"dependencies": {
+		"@lucide/svelte": "1.70.0",
 		"@melt-ui/svelte": "^0.86.6",
 		"@tanstack/svelte-query": "^6.1.48",
+		"@tendstead/ui": "0.1.1",
 		"chart.js": "^4.5.1",
 		"svelte-chartjs": "^4.0.1",
 		"svelte-i18n": "^4.0.1"
