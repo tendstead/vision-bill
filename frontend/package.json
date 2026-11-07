@@ -42,8 +42,10 @@
 		"vitest": "^4.1.11"
 	},
 	"dependencies": {
+		"@lucide/svelte": "1.70.0",
 		"@melt-ui/svelte": "^0.86.6",
 		"@tanstack/svelte-query": "^6.1.48",
+		"@tendstead/ui": "0.1.1",
 		"chart.js": "^4.5.1",
 		"svelte-chartjs": "^4.0.1",
 		"svelte-i18n": "^4.0.1"
