@@ -1,6 +1,7 @@
 # llm/factory.py
-from ..config import LLMProviderEnum, LLMSettings
+from ..config import LLMProviderEnum, LLMSettings, OcrSettings
 from .llm.base import LLMProvider
+from .ocr.base import OcrProvider
 
 
 def get_llm_provider(llm_settings: LLMSettings) -> LLMProvider:
@@ -10,7 +11,8 @@ def get_llm_provider(llm_settings: LLMSettings) -> LLMProvider:
         from .llm.ollama import OllamaProvider
 
         return OllamaProvider(
-            host=llm_settings.host, temperature=llm_settings.temperature,
+            host=llm_settings.host,
+            temperature=llm_settings.temperature,
             analysis_timeout_seconds=llm_settings.analysis_timeout_seconds,
         )
 
@@ -25,3 +27,16 @@ def get_llm_provider(llm_settings: LLMSettings) -> LLMProvider:
         )
 
     raise ValueError(f"Unsupported LLM provider: {provider}")
+
+
+def get_ocr_provider(ocr_settings: OcrSettings) -> OcrProvider:
+    """Create an OCR provider based on settings."""
+    if ocr_settings.provider == "paddleocr":
+        from .ocr.paddleocr import PaddleOcrProvider
+
+        return PaddleOcrProvider(
+            service_url=ocr_settings.service_url,
+            timeout=ocr_settings.timeout_seconds,
+        )
+
+    raise ValueError(f"Unsupported OCR provider: {ocr_settings.provider}")

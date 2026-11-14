@@ -21,7 +21,7 @@ from .config import Settings, mark_startup_settings, settings
 from .helper.logging_config import setup_logging
 from .provider.db.collection_db import CollectionDB
 from .provider.db.user_db import UserDB
-from .provider.factory import get_llm_provider
+from .provider.factory import get_llm_provider, get_ocr_provider
 from .security.password import hash_password
 from .service.analysis_scheduler import AnalysisScheduler
 from .service.benchmark_service import BenchmarkService
@@ -66,7 +66,18 @@ async def bootstrap_admin(user_db: UserDB, settings: Settings) -> None:
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     mark_startup_settings(settings)
     provider = get_llm_provider(settings.llm)
-    receipt_service = ReceiptService(settings.images, settings.pg, provider)
+
+    # Create OCR provider if configured
+    ocr_provider = None
+    try:
+        ocr_provider = get_ocr_provider(settings.ocr)
+        logger.info("OCR provider initialized: %s", settings.ocr.provider)
+    except ValueError as exc:
+        logger.warning("Failed to initialize OCR provider: %s", exc)
+
+    receipt_service = ReceiptService(
+        settings.images, settings.pg, provider, ocr_provider=ocr_provider
+    )
     try:
         await receipt_service.init_db()
     except Exception:

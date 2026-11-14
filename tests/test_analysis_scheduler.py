@@ -74,6 +74,7 @@ def scheduler_context(settings: Settings) -> Generator[SchedulerContext, None, N
     receipt_service = MagicMock()
     receipt_service.db_ready = True
     receipt_service.analyse_receipt_from_path = AsyncMock(return_value=_make_receipt())
+    receipt_service.analyse_receipt_with_ocr = AsyncMock(return_value=_make_receipt())
     receipt_service.persist_receipt = AsyncMock(return_value=_receipt_row())
 
     image_db = MagicMock()
@@ -147,7 +148,7 @@ async def test_success_analyzes_and_links(
         return_value=[_pending_image(IMAGE_ID, image_file, user_id=USER_ID)]
     )
     receipt = _make_receipt()
-    receipt_service.analyse_receipt_from_path = AsyncMock(return_value=receipt)
+    receipt_service.analyse_receipt_with_ocr = AsyncMock(return_value=receipt)
 
     result = await scheduler.process_pending()
 
@@ -155,7 +156,7 @@ async def test_success_analyzes_and_links(
         PendingImageResult(image_id=IMAGE_ID, status="analyzed", receipt_id=RECEIPT_ID)
     ]
     # The configured model is unavailable, so the first available one is used.
-    receipt_service.analyse_receipt_from_path.assert_awaited_once_with("test-model", image_file)
+    receipt_service.analyse_receipt_with_ocr.assert_awaited_once_with("test-model", image_file)
     receipt_service.persist_receipt.assert_awaited_once_with(
         receipt,
         image_id=IMAGE_ID,
@@ -182,7 +183,7 @@ async def test_bypass_review_auto_verifies(
         return_value=[_pending_image(IMAGE_ID, image_file, bypass_review=True, user_id=USER_ID)]
     )
     receipt = _make_receipt()
-    receipt_service.analyse_receipt_from_path = AsyncMock(return_value=receipt)
+    receipt_service.analyse_receipt_with_ocr = AsyncMock(return_value=receipt)
 
     result = await scheduler.process_pending()
 
@@ -211,7 +212,7 @@ async def test_analysis_failure_marks_failed(
     image_file = tmp_path / "a.png"
     image_file.write_bytes(b"image-bytes")
     image_db.list_pending_images = AsyncMock(return_value=[_pending_image(IMAGE_ID, image_file)])
-    receipt_service.analyse_receipt_from_path = AsyncMock(side_effect=ValueError("bad json"))
+    receipt_service.analyse_receipt_with_ocr = AsyncMock(side_effect=ValueError("bad json"))
 
     result = await scheduler.process_pending()
 
@@ -259,7 +260,7 @@ async def test_model_fallback_uses_first_available(
     assert result == [
         PendingImageResult(image_id=IMAGE_ID, status="analyzed", receipt_id=RECEIPT_ID)
     ]
-    receipt_service.analyse_receipt_from_path.assert_awaited_once_with("other-model", image_file)
+    receipt_service.analyse_receipt_with_ocr.assert_awaited_once_with("other-model", image_file)
 
 
 @pytest.mark.asyncio

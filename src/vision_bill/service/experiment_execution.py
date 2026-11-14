@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from ..model.experiment import ExperimentOptions, ExtractionPipeline
 from ..model.receipt import Receipt
+from ..provider.ocr.base import compact_ocr_text
 
 if TYPE_CHECKING:
     from .receipt_service import ReceiptService
@@ -49,32 +50,6 @@ def ocr_fingerprint(provider: Any) -> str | None:
                 "endpoint": getattr(provider, "service_url", None),
                 "timeout": getattr(provider, "timeout", None)}
     return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
-
-
-def compact_ocr_text(result: dict[str, Any]) -> str:
-    candidates: list[str] = []
-    text = result.get("text")
-    if isinstance(text, str) and text.strip():
-        candidates.append(text)
-    if not candidates:
-        markdown = result.get("markdown")
-        if isinstance(markdown, dict):
-            markdown = markdown.get("text") or markdown.get("markdown_texts")
-        if isinstance(markdown, str) and markdown.strip():
-            candidates.append(markdown)
-    if not candidates:
-        blocks = result.get("blocks") or result.get("parsing_res_list") or []
-        for block in blocks:
-            if isinstance(block, dict):
-                content = block.get("text") or block.get("block_content")
-                if isinstance(content, str) and content.strip():
-                    candidates.append(content)
-    text = "\n".join(candidates).strip()
-    if not text:
-        raise ValueError("OCR returned no recognized text; layout boxes are not transcription")
-    if len(text) > 200_000:
-        raise ValueError("Recognized text exceeds the experiment input limit")
-    return text
 
 
 class ObservedOcr:

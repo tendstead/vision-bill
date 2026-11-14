@@ -74,6 +74,16 @@ class LLMProvider(ABC):
         """
 
     @abstractmethod
+    async def analyse_receipt_from_ocr_text(
+        self, model_id: str, ocr_result: dict[str, Any], tags: Sequence[str] | None = None
+    ) -> Receipt:
+        """Send OCR text + prompt to the given model and return the result.
+
+        Used in the two-stage OCR → LLM pipeline where OCR has already
+        extracted text from the image and the LLM formats it into a Receipt.
+        """
+
+    @abstractmethod
     async def send_message(self, model_id: str, messages: Sequence[Mapping[str, Any]]) -> str:
         """Send a message to the given model and return the response."""
 
@@ -91,7 +101,19 @@ class LLMProvider(ABC):
             receipt=receipt, attempts=1, elapsed_ms=(perf_counter() - started) * 1000
         )
 
-    def build_prompt(self, tags: Sequence[str] | None = None, *, image_count: int = 1) -> str:
+    def build_ocr_prompt(self, ocr_text: str, tags: Sequence[str] | None = None) -> str:
+        return (
+            "The input below is OCR TEXT, not an image. Extract the actual receipt values. "
+            "Return one populated receipt JSON object. Do NOT return a JSON schema: "
+            "properties, $defs, title and type are schema vocabulary, not receipt fields. "
+            "No image is needed.\n\n"
+            + self.build_prompt(tags, ocr=True)
+            + "\n\nOCR-extracted receipt text:\n---\n" + ocr_text
+            + "\n---\nReturn the populated receipt object, not the schema."
+        )
+
+    def build_prompt(self, tags: Sequence[str] | None = None, *, image_count: int = 1,
+                     ocr: bool = False) -> str:
         """Build a prompt for the LLM to analyze an image.
 
         When ``tags`` is provided, the prompt gives the model the full tag
@@ -99,7 +121,7 @@ class LLMProvider(ABC):
         the model may invent short free-form tags.
         """
         if self.experiment_options and not self.experiment_options.include_classification:
-            return extraction_prompt(image_count)
+            return extraction_prompt(image_count, ocr=ocr)
         if tags:
             tag_instruction = (
                 "Add short tags to each line_item when useful. Prefer tags from this list: "
@@ -109,9 +131,7 @@ class LLMProvider(ABC):
             )
         else:
             tag_instruction = "Add short free-form tags to each line_item when useful."
-        categories = "; ".join(
-            f"{code}: {CATEGORY_DEFINITIONS[code]}" for code in CATEGORY_CODES
-        )
+        categories = "; ".join(f"{code}: {CATEGORY_DEFINITIONS[code]}" for code in CATEGORY_CODES)
         schema = MultiImageReceipt if image_count > 1 else Receipt
         overlap_instruction = (
             "Extract EVERY purchased row separately from EACH photo, including overlap rows. "
@@ -122,11 +142,18 @@ class LLMProvider(ABC):
             "Include the entire ordered overlap, not isolated matching products. "
             "Use an empty candidate list when there is no clear visual overlap. "
             "Receipt-level totals must come from the printed receipt, not the duplicated rows."
-            if image_count > 1 else "List line_items in the exact top-to-bottom order on the receipt."
+            if image_count > 1
+            else "List line_items in the exact top-to-bottom order on the receipt."
         )
-        return f"""You are a receipt analyser. You will be given one or more images of ONE receipt.
-    Images are ordered from top to bottom and may overlap. Return ONE complete receipt.
-    There are {image_count} input photos. {overlap_instruction}
+        input_description = "OCR text of ONE receipt" if ocr else "one or more images of ONE receipt"
+        source_instruction = (
+            "OCR text may contain overlapping photo transcripts. Return ONE complete receipt."
+            if ocr else "Images are ordered from top to bottom and may overlap. Return ONE complete receipt."
+        )
+        count_instruction = "" if ocr else f"There are {image_count} input photos. "
+        return f"""You are a receipt analyser. You will be given {input_description}.
+    {source_instruction}
+    {count_instruction}{overlap_instruction}
     Preserve genuinely repeated purchases, even when descriptions and prices are identical.
     If the receipt is too blurry, cut off, or unreadable to extract reliably, return ONLY
     {{"error": {{"code": "unreadable", "message": "Explain which part needs a clearer photo"}}}}.

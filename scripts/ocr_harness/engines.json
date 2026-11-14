@@ -1,0 +1,10 @@
+[
+  {"id":"pp-small","family":"paddle","image":"vision-bill-ocr-paddle:local","target":"paddle","options":{"det":"PP-OCRv6_small_det","rec":"PP-OCRv6_small_rec"}},
+  {"id":"pp-medium","family":"paddle","image":"vision-bill-ocr-paddle:local","target":"paddle","options":{"det":"PP-OCRv6_medium_det","rec":"PP-OCRv6_medium_rec"}},
+  {"id":"pp-latin","family":"paddle","image":"vision-bill-ocr-paddle:local","target":"paddle","options":{"det":"PP-OCRv5_mobile_det","rec":"latin_PP-OCRv5_mobile_rec"}},
+  {"id":"easyocr-de","family":"easyocr","image":"vision-bill-ocr-easyocr:local","target":"easyocr","options":{}},
+  {"id":"tesseract-fast","family":"tesseract","image":"vision-bill-ocr-tesseract:local","target":"tesseract","options":{"variant":"fast","psm":4}},
+  {"id":"tesseract-best","family":"tesseract","image":"vision-bill-ocr-tesseract:local","target":"tesseract","options":{"variant":"best","psm":4}},
+  {"id":"doctr","family":"doctr","image":"vision-bill-ocr-doctr:local","target":"doctr","options":{"det":"fast_base","rec":"crnn_vgg16_bn"}},
+  {"id":"paddle-vl-http","family":"http","enabled":false,"revision":"set-to-server-model-revision","options":{"url":"http://127.0.0.1:8082","timeout":900}}
+]

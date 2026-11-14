@@ -2,6 +2,7 @@ server_data/logs/*
 server_data/uploads/*
 server_data/uploads_tmp/*
 server_data/config/*
+server_data/ocr-harness/
 tests/data
 docs/
 deploy/

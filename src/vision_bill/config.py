@@ -42,6 +42,10 @@ class LLMProviderEnum(str, Enum):
     OPENAI = "openai"
 
 
+class OcrProviderEnum(str, Enum):
+    PADDLEOCR = "paddleocr"
+
+
 class LLMSettings(BaseModel):
     provider: LLMProviderEnum = LLMProviderEnum.OLLAMA
     host: str  # Used for local LLMs
@@ -69,6 +73,15 @@ class WorkerSettings(BaseModel):
     """Background analysis worker tuning."""
 
     check_interval_seconds: int = Field(default=300, ge=1)
+
+
+class OcrSettings(BaseModel):
+    """OCR service settings for the two-stage extraction pipeline."""
+
+    provider: OcrProviderEnum = OcrProviderEnum.PADDLEOCR
+    service_url: str = "http://paddleocr-service:8082"
+    timeout_seconds: int = Field(default=300, ge=1)
+    required: bool = False
 
 
 class PGSettings(BaseModel):
@@ -130,6 +143,7 @@ class Settings(BaseSettings):
     pg: PGSettings
     worker: WorkerSettings = WorkerSettings()
     auth: AuthSettings
+    ocr: OcrSettings = OcrSettings()
 
     @classmethod
     def settings_customise_sources(
