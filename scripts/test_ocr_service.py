@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from vision_bill.config import OcrSettings
 from vision_bill.provider.factory import get_ocr_provider
+from vision_bill.provider.ocr.base import compact_ocr_text
 
 # Image suffixes the PaddleOCR service accepts (jpeg/png/webp/bmp). We only
 # scan for the formats present in tests/data by default.
@@ -136,10 +137,11 @@ async def run(args: argparse.Namespace) -> tuple[list[dict[str, Any]], int]:
         start = time.time()
         try:
             raw = await provider.extract_text(image)
+            text = compact_ocr_text(raw)
             elapsed_ms = (time.time() - start) * 1000
             ok += 1
             if args.quiet:
-                print(f"  OK in {elapsed_ms:.0f}ms")
+                print(f"  OK in {elapsed_ms:.0f}ms; {len(text)} recognized characters")
             else:
                 print(json.dumps(raw, indent=2, ensure_ascii=False))
             results.append(
@@ -147,6 +149,7 @@ async def run(args: argparse.Namespace) -> tuple[list[dict[str, Any]], int]:
                     "image": image.name,
                     "ok": True,
                     "elapsed_ms": round(elapsed_ms, 1),
+                    "characters": len(text),
                     "raw": raw,
                 }
             )

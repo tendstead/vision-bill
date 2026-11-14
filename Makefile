@@ -1,5 +1,8 @@
 # vision-bill development workflow.
 .DEFAULT_GOAL := help
+.PHONY: ocr-compare
+ocr-compare: ## Compare local OCR engines (ARGS="run --data-dir /path/to/receipts")
+	uv run python -m scripts.ocr_harness $(ARGS)
 SHELL := /bin/bash
 
 .PHONY: help install-uv setup migrate run docker-up docker-down docker-logs test lint context-budget \

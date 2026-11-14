@@ -1,5 +1,10 @@
 # Operational scripts
 
+For unattended, isolated comparisons across OCR engines, see
+[`ocr_harness/README.md`](ocr_harness/README.md). Run `make ocr-compare
+ARGS="all --data-dir /path/to/receipts --limit 2"` to build, prepare and test
+all enabled configurations. No application deployment is needed.
+
 The supported scripts run through Make so local endpoints and database values
 can live in one ignored `.env.scripts` file.
 
@@ -88,6 +93,33 @@ Options:
 The service must be reachable (e.g. `docker compose up paddleocr-service`).
 Keep the URL pointed at the local service to preserve Vision Bill's privacy
 model.
+
+After changing `paddleocr-service/server.py`, rebuild that service with
+`docker compose up -d --build paddleocr-service`. A checkout alone does not
+update code baked into a running container. The compact response contains
+`text` and recognized `blocks` in reading order; image pixels are excluded.
+The diagnostic command treats missing/empty transcription as failure even
+if the server returns HTTP 200. Quiet output reports recognized characters.
+
+For a small CPU smoke test, put one receipt image in a separate directory:
+
+```bash
+make script-test-ocr ARGS="--data-dir /path/to/one-receipt --timeout 900 --quiet"
+```
+
+The Compose OCR service has no published host port. Run a client on the same
+Docker network or use an explicitly configured local endpoint; `localhost:8082`
+works only when that port is actually exposed. CPU inference can take several
+minutes for one receipt.
+
+The updated app's benchmark form supports forcing the `OCR` pipeline for a
+single-image verified receipt. Disable OCR fallback for diagnostics so a
+direct-vision result cannot hide an OCR failure. Start with temperature 0,
+classification disabled, and thinking disabled if the selected model supports
+it. The benchmark deadline covers both OCR and LLM generation (at most 600
+seconds); increasing the OCR client's timeout does not extend that deadline.
+Rebuilding the app from this branch is necessary to expose these merged
+benchmark controls and applies the new benchmark migration on startup.
 
 ## Generate thumbnails for existing images
 

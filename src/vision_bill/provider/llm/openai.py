@@ -14,6 +14,7 @@ setup_logging()
 
 from ...model.receipt import Receipt
 from ...provider.llm.base import AnalysisResult, LLMProvider, ModelInfo
+from ..ocr.base import compact_ocr_text
 from .experiment import chat_telemetry
 
 try:
@@ -242,28 +243,8 @@ class OpenAIProvider(LLMProvider):
         ) from last_error
 
     def _ocr_result_to_text(self, ocr_result: dict[str, Any]) -> str:
-        """Convert OCR result dict to plain text for the LLM."""
-        # Handle different OCR result formats
-        if "text" in ocr_result:
-            text = ocr_result["text"]
-            if isinstance(text, str):
-                return text
-            return str(text)
-
-        # PaddleOCR-VL format with blocks
-        if "blocks" in ocr_result:
-            lines: list[str] = []
-            for block in ocr_result["blocks"]:
-                if "text" in block:
-                    block_text = block["text"]
-                    if isinstance(block_text, str):
-                        lines.append(block_text)
-                    else:
-                        lines.append(str(block_text))
-            return "\n".join(lines)
-
-        # Fallback: convert entire dict to string
-        return str(ocr_result)
+        """Require recognized text before invoking the formatting model."""
+        return compact_ocr_text(ocr_result)
 
     def _build_ocr_formatting_prompt(self, ocr_text: str, tags: Sequence[str] | None = None) -> str:
         """Build a prompt for formatting OCR text into a Receipt."""

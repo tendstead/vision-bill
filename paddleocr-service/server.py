@@ -78,6 +78,7 @@ def _normalize_bbox(coordinate):
     PaddleOCR may return either a flat list ``[x1, y1, x2, y2, ...]`` or a list
     of points ``[[x1, y1], [x2, y2], ...]``. Both are handled.
     """
+    coordinate = _to_plain(coordinate)
     if not coordinate:
         return []
     first = coordinate[0]
@@ -88,38 +89,32 @@ def _normalize_bbox(coordinate):
 
 
 def process_ocrvl_result(result):
-    """Process a PaddleOCR-VL result object into a JSON-safe dict."""
+    """Return recognized content in reading order, without image/model internals."""
     res_dict = result.res if hasattr(result, "res") else result
-    if not res_dict:
-        return {"text": "", "blocks": []}
-
-    layout_res = res_dict.get("layout_det_res", {}) or {}
-    boxes = layout_res.get("boxes", []) or []
-
     blocks = []
-    for box in boxes:
-        label = box.get("label", "")
-        score = box.get("score", 0.0)
-        coordinate = box.get("coordinate", [])
-        try:
-            score = float(score)
-        except (TypeError, ValueError):
-            score = 0.0
+    for block in (res_dict or {}).get("parsing_res_list", []) or []:
+        # Native PaddleX results contain ParsingBlock objects; exported JSON
+        # contains dictionaries. Both preserve the pipeline's reading order.
+        if isinstance(block, dict):
+            text = block.get("block_content", "")
+            label = block.get("block_label", "text")
+            coordinate = block.get("block_bbox", [])
+        else:
+            text = getattr(block, "content", "")
+            label = getattr(block, "label", "text")
+            coordinate = getattr(block, "bbox", [])
+        if not isinstance(text, str) or not text.strip():
+            continue
         blocks.append(
             {
                 "label": str(label),
-                "confidence": score,
+                "text": text.strip(),
                 "bbox": _normalize_bbox(coordinate),
             }
         )
-
-    return _to_plain(
-        {
-            "text": "",  # Text recognition is done by the downstream VLM/LLM stage
-            "blocks": blocks,
-            "layout_info": layout_res,
-        }
-    )
+    if not blocks:
+        raise ValueError("OCR returned no recognized text; layout boxes are not transcription")
+    return {"text": "\n".join(block["text"] for block in blocks), "blocks": blocks}
 
 
 # --------------------------------------------------------------------------- #
@@ -152,10 +147,7 @@ def _worker_main(in_q, out_q, ready_evt):
         req_id, tmp_path = item
         try:
             output = _instance.predict(tmp_path)
-            if not output:
-                result = {"text": "", "blocks": []}
-            else:
-                result = process_ocrvl_result(output[0])
+            result = process_ocrvl_result(output[0] if output else {})
             out_q.put({"req_id": req_id, "ok": True, "result": result})
         except Exception as e:
             logger.exception("Worker: predict failed")
