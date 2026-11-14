@@ -73,17 +73,23 @@ article{margin-bottom:20px;min-width:0}pre{white-space:pre-wrap;overflow-wrap:an
                 + html.escape(row["engine"])
                 + '</h2><p class="status">'
                 + html.escape(
-                    f"OCR: {row['status']} · cached: {row.get('cached', False)} · JSON: {row.get('llm_status', 'not run')}"
+                    f"OCR: {'not used' if row.get('pipeline') == 'direct_vision' else row['status']} · cached: {row.get('cached', False)} · JSON: {row.get('llm_status', 'not run')}"
                 )
                 + "</p>"
             )
+            if row.get("preview_note"):
+                parts.append("<p>" + html.escape(row["preview_note"]) + "</p>")
+            if row.get("source_images"):
+                parts.append(details("Ordered source photos and hashes", row["source_images"]))
             ocr = read_json(row.get("artifact")) if row["status"] == "ok" else None
             parts.append('<section class="stage"><h3>2. OCR output</h3>')
-            if ocr:
+            if row.get("pipeline") == "direct_vision":
+                parts.append("<p>Direct vision: source images sent to the model. OCR is not used.</p>")
+            elif ocr:
                 parts.append(pre(ocr.get("text", "")))
                 parts.append(
                     details(
-                        "Text sent to Gemma (coordinate-grouped rows)",
+                        "Text sent to LLM (coordinate-grouped rows)",
                         ocr.get("row_text", ocr.get("text", "")),
                     )
                 )

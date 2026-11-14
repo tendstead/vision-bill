@@ -8,7 +8,7 @@ from ...model.receipt import Receipt
 from ...model.receipt_extraction import MultiImageReceipt
 
 
-def extraction_prompt(image_count: int) -> str:
+def extraction_prompt(image_count: int, *, ocr: bool = False) -> str:
     schema = (MultiImageReceipt if image_count > 1 else Receipt).model_json_schema()
     for obj in [schema, *schema.get("$defs", {}).values()]:
         props = obj.get("properties", {})
@@ -23,8 +23,11 @@ def extraction_prompt(image_count: int) -> str:
         "duplicates yourself. Totals must come from printed totals, not duplicated rows."
         if image_count > 1 else "Keep line_items in printed top-to-bottom order."
     )
+    source = "the supplied OCR text" if ocr else f"{image_count} ordered photos"
     return (
-        f"Extract the literal contents of ONE receipt from {image_count} ordered photos. {overlap} "
+        f"Extract the literal contents of ONE receipt from {source}. "
+        "Return a populated receipt object, not the JSON schema. "
+        f"{overlap} "
         "Preserve genuinely repeated purchases. Copy product names and abbreviations as printed; "
         "do not expand, translate, categorize or tag them. Read merchant_name from printed text, "
         "never guess from a logo. Positive prices are purchases; refunds and returned deposits "

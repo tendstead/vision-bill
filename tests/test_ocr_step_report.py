@@ -42,7 +42,7 @@ def test_html_shows_stages_and_escapes_untrusted_model_output(tmp_path):
     write_reports(tmp_path, [row])
     text = (tmp_path / "report.html").read_text()
     assert "data:image/png;base64," in text
-    assert "OCR output" in text and "Text sent to Gemma" in text
+    assert "OCR output" in text and "Text sent to LLM" in text
     assert "Attempt 1" in text and "Attempt 2" in text
     assert "ReceiptService return" in text
     assert '<script>alert("unsafe")</script>' not in text

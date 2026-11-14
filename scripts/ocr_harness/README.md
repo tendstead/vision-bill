@@ -138,3 +138,79 @@ configured for a reachable local service, and its revision must identify the
 server/model deployment. It accepts the same compact `text`/`blocks` contract;
 remote model changes require manually updating `revision`. It does not change
 or redeploy your current PaddleOCR-VL service.
+
+## Paired vision-only versus OCR + LLM
+
+`make receipt-compare` reuses `ReceiptService` experiment execution, detailed
+benchmark scoring, OCR caches, and the HTML stage report. It does not connect
+to a database or modify the running app. Both paths use the same ordered,
+prepared image files; direct vision receives every photo. OCR replays each
+photo's verified cache entry, then concatenates transcripts in capture order,
+retaining overlaps for the model to reconcile. This is explicitly labeled
+benchmark orchestration; production multi-photo OCR is not added by the runner.
+
+Create a local dataset manifest with paths relative to that manifest:
+
+```json
+{"cases":[{"id":"example","images":["photo-top.png","photo-bottom.png"],
+"expected":"expected.json","preview":"overview.png"}]}
+```
+
+`preview` is optional and display-only; it is never sent to either model path.
+Expected JSON must validate as `Receipt`. Each source photo must have a successful
+entry in an existing OCR harness `report.json`, with a matching input SHA256.
+Changed/missing/failed OCR caches produce a failed OCR case without vision fallback.
+
+Use an explicit local target list, for example:
+
+```json
+{"targets":[
+  {"id":"gemma","provider":"ollama","host":"http://127.0.0.1:11434",
+   "model":"gemma4-12b:latest"},
+  {"id":"qwen","provider":"openai","host":"http://127.0.0.1:8642/v1",
+   "model":"receipt-qwen","revision":"sha256-of-weights-projector-and-serving-settings"}
+]}
+```
+
+OpenAI-compatible servers require an explicit revision: fingerprint the actual
+weights, projector, serving image, and effective profile, and update it when any
+changes. Ollama model digests are resolved automatically. Endpoints must resolve
+to local/private addresses; proxies and redirects are disabled. No cloud provider
+is used. API credentials are not read from application settings.
+
+```bash
+make receipt-compare ARGS="--dataset /private/dataset.json \
+  --targets /private/targets.json \
+  --ocr-report server_data/ocr-harness/truenas-photo-results/report.json \
+  --ocr-engine pp-medium --output server_data/ocr-harness/paired/results"
+```
+
+Jobs execute sequentially, at temperature zero with classification and OCR fallback
+disabled. Ollama thinking is disabled per request; configure the equivalent in the
+local OpenAI-compatible server profile. Each pipeline has a 180-second outer
+deadline and each generation is capped at 8192 output tokens by default; override
+with `--timeout` / `--max-tokens`. Context/projector settings are server-controlled
+and must be recorded in the target revision. Model loading can affect timing.
+
+The runner saves actual raw responses and repair attempts, sanitized prompts
+(image payloads/thinking excluded), service returns, metadata, and field differences.
+The model stage's measured elapsed time is in `llm_elapsed_ms`; OCR timings are
+replayed original timings, never claimed as newly measured inference. Summary
+scores exclude payment_method and classification; failed pipelines count as zero.
+Exact totals and item-count agreement are separate measures, not proof that every
+item is correct. The full detailed score remains available in each score artifact.
+
+Success caches include the target/revision, ordered image hashes, expected JSON,
+OCR text, source code, timeout, and output limit. Failed cases retry on the next
+run. All output is private and Git-ignored by default. Keep model services from
+holding different models in GPU memory at the same time: finish/unload one backend
+before moving to the other. The runner never unloads unrelated workloads for you.
+
+The standalone CLI creates private bootstrap settings inside its output directory
+before importing application configuration. It needs no live database/auth settings
+or application config file. Target endpoints and models come only from `--targets`.
+It never initializes a database. Model-specific servers may still need their native
+chat templates: for example, NuExtract3 needs a structured extraction template and
+its native `previous_output`/instruction inputs must receive standard repair history.
+Record such serving adapters in the target revision rather than silently treating a
+configuration error as recognition quality.

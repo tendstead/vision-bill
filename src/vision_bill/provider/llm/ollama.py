@@ -138,16 +138,7 @@ class OllamaProvider(LLMProvider):
 
     def _build_ocr_formatting_prompt(self, ocr_text: str, tags: Sequence[str] | None = None) -> str:
         """Build a prompt for formatting OCR text into a Receipt."""
-        base_prompt = self.build_prompt(tags)
-        return f"""{base_prompt}
-
-Here is the OCR-extracted text from the receipt:
-
----
-{ocr_text}
----
-
-Parse this text and return the structured JSON receipt."""
+        return self.build_ocr_prompt(ocr_text, tags)
 
     async def analyse_receipt_with_metadata(
         self, model_id: str, image: Path | Sequence[Path], tags: Sequence[str] | None = None

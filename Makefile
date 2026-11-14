@@ -1,6 +1,9 @@
 # vision-bill development workflow.
 .DEFAULT_GOAL := help
-.PHONY: ocr-compare
+.PHONY: ocr-compare receipt-compare
+receipt-compare: ## Compare direct vision and cached OCR with local LLMs (ARGS="--dataset ... --targets ... --ocr-report ...")
+	uv run python -m scripts.ocr_harness.comparison $(ARGS)
+
 ocr-compare: ## Compare local OCR engines (ARGS="run --data-dir /path/to/receipts")
 	uv run python -m scripts.ocr_harness $(ARGS)
 SHELL := /bin/bash
