@@ -35,12 +35,15 @@ import os
 import sys
 from pathlib import Path
 from statistics import mean
+from time import monotonic
 
 import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from vision_bill.model.handoff import HandoffWait
 from vision_bill.provider.llm.base import LLMProvider
+from vision_bill.service.activation_admission import direct_inference_call, inference_admission
 
 DEFAULT_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 DEFAULT_APP_URL = os.environ.get("VB_APP_URL", "http://localhost:8080")
@@ -88,14 +91,17 @@ def _provider() -> LLMProvider:
         async def check_connection(self) -> bool:
             return True
 
-        async def get_available_models(self):
+        async def get_available_models(self, capability="vision"):
             return []
 
         async def send_message(self, *a, **k):
-            return ""
+            raise NotImplementedError("Prompt-only diagnostic provider")
 
         async def analyse_receipt_from_model(self, *a, **k):
-            return None
+            raise NotImplementedError("Prompt-only diagnostic provider")
+
+        async def analyse_receipt_from_ocr_text(self, *a, **k):
+            raise NotImplementedError("Prompt-only diagnostic provider")
 
     return _P()
 
@@ -252,44 +258,70 @@ class Budget:
         data = self._get("/api/tags")
         for m in data.get("models", []):
             if m.get("model") == self.model or m.get("name") == self.model:
-                self.ctx = (m.get("details") or {}).get("context_length") or 0
-                return self.ctx
+                self.ctx = int((m.get("details") or {}).get("context_length") or 0)
+                if self.ctx > 0:
+                    return self.ctx
+                break
         # Fall back to model_info.
         data = self._post("/api/show", {"name": self.model})
         mi = data.get("model_info") or {}
         for key, value in mi.items():
             if key.endswith("context_length"):
                 self.ctx = int(value)
-                return self.ctx
+                if self.ctx > 0:
+                    return self.ctx
         return 0
 
     def count(self, prompt: str, image_b64: str | None = None, headroom: int = 4096) -> int:
         """Exact token count of `prompt` (plus an optional image) via prompt_eval_count."""
-        # num_ctx must be at least as large as the prompt or Ollama errors out;
-        # keep it bounded so we don't allocate a gigantic KV cache.
-        guess = max(len(prompt) // 3 + (6000 if image_b64 else 0), headroom)
-        num_ctx = min(self.ctx or guess, max(guess, self.num_ctx_cap)) if self.ctx else guess
+        if self.ctx <= 0 or self.num_ctx_cap <= 1:
+            raise ValueError("Known positive context and diagnostic cap are required")
+        num_ctx = min(self.ctx, self.num_ctx_cap)
         payload = {
             "model": self.model,
             "prompt": prompt,
             "stream": False,
-            "num_predict": 1,
-            "options": {"num_ctx": num_ctx},
+            "options": {"num_ctx": num_ctx, "num_predict": 1},
         }
         if image_b64:
             payload["images"] = [image_b64]
-        data = self._post("/api/generate", payload)
-        return int(data.get("prompt_eval_count", 0))
+        from vision_bill.config import settings
+        if settings.ocr.enabled and settings.ocr.manage_model_lifecycle and settings.ocr.shared_gpu:
+            data = asyncio.run(self._managed_generate(payload))
+        else:
+            with inference_admission(), direct_inference_call():
+                data = self._post("/api/generate", payload)
+        count = data.get("prompt_eval_count")
+        if type(count) is not int or count <= 0:
+            raise ValueError("Prompt token count is unavailable")
+        if count >= num_ctx - 1 or data.get("truncated") is True:
+            raise ValueError("Prompt may be truncated at the diagnostic context cap; no complete count")
+        return count
+
+    async def _managed_generate(self, payload: dict) -> dict:
+        from vision_bill.provider.llm.ollama import OllamaProvider
+        provider = OllamaProvider(self.host, analysis_timeout_seconds=self.timeout)
+        with inference_admission(provider):
+            async with provider.handoff.session(monotonic() + min(600, self.timeout)) as owner:
+                await owner.llm_phase(self.model)
+                result: dict = await owner.model_call(asyncio.to_thread(self._post, "/api/generate", payload))
+                return result
 
     def measure(self, provider: LLMProvider, tag_probe: int, image_b64: str | None) -> None:
         self.context_length()
+        if tag_probe < 0:
+            raise ValueError("Tag probe must be nonnegative")
         self.base_tokens = self.count(provider.build_prompt([]))
         big = self.count(build_tags_prompt(provider, tag_probe))
+        if big < self.base_tokens:
+            raise ValueError("Inconsistent prompt token count")
         self.tokens_per_tag = (big - self.base_tokens) / tag_probe if tag_probe else 0.0
         if image_b64:
             self.image_tokens = (
                 self.count(provider.build_prompt([]), image_b64=image_b64) - self.base_tokens
             )
+            if self.image_tokens < 0:
+                raise ValueError("Inconsistent image token count")
 
 
 def pct(part: int, whole: int) -> str:
@@ -344,6 +376,8 @@ def main() -> int:
         help="Postgres DSN for --db-sample (default: the app's settings.pg.pg_dsn)",
     )
     args = ap.parse_args()
+    if args.output_budget < 0 or args.tag_probe < 0 or args.num_ctx_cap <= 1:
+        ap.error("output/tag budgets must be nonnegative and context cap greater than one")
 
     host = args.host.rstrip("/")
     client = httpx.Client(timeout=30)
@@ -398,7 +432,7 @@ def main() -> int:
     print(f"Model: {model}\n")
     try:
         b.measure(provider, args.tag_probe, image_b64)
-    except httpx.HTTPError as e:
+    except (HandoffWait, httpx.HTTPError, ValueError) as e:
         print(f"Measurement failed (is the model loaded / reachable?): {e}", file=sys.stderr)
         return 1
 
@@ -406,7 +440,8 @@ def main() -> int:
     print(
         f"Base prompt (instr+schema): {b.base_tokens} tokens  ({pct(b.base_tokens, b.ctx)} of ctx)"
     )
-    print(f"Tokens per tag (avg):    {b.tokens_per_tag:.2f}")
+    print(f"Tokens per tag (sample average; growth estimates): {b.tokens_per_tag:.2f}")
+    print(f"Diagnostic context cap: {min(b.ctx, b.num_ctx_cap)}; diagnostic output limit: 1 token")
     if image_b64:
         print(f"Image tokens ({Path(args.image).name}): {b.image_tokens} tokens")
     if current_tags:
@@ -414,14 +449,18 @@ def main() -> int:
     print(f"Reserved output budget:  {args.output_budget} tokens\n")
 
     if args.db_sample > 0:
-        report_db_image_sample(
-            b=b,
-            provider=provider,
-            dsn=args.db_dsn,
-            n=args.db_sample,
-            current_tags=current_tags,
-            output_budget=args.output_budget,
-        )
+        try:
+            report_db_image_sample(
+                b=b,
+                provider=provider,
+                dsn=args.db_dsn,
+                n=args.db_sample,
+                current_tags=current_tags,
+                output_budget=args.output_budget,
+            )
+        except HandoffWait as e:
+            print(f"Measurement held: {e}", file=sys.stderr)
+            return 1
 
     def prompt_tokens(tag_count: int) -> int:
         return (
@@ -450,22 +489,22 @@ def main() -> int:
                 + "."
             )
 
-    # Headline: room left for image + output at the current tag count.
+    # The sample image and reserved output are each counted exactly once.
     n_cur = len(current_tags)
     p_cur = prompt_tokens(n_cur)
-    headroom_cur = max(0, b.ctx - p_cur - args.output_budget)
+    headroom_cur = b.ctx - p_cur - args.output_budget
     print(
         f"\nAt {n_cur} tags: prompt = {p_cur} tokens, leaving {headroom_cur} tokens "
-        f"({pct(headroom_cur, b.ctx)}) for the image + JSON output."
+        f"({pct(headroom_cur, b.ctx)}) remaining after prompt, sample image and reserved output."
     )
     if b.image_tokens:
-        fits = headroom_cur >= b.image_tokens
+        fits = headroom_cur >= 0
         print(
             f"  -> sample image costs {b.image_tokens} tokens; "
             f"{'fits' if fits else 'DOES NOT FIT'} with {headroom_cur} tokens of headroom."
         )
         if not fits:
-            print("  WARNING: reduce the image resolution or tag list to make room for the output.")
+            print("  The selected sample and output reservation exceed this model context; no app limits were changed.")
     return 0
 
 

@@ -1,0 +1,28 @@
+{
+  "confidence": 88,
+  "merchant_name": "Cafe Test",
+  "date": "2026-07-01",
+  "currency": "USD",
+  "line_items": [
+    {
+      "description": "Coffee",
+      "quantity": 1,
+      "unit_price": "4.50",
+      "total_price": "4.50"
+    }
+  ],
+  "subtotal": "4.50",
+  "tax_total": "0",
+  "tip": "1.00",
+  "total": "5.50",
+  "payment_method": "mobile_payment",
+  "discount_total": "0",
+  "taxes": [],
+  "amount_policy": {
+    "tax_basis": "net",
+    "discount_treatment": "included_in_lines",
+    "tip_treatment": "add",
+    "subtotal_origin": "printed",
+    "tax_information": "explicit_zero"
+  }
+}

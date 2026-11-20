@@ -35,3 +35,26 @@ def test_resolve_returns_none_when_missing(tmp_path: Path) -> None:
 def test_resolve_empty_returns_none() -> None:
     mod = _load()
     assert mod._resolve("", []) is None
+
+
+async def test_dry_run_counts_resolvable_candidates_without_decode_files_or_db_writes(tmp_path, monkeypatch, capsys, settings):
+    from argparse import Namespace
+    from unittest.mock import AsyncMock
+    import asyncpg
+    mod = _load()
+    original = tmp_path / 'original.png'; original.write_bytes(b'synthetic-not-decoded')
+    settings.images.save_dir = str(tmp_path / 'must-not-create')
+    settings.images.tmp_dir = str(tmp_path / 'also-not-create')
+    monkeypatch.setattr(mod, 'Settings', lambda: settings)
+    conn = AsyncMock()
+    conn.fetch.return_value = [{'id': 1, 'image_path': str(original)}, {'id': 2, 'image_path': str(tmp_path / 'missing.png')}]
+    monkeypatch.setattr(asyncpg, 'connect', AsyncMock(return_value=conn))
+    assert await mod._run(Namespace(limit=None, dry_run=True)) == 0
+    output = capsys.readouterr().out
+    assert 'would process 1 image(s)' in output
+    assert '1 had no resolvable file' in output
+    assert 'decoding not attempted' in output
+    assert 'failed to decode' not in output
+    conn.execute.assert_not_called()
+    assert not Path(settings.images.save_dir).exists() and not Path(settings.images.tmp_dir).exists()
+    assert original.read_bytes() == b'synthetic-not-decoded'

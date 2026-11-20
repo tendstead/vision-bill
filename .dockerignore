@@ -30,3 +30,28 @@ frontend/.svelte-kit/**
 
 # The locally-synced SPA is rebuilt inside the image; never ship host copies.
 src/vision_bill/static/*
+
+# The app wheel includes only the neutral OCR package from the sidecar tree.
+!paddleocr-service/
+paddleocr-service/**
+!paddleocr-service/ocr_contract/
+paddleocr-service/ocr_contract/**
+!paddleocr-service/ocr_contract/*.py
+
+# The Settings recovery guide ships these two public manuals with the SPA.
+!paddleocr-service/README.md
+!distribution/
+distribution/**
+!distribution/README.md
+
+# Local test output and runtime configuration are not build inputs.
+frontend/test-results
+frontend/test-results/**
+frontend/playwright-report
+frontend/playwright-report/**
+**/.env
+**/.env.*
+**/__pycache__
+**/__pycache__/**
+**/*.pyc
+**/*.pyo

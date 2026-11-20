@@ -1,9 +1,11 @@
 import { defineConfig } from '@playwright/test';
 
-// The E2E suite runs against a real, self-started vision-bill stack
-// (docker-compose.e2e.yml: app + postgres + deterministic LLM stub).
-// Set VB_E2E_BASE_URL to point at an already-running stack instead.
-const baseURL = process.env.VB_E2E_BASE_URL ?? 'http://localhost:53625';
+// The runner owns the real stack and supplies its explicit external endpoints.
+// Playwright never adopts or starts an operator service.
+const baseURL = process.env.VB_E2E_BASE_URL;
+if (!baseURL || process.env.VB_E2E_EXTERNAL_STACK !== '1') {
+	throw new Error('Run make fe-test-e2e or supply an explicitly owned external E2E stack');
+}
 
 export default defineConfig({
 	testDir: './e2e',
@@ -19,23 +21,13 @@ export default defineConfig({
 	reporter: [['list']],
 	use: {
 		baseURL,
+		launchOptions: process.env.VB_E2E_CHROMIUM_EXECUTABLE
+			? { executablePath: process.env.VB_E2E_CHROMIUM_EXECUTABLE }
+			: undefined,
 		// The app is i18n (en/de); selectors use English strings, so pin the
 		// locale to keep text-based locators deterministic on any host.
 		locale: 'en-US',
 		// Keep traces on failure to aid debugging of the live-app flow.
 		trace: 'retain-on-failure'
-	},
-	webServer: {
-		// Fallback for running `playwright test` directly: `make fe-test-e2e`
-		// starts the stack itself and tears it down after the run, in which
-		// case this only reuses it. Running bare `playwright test` leaves the
-		// stack up (stop it with `make e2e-down`).
-		// Runs from rootDir (frontend/), so ../ = repo root.
-		command: 'docker compose -f ../docker-compose.e2e.yml up -d --build',
-		url: `${baseURL}/api/v1/system/ui-config`,
-		reuseExistingServer: true,
-		// First run builds the multi-stage app image (Node SPA + Python) — can
-		// take several minutes; cached afterwards.
-		timeout: 600_000
 	}
 });

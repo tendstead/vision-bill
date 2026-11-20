@@ -18,9 +18,9 @@ test.describe('upload, edit, save, verify', () => {
 		await expect(page.locator('#re-merchant')).toHaveValue('Aldi Test');
 		await expect(page.locator('#re-date')).toHaveValue('2026-05-01');
 		await expect(page.locator('#re-currency')).toHaveValue('EUR');
-		// Line-item order is by DB UUID (non-deterministic), and a save
-		// re-creates the line items with fresh UUIDs (so the order can change
-		// across a reload). Address items by description, never by #li-0 index.
+		// Persisted line positions preserve upload order; IDs remain attached on save.
+		await expect(page.locator('input[placeholder="Description"]').nth(0)).toHaveValue('Milk');
+		await expect(page.locator('input[placeholder="Description"]').nth(1)).toHaveValue('Bread');
 		const lineIndex = (desc: string) =>
 			page
 				.locator('input[placeholder="Description"]')

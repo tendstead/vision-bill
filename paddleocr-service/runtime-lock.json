@@ -1,0 +1,52 @@
+{
+  "apt_ca_image": "python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b",
+  "base_image": "ubuntu:24.04@sha256:2198e4c65076e9cb0b3d695219df667c0e3b0072da64ca3c2648aca17dcecaf5",
+  "cuda_lock_status": "unresolved-official-host-connect-403",
+  "dockerfile_frontend": "docker/dockerfile:1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e",
+  "flash_attention": false,
+  "hipblaslt_empty_target_fallback": "gfx1100",
+  "input_sha256": {
+    "build/hip-device-info.cpp": "a56d4111b7117bc540f7d88fefc2455db112bb8725dd0d6ef0d0825d851f1204",
+    "build/hip-rdna2-v1.patch": "017f955eb5a9d2adec5e416ab0dc17b58a9fd128e4665da28af2e730eba6306a",
+    "ocr_contract/__init__.py": "d5febcf000ebb5605730c5fd360db0ce66bdc1f1f581ae09bb507cd331f5e130",
+    "ocr_contract/activation.py": "e3bbc6b0fc47c244402834db5d84e8bafa8cc49de0e011046c49fe79a2fa24c2",
+    "ocr_contract/document_image.py": "7af9acad1c00b5d99ca3c1d83e4cce938ba7374e8f5709112d9cb7e2d86e1deb",
+    "ocr_contract/limits.py": "e8a3516793c6ddd3f8af037f96edbdde458377f0ab648cf3a0e0a5cacaa2ffa4",
+    "ocr_contract/wire_json.py": "d68762507779fbae4a528c47f6d2587cb37cb5fe4ec583da2f72fc1f34431882",
+    "requirements.bootstrap.lock": "ea0463cbcbd31b0f368bd61ecca40ab60afe376dbfc6f6af4734eab20aa134f3",
+    "requirements.build.lock": "69689dc39bd5e96aff805a1fc556fab5d786b3de7330d1ab3b21cd954833872d",
+    "requirements.runtime.lock": "c6d6471af279f271daac0e46017aea566af881493d0e43404d1ab0c9a6b15b88"
+  },
+  "platform": "linux-x86_64-cp312",
+  "qualification_status": "unexecuted-hardware-release-gate",
+  "rdna2_targets": [
+    "gfx1030",
+    "gfx1031",
+    "gfx1032",
+    "gfx1034"
+  ],
+  "rust": {
+    "sha256": "2e0338f18ecbaa4a0f631b9e80e8b8e26bb6fe77dd5454fba8a70cf96c1e84a1",
+    "target": "x86_64-unknown-linux-gnu",
+    "url": "https://static.rust-lang.org/dist/2026-04-16/rust-1.95.0-x86_64-unknown-linux-gnu.tar.xz",
+    "version": "1.95.0"
+  },
+  "schema": 1,
+  "sdk_components": "THEROCK_ENABLE_ALL=ON",
+  "sources": {
+    "paddle": "7688495538f4d6c1893f084dd238a402e8f68ab6",
+    "paddleocr": "b03f46425e8ff4442b268ce449e3eef758146cd4",
+    "paddlex": "ffb64904d23708863ff5b8da312a5cbd52a7f462",
+    "therock": "b324869fb3116353ac7eec5e6926aa3d452ac987",
+    "therock_rocm_systems_gitlink": "7da43026e4f2ef7600433c38c820732f7a205d22"
+  },
+  "ubuntu_snapshot": "20261101T000000Z",
+  "upstream_optional_target_exclusions": [
+    "hipBLASLt",
+    "hipSPARSELt",
+    "CK",
+    "rocWMMA",
+    "hipTensor",
+    "rocprofiler-compute"
+  ]
+}

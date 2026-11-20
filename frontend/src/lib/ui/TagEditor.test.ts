@@ -1,3 +1,4 @@
+import { session } from '$lib/session-lifetime';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import TagEditor from './TagEditor.svelte';
@@ -40,6 +41,10 @@ async function openDropdown() {
 beforeEach(() => {
 	vi.stubGlobal('fetch', setupFetch());
 });
+
+beforeEach(() =>
+	session.set({ id: 'viewer', username: 'alice', is_admin: false, can_see_all: false })
+);
 
 afterEach(() => {
 	// Vitest runs without `globals: true`, so testing-library's automatic
@@ -188,3 +193,125 @@ describe('TagEditor', () => {
 		expect(screen.getByText('No tags yet — type to create one.')).not.toBeNull();
 	});
 });
+it('blocks an already-open custom create option while its parent is saving', async () => {
+	const value: string[] = [];
+	const view = render(TagEditor, { value, tagOptions: OPTIONS, id: 'disabled-tag' });
+	await fireEvent.click(screen.getByRole('button', { name: 'Tags' }));
+	await fireEvent.input(screen.getByPlaceholderText('Search tags…'), { target: { value: 'late' } });
+	await view.rerender({ value, tagOptions: OPTIONS, id: 'disabled-tag', disabled: true });
+	await fireEvent.click(screen.getByRole('option', { name: 'Create “late”' }));
+	expect(value).toEqual([]);
+	expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
+});
+
+it('does not attach a pending tag to a successor value after props change', async () => {
+	const { api } = await import('$lib/api/client');
+	let finish!: (value: { name: string; created: boolean }) => void;
+	const create = vi.spyOn(api, 'createTag').mockImplementation(
+		() =>
+			new Promise((resolve) => {
+				finish = resolve;
+			})
+	);
+	const original: string[] = [],
+		successor: string[] = [];
+	const view = render(TagEditor, { value: original, tagOptions: OPTIONS, id: 'original' });
+	await fireEvent.click(screen.getByRole('button', { name: 'Tags' }));
+	await fireEvent.input(screen.getByPlaceholderText('Search tags…'), { target: { value: 'late' } });
+	await fireEvent.click(screen.getByRole('option', { name: 'Create “late”' }));
+	await view.rerender({ value: successor, tagOptions: OPTIONS, id: 'successor' });
+	finish({ name: 'late', created: true });
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	expect(successor).toEqual([]);
+	expect(original).toEqual([]);
+	create.mockRestore();
+});
+
+it.each(['create', 'keep'] as const)(
+	'suppresses abandoned %s errors and pending effects after owner change',
+	async (action) => {
+		const { api } = await import('$lib/api/client');
+		const { snackbar } = await import('$lib/ui/snackbar.svelte');
+		let reject!: (error: Error) => void;
+		const create = vi
+			.spyOn(api, 'createTag')
+			.mockImplementationOnce(
+				() =>
+					new Promise((_, r) => {
+						reject = r;
+					})
+			)
+			.mockImplementation(() => new Promise(() => {}));
+		const notify = vi.spyOn(snackbar, 'notify');
+		const pending = vi.fn();
+		const original = action === 'keep' ? ['custom-tag'] : [];
+		const view = render(TagEditor, {
+			value: original,
+			tagOptions: OPTIONS,
+			id: 'a',
+			onPendingChange: pending
+		});
+		if (action === 'keep')
+			await fireEvent.click(
+				screen.getByRole('button', { name: 'Keep “custom-tag” as standard tag' })
+			);
+		else {
+			await openDropdown();
+			await fireEvent.input(screen.getByPlaceholderText('Search tags…'), {
+				target: { value: 'late' }
+			});
+			await fireEvent.click(screen.getByRole('option', { name: 'Create “late”' }));
+		}
+		await view.rerender({ value: [], tagOptions: OPTIONS, id: 'b', onPendingChange: pending });
+		await openDropdown();
+		await fireEvent.input(screen.getByPlaceholderText('Search tags…'), {
+			target: { value: 'new' }
+		});
+		await fireEvent.click(screen.getByRole('option', { name: 'Create “new”' }));
+		expect(create).toHaveBeenCalledTimes(2);
+		reject(new Error('abandoned'));
+		await new Promise((r) => setTimeout(r, 0));
+		expect(notify).not.toHaveBeenCalled();
+		expect(pending).toHaveBeenLastCalledWith(true);
+		vi.restoreAllMocks();
+	}
+);
+it.each(['create', 'keep'] as const)(
+	'suppresses disposed %s errors including vocabulary refresh failure',
+	async (action) => {
+		const { api } = await import('$lib/api/client');
+		const { queryClient } = await import('$lib/query/client');
+		const { snackbar } = await import('$lib/ui/snackbar.svelte');
+		let reject!: (error: Error) => void;
+		vi.spyOn(api, 'createTag').mockResolvedValue({ name: 'late', created: true });
+		const refresh = vi.spyOn(queryClient, 'invalidateQueries').mockImplementation(
+			() =>
+				new Promise((_, r) => {
+					reject = r;
+				})
+		);
+		const notify = vi.spyOn(snackbar, 'notify');
+		const view = render(TagEditor, {
+			value: action === 'keep' ? ['custom-tag'] : [],
+			tagOptions: OPTIONS,
+			id: 'a'
+		});
+		if (action === 'keep')
+			await fireEvent.click(
+				screen.getByRole('button', { name: 'Keep “custom-tag” as standard tag' })
+			);
+		else {
+			await openDropdown();
+			await fireEvent.input(screen.getByPlaceholderText('Search tags…'), {
+				target: { value: 'late' }
+			});
+			await fireEvent.click(screen.getByRole('option', { name: 'Create “late”' }));
+		}
+		await waitFor(() => expect(refresh).toHaveBeenCalled());
+		view.unmount();
+		reject(new Error('refresh failed'));
+		await new Promise((r) => setTimeout(r, 0));
+		expect(notify).not.toHaveBeenCalled();
+		vi.restoreAllMocks();
+	}
+);

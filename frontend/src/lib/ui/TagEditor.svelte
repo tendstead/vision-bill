@@ -1,6 +1,8 @@
 <script lang="ts">
+	import { onDestroy } from 'svelte';
 	import { t } from '$lib/i18n';
 	import { api } from '$lib/api/client';
+	import { currentSessionGeneration } from '$lib/session-lifetime';
 	import { queryClient } from '$lib/query/client';
 	import { queryKeys } from '$lib/query/keys';
 	import { snackbar } from '$lib/ui/snackbar.svelte';
@@ -10,7 +12,9 @@
 	let {
 		value,
 		tagOptions,
-		id
+		id,
+		onPendingChange,
+		disabled = false
 	}: {
 		/** The line item's tags (standard + suggested). Mutated in place. */
 		value: string[];
@@ -18,6 +22,8 @@
 		tagOptions: string[];
 		/** Unique prefix used to build stable input ids. */
 		id: string;
+		onPendingChange?: (pending: boolean) => void;
+		disabled?: boolean;
 	} = $props();
 
 	const labelClass = 'mb-1 block text-xs font-medium text-on-surface-variant';
@@ -26,6 +32,38 @@
 	let open = $state(false);
 	let query = $state('');
 	let creating = $state(false);
+	$effect(() => {
+		onPendingChange?.(creating);
+	});
+	let alive = true;
+	onDestroy(() => {
+		alive = false;
+		onPendingChange?.(false);
+	});
+	let activeOwner: { value: string[]; id: string } | null = null;
+	$effect(() => {
+		if (activeOwner?.value === value && activeOwner.id === id) return;
+		const owner = { value, id };
+		activeOwner = owner;
+		creating = false;
+		query = '';
+		open = false;
+	});
+	function ownerLifetime() {
+		const owner = activeOwner,
+			original = value,
+			ownerId = id,
+			generation = currentSessionGeneration();
+		return {
+			samePrincipal: () => generation === currentSessionGeneration(),
+			current: () =>
+				alive &&
+				activeOwner === owner &&
+				value === original &&
+				id === ownerId &&
+				generation === currentSessionGeneration()
+		};
+	}
 	let wasOpen = $state(false);
 	/** Keyboard highlight offset within `selectableRows` (−1 = nothing). */
 	let activeOffset = $state(-1);
@@ -66,6 +104,7 @@
 	}
 
 	function toggleStandardTag(tag: string): void {
+		if (disabled) return;
 		const next = hasStandardTag(tag)
 			? standardTags.filter((entry) => entry.toLowerCase() !== tag.toLowerCase())
 			: [...standardTags, tag];
@@ -73,10 +112,12 @@
 	}
 
 	function removeStandardTag(tag: string): void {
+		if (disabled) return;
 		setStandardTags(standardTags.filter((entry) => entry.toLowerCase() !== tag.toLowerCase()));
 	}
 
 	function removeSuggested(tag: string): void {
+		if (disabled) return;
 		const next = value.filter((entry) => entry !== tag);
 		value.length = 0;
 		value.push(...next);
@@ -89,35 +130,39 @@
 
 	/** Promote a suggested (non-vocabulary) tag into the standard vocabulary. */
 	async function keepSuggested(tag: string): Promise<void> {
-		if (creating) return;
+		if (creating || disabled) return;
+		const origin = ownerLifetime();
 		creating = true;
 		try {
 			await api.createTag(tag);
-			await refreshVocabulary();
+			if (origin.samePrincipal()) await refreshVocabulary();
 		} catch {
-			snackbar.notify('error', $t('editor.tagsCreateFailed'));
+			if (origin.current()) snackbar.notify('error', $t('editor.tagsCreateFailed'));
 		} finally {
-			creating = false;
+			if (origin.current()) creating = false;
 		}
 	}
 
 	/** Create the tag currently typed into the search and attach it to the line. */
 	async function createFromQuery(): Promise<void> {
 		const name = normalizeTag(query);
-		if (name === '' || creating) return;
+		if (name === '' || creating || disabled) return;
+		const origin = ownerLifetime();
 		creating = true;
 		try {
 			const { name: created } = await api.createTag(name);
-			if (!value.includes(created)) {
-				value.push(created);
-				revision++;
+			if (origin.current()) {
+				if (!value.includes(created)) {
+					value.push(created);
+					revision++;
+				}
+				query = '';
 			}
-			query = '';
-			await refreshVocabulary();
+			if (origin.samePrincipal()) await refreshVocabulary();
 		} catch {
-			snackbar.notify('error', $t('editor.tagsCreateFailed'));
+			if (origin.current()) snackbar.notify('error', $t('editor.tagsCreateFailed'));
 		} finally {
-			creating = false;
+			if (origin.current()) creating = false;
 		}
 	}
 
@@ -143,6 +188,7 @@
 	}
 
 	function openDropdown(): void {
+		if (disabled) return;
 		if (open) return;
 		open = true;
 		// Highlight the first row immediately (no-op when the list is empty).
@@ -180,6 +226,7 @@
 	});
 
 	function onKeydown(event: KeyboardEvent): void {
+		if (disabled) return;
 		const selectable = computeSelectableRows();
 		switch (event.key) {
 			case 'ArrowDown':
@@ -231,7 +278,8 @@
 		bind:this={boxEl}
 		class="relative"
 		role="button"
-		tabindex="0"
+		aria-disabled={disabled}
+		tabindex={disabled ? -1 : 0}
 		aria-label={$t('editor.tags')}
 		onclick={openDropdown}
 		onkeydown={(event) => {
@@ -267,7 +315,7 @@
 					class="inline-flex items-center gap-1.5 rounded-full border border-warning/50 bg-warning-container py-1 pl-3 pr-1 text-sm font-medium text-on-warning-container"
 				>
 					<span
-						class="rounded-full bg-warning px-1.5 py-0.5 text-[0.65rem] font-semibold uppercase tracking-wide text-on-warning"
+						class="rounded-full bg-warning-action px-1.5 py-0.5 text-[0.65rem] font-semibold uppercase tracking-wide text-on-warning"
 					>
 						{$t('editor.tagsSuggestedBadge')}
 					</span>

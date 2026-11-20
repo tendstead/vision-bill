@@ -1,29 +1,43 @@
-"""Wait until the e2e app answers on its public readiness endpoint."""
+"""Readiness proves authenticated database use and both healthy test dependencies."""
 
-import sys
+import os
 import time
-import urllib.request
 
-BASE_URL = "http://localhost:53625"
-URL = f"{BASE_URL}/api/v1/system/ui-config"
-TIMEOUT_S = 180
+import httpx
+
+
+def check() -> None:
+    base = os.environ["VB_E2E_BASE_URL"]
+    with httpx.Client(base_url=base, timeout=3, trust_env=False) as client:
+        response = client.post(
+            "/api/v1/auth/login", json={"username": "admin", "password": "admin-e2e-pass"}
+        )
+        response.raise_for_status()
+        client.get("/api/v1/images").raise_for_status()
+        models = client.get("/api/v1/llm/models")
+        models.raise_for_status()
+        assert models.json(), "no discovered model"
+        client.get(os.environ["VB_E2E_STUB_URL"] + "/v1/models").raise_for_status()
+        ready = client.get(os.environ["VB_E2E_OCR_URL"] + "/ready")
+        info = client.get(os.environ["VB_E2E_OCR_URL"] + "/info")
+        ready.raise_for_status()
+        info.raise_for_status()
+        assert ready.json()["ready"] and info.json()["contract_version"] == 2
+        assert ready.json()["profile_id"] == info.json()["worker"]["profile_id"]
 
 
 def main() -> int:
-    deadline = time.monotonic() + TIMEOUT_S
+    deadline = time.monotonic() + 180
+    failure = "not started"
     while time.monotonic() < deadline:
         try:
-            with urllib.request.urlopen(URL, timeout=3) as resp:
-                if resp.status == 200:
-                    print(f"e2e app ready at {BASE_URL}")
-                    return 0
-        except Exception:  # noqa: BLE001 - poll until ready
-            time.sleep(2)
-    print(
-        f"e2e app not ready after {TIMEOUT_S}s; "
-        "check: docker compose -f docker-compose.e2e.yml logs",
-        file=sys.stderr,
-    )
+            check()
+            print("Owned E2E app, database, LLM and OCR are ready")
+            return 0
+        except (httpx.HTTPError, ValueError, AssertionError) as exc:
+            failure = type(exc).__name__ + ": " + str(exc)
+            time.sleep(1)
+    print("E2E readiness failed: " + failure)
     return 1
 
 

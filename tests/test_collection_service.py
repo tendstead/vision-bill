@@ -97,7 +97,7 @@ async def test_assign_own_receipt_delegates() -> None:
     svc._receipt_service.get_receipt_by_id = AsyncMock(return_value=object())  # caller's receipt
     db.assign = AsyncMock()
     await svc.assign(CID, RID, UID, can_see_all=False)
-    db.assign.assert_awaited_once_with(CID, RID)
+    db.assign.assert_awaited_once_with(CID, RID, user_id=UID, can_see_all=False)
 
 
 @pytest.mark.asyncio
@@ -202,4 +202,4 @@ async def test_set_receipt_collections_delegates_when_owned() -> None:
     db.exists = AsyncMock(return_value=True)  # every target collection is the caller's
     db.set_receipt_collections = AsyncMock()
     await svc.set_receipt_collections(RID, [CID], UID, can_see_all=False)
-    db.set_receipt_collections.assert_awaited_once_with(RID, [CID])
+    db.set_receipt_collections.assert_awaited_once_with(RID, [CID], user_id=UID, can_see_all=False)

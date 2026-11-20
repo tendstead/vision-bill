@@ -8,12 +8,12 @@ test.describe('admin: settings + registration toggle', () => {
 		await page.goto('/settings');
 
 		// Source labels from the e2e stack: provider/host/model are
-		// environment-controlled (locked), temperature comes from config.
-		await expect(page.getByText('Environment').first()).toBeVisible();
+		// environment defaults, editable on explicit save, temperature comes from config.
+		await expect(page.getByText('Environment default').first()).toBeVisible();
 		await expect(page.getByText('Config').first()).toBeVisible();
-		await expect(page.getByLabel('Provider')).toBeDisabled();
-		await expect(page.getByLabel('Host')).toBeDisabled();
-		await expect(page.getByLabel('Default model')).toBeDisabled();
+		await expect(page.getByLabel('Provider')).toBeEnabled();
+		await expect(page.getByLabel('Host')).toBeEnabled();
+		await expect(page.getByLabel('Default model')).toBeEnabled();
 		await expect(page.getByLabel('Temperature')).toBeEnabled();
 
 		try {

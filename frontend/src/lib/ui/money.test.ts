@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isPlainDecimal, isSignedDecimal } from './money';
+import { decMul, isPlainDecimal, isSignedDecimal } from './money';
 
 describe('isPlainDecimal', () => {
 	it('accepts plain non-negative decimals', () => {
@@ -34,4 +34,15 @@ describe('isSignedDecimal', () => {
 		expect(isSignedDecimal('')).toBe(false);
 		expect(isSignedDecimal(null)).toBe(false);
 	});
+});
+
+it.each([
+	[1.5, '1.23', '1.845'],
+	[2, '-0.75', '-1.5'],
+	[0.25, '-2.50', '-0.625'],
+	[0, '-0.75', '0'],
+	[1e-7, '0.123', '0.0000000123'],
+	[3, '10000000000000000000.0001', '30000000000000000000.0003']
+] as const)('exactly multiplies %s by %s', (quantity, price, expected) => {
+	expect(decMul(quantity, price)).toBe(expected);
 });

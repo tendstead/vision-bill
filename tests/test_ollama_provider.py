@@ -12,6 +12,7 @@ def mock_client():
     with patch("vision_bill.provider.llm.ollama.AsyncClient") as mocked_client:
         # Create an AsyncMock instance that will be returned by the constructor
         client = AsyncMock()
+        client._client.base_url = 'http://localhost:11434'
         mocked_client.return_value = client
         yield client
 

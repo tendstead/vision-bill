@@ -1,0 +1,131 @@
+--- a/cmake/hip.cmake
++++ b/cmake/hip.cmake
+@@ -7,26 +7,29 @@
+       "/opt/rocm"
+       CACHE PATH "Path to which ROCm has been installed")
+   set(HIP_PATH
+-      ${ROCM_PATH}/hip
++      ${ROCM_PATH}
+       CACHE PATH "Path to which HIP has been installed")
+   set(HIP_CLANG_PATH
+-      ${ROCM_PATH}/llvm/bin
++      ${ROCM_PATH}/lib/llvm/bin
+       CACHE PATH "Path to which clang has been installed")
+ else()
+   set(ROCM_PATH
+       $ENV{ROCM_PATH}
+       CACHE PATH "Path to which ROCm has been installed")
+   set(HIP_PATH
+-      ${ROCM_PATH}/hip
++      ${ROCM_PATH}
+       CACHE PATH "Path to which HIP has been installed")
+   set(HIP_CLANG_PATH
+-      ${ROCM_PATH}/llvm/bin
++      ${ROCM_PATH}/lib/llvm/bin
+       CACHE PATH "Path to which clang has been installed")
+ endif()
+-set(CMAKE_MODULE_PATH "${HIP_PATH}/cmake" ${CMAKE_MODULE_PATH})
++set(CMAKE_MODULE_PATH "${ROCM_PATH}/lib/cmake/hip" ${CMAKE_MODULE_PATH})
+ set(CMAKE_PREFIX_PATH "${ROCM_PATH}" ${CMAKE_PREFIX_PATH})
+
+-find_package(HIP REQUIRED)
++find_package(HIP REQUIRED MODULE)
++if(NOT COMMAND hip_add_library OR NOT COMMAND hip_add_executable)
++  message(FATAL_ERROR "Pinned SDK must provide legacy FindHIP and its helpers")
++endif()
+ include_directories(${ROCM_PATH}/include)
+ message(STATUS "HIP version: ${HIP_VERSION}")
+ message(STATUS "HIP_CLANG_PATH: ${HIP_CLANG_PATH}")
+@@ -68,8 +71,14 @@
+ find_hip_version(${HIP_PATH}/include/hip/hip_version.h)
+
+ macro(find_package_and_include PACKAGE_NAME)
+-  find_package("${PACKAGE_NAME}" REQUIRED)
+-  include_directories("${ROCM_PATH}/${PACKAGE_NAME}/include")
++  find_package("${PACKAGE_NAME}" REQUIRED CONFIG
++               PATHS "${ROCM_PATH}" NO_DEFAULT_PATH)
++  file(REAL_PATH "${${PACKAGE_NAME}_DIR}" package_root)
++  string(FIND "${package_root}/" "${ROCM_PATH}/" package_prefix)
++  if(NOT package_prefix EQUAL 0)
++    message(FATAL_ERROR "${PACKAGE_NAME} resolved outside the sealed SDK")
++  endif()
++  include_directories("${ROCM_PATH}/include")
+   message(STATUS "${PACKAGE_NAME} version: ${${PACKAGE_NAME}_VERSION}")
+ endmacro()
+
+@@ -159,15 +168,18 @@
+ # Ask hcc to generate device code during compilation so we can use
+ # host linker to link.
+ list(APPEND HIP_HCC_FLAGS -fno-gpu-rdc)
+-list(APPEND HIP_HCC_FLAGS --offload-arch=gfx906) # Z100 (ZIFANG)
+-list(APPEND HIP_HCC_FLAGS --offload-arch=gfx926) # K100 (KONGING)
+-list(APPEND HIP_HCC_FLAGS --offload-arch=gfx928) # K100_AI (KONGING_AI)
+-list(APPEND HIP_HCC_FLAGS --offload-arch=gfx936) # BW1000 (BOWEN)
++set(VISION_BILL_AMDGPU_TARGETS "$ENV{VISION_BILL_AMDGPU_TARGETS}")
++if(VISION_BILL_AMDGPU_TARGETS STREQUAL "")
++  message(FATAL_ERROR "Explicit validated candidate targets are required")
++endif()
++foreach(target IN LISTS VISION_BILL_AMDGPU_TARGETS)
++  if(NOT target MATCHES "^gfx[0-9a-f]+$")
++    message(FATAL_ERROR "Invalid candidate target")
++  endif()
++  list(APPEND HIP_HCC_FLAGS --offload-arch=${target})
++  list(APPEND HIP_CLANG_FLAGS --offload-arch=${target})
++endforeach()
+ list(APPEND HIP_CLANG_FLAGS -fno-gpu-rdc)
+-list(APPEND HIP_CLANG_FLAGS --offload-arch=gfx906) # Z100 (ZIFANG)
+-list(APPEND HIP_CLANG_FLAGS --offload-arch=gfx926) # K100 (KONGING)
+-list(APPEND HIP_CLANG_FLAGS --offload-arch=gfx928) # K100_AI (KONGING_AI)
+-list(APPEND HIP_CLANG_FLAGS --offload-arch=gfx936) # BW1000 (BOWEN)
+
+ if(HIP_COMPILER STREQUAL clang)
+   set(hip_library_name amdhip64)
+@@ -177,7 +189,13 @@
+ message(STATUS "HIP library name: ${hip_library_name}")
+
+ # set HIP link libs
+-find_library(ROCM_HIPRTC_LIB ${hip_library_name} HINTS ${HIP_PATH}/lib)
++find_library(ROCM_HIPRTC_LIB ${hip_library_name}
++             PATHS ${ROCM_PATH}/lib NO_DEFAULT_PATH REQUIRED)
++file(REAL_PATH "${HIP_HIPCC_EXECUTABLE}" hip_compiler)
++string(FIND "${hip_compiler}" "${ROCM_PATH}/" hip_prefix)
++if(NOT hip_prefix EQUAL 0)
++  message(FATAL_ERROR "HIP compiler resolved outside the sealed SDK")
++endif()
+ message(STATUS "ROCM_HIPRTC_LIB: ${ROCM_HIPRTC_LIB}")
+
+ include(thrust)
+--- a/cmake/miopen.cmake
++++ b/cmake/miopen.cmake
+@@ -8,7 +8,7 @@
+ endif()
+
+ set(MIOPEN_ROOT
+-    ${ROCM_PATH}/miopen
++    ${ROCM_PATH}
+     CACHE PATH "MIOPEN ROOT")
+
+ find_path(
+@@ -34,7 +34,7 @@
+ if(MIOPEN_INCLUDE_DIR AND MIOPEN_LIBRARY)
+   set(MIOPEN_FOUND ON)
+ else()
+-  set(MIOPEN_FOUND OFF)
++  message(FATAL_ERROR "MIOpen include/library missing from sealed SDK")
+ endif()
+
+ macro(find_miopen_version miopen_header_file)
+--- a/cmake/third_party.cmake
++++ b/cmake/third_party.cmake
+@@ -575,10 +575,9 @@
+   list(APPEND third_party_deps extern_cusparselt)
+ endif()
+
+-if(WITH_ROCM)
++if(WITH_ROCM AND WITH_FLASHATTN)
+   include(external/flashattn)
+   list(APPEND third_party_deps extern_flashattn)
+-  set(WITH_FLASHATTN ON)
+ endif()
+
+ if(WITH_GPU

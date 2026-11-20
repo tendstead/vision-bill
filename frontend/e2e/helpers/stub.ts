@@ -1,6 +1,8 @@
+import { testEnvironment } from './environment';
 import { test } from '@playwright/test';
 
-const STUB_BASE = 'http://localhost:9123';
+// Submission polling lives in helpers/api.ts; it never changes this global mode.
+const STUB_BASE = testEnvironment('VB_E2E_STUB_URL');
 
 export type StubMode = 'ok' | 'down' | 'repair_first' | 'broken' | 'unreadable' | 'slow';
 
@@ -15,16 +17,24 @@ export async function setStubMode(mode: StubMode): Promise<void> {
 	}
 }
 
-/**
- * The stub mode is GLOBAL state shared by every test (the suite runs with
- * workers: 1, so files never interleave). Call once per file that mutates the
- * mode: it pins 'ok' before and after the whole file.
- */
-export function stubGuard(): void {
-	test.beforeAll(async () => {
-		await setStubMode('ok');
+export async function setStubScenario(
+	scenario: 'complete' | 'partial' | 'policy_unknown' | 'overlap'
+): Promise<void> {
+	const response = await fetch(`${STUB_BASE}/__scenario`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ scenario })
 	});
-	test.afterAll(async () => {
+	if (!response.ok) throw new Error(`stub scenario failed: ${response.status}`);
+}
+
+export function stubGuard(): void {
+	test.beforeEach(async () => {
 		await setStubMode('ok');
+		await setStubScenario('complete');
+	});
+	test.afterEach(async () => {
+		await setStubMode('ok');
+		await setStubScenario('complete');
 	});
 }

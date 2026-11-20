@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onDestroy } from 'svelte';
 	import { createQuery } from '@tanstack/svelte-query';
 	import { resolve } from '$app/paths';
 	import { t } from '$lib/i18n';
@@ -17,6 +18,8 @@
 		if (timer) clearTimeout(timer);
 		timer = setTimeout(() => (debounced = search), 300);
 	}
+
+	onDestroy(() => clearTimeout(timer));
 
 	let term = $derived(debounced.trim());
 
@@ -50,6 +53,17 @@
 			oninput={onSearchInput}
 		/>
 	</div>
+
+	<p
+		class="mt-4 text-sm text-on-surface-variant"
+		role="status"
+		aria-live="polite"
+		aria-atomic="true"
+	>
+		{#if term && !query.isFetching && !query.error}{$t('search.resultCount', {
+				values: { count: purchases.length }
+			})}{/if}
+	</p>
 
 	{#if term === ''}
 		<div class="mt-6 rounded-xl border border-dashed border-outline-variant p-8 text-center">
@@ -105,40 +119,36 @@
 			</div>
 		{/if}
 
-		<div class="mt-6 overflow-x-auto rounded-xl border border-outline-variant">
-			<table class="w-full text-left text-sm">
-				<thead class="bg-surface-container text-xs text-on-surface-variant">
-					<tr>
-						<th class="p-3">{$t('search.tableDate')}</th>
-						<th class="p-3">{$t('search.tableStore')}</th>
-						<th class="p-3">{$t('search.tableItem')}</th>
-						<th class="p-3">{$t('search.tableQty')}</th>
-						<th class="p-3">{$t('search.tableUnitPrice')}</th>
-					</tr>
-				</thead>
-				<tbody>
-					{#each purchases as purchase, i (i + ':' + purchase.receipt_id)}
-						<tr class="border-t border-outline-variant">
-							<td class="whitespace-nowrap p-3">{purchase.date}</td>
-							<td class="p-3">
+		<ul class="mt-4 space-y-3" aria-label={$t('search.purchases')}>
+			{#each purchases as purchase, i (i + ':' + purchase.receipt_id)}
+				<li class="rounded-xl border border-outline-variant bg-surface-container-low p-4">
+					<div class="flex flex-wrap items-start justify-between gap-3">
+						<div class="min-w-0 flex-1 basis-40">
+							<a
+								href={resolve(`/receipts/${purchase.receipt_id}`)}
+								class="break-words font-medium text-primary hover:underline"
+								>{purchase.description}</a
+							>
+							<p class="mt-1 break-words text-sm text-on-surface-variant">
 								{purchase.merchant_name || $t('receipts.unknownVendor')}
-							</td>
-							<td class="min-w-40 p-3">
-								<a
-									href={resolve(`/receipts/${purchase.receipt_id}`)}
-									class="font-medium text-primary hover:underline"
-								>
-									{purchase.description}
-								</a>
-							</td>
-							<td class="p-3">{purchase.quantity}</td>
-							<td class="whitespace-nowrap p-3">
-								{formatMoney(purchase.unit_price, purchase.currency)}
-							</td>
-						</tr>
-					{/each}
-				</tbody>
-			</table>
-		</div>
+							</p>
+							<p class="mt-1 text-sm text-on-surface-variant">{purchase.date}</p>
+						</div>
+						<dl class="grid max-w-full gap-2 text-right text-sm">
+							<div>
+								<dt class="text-on-surface-variant">{$t('search.tableUnitPrice')}</dt>
+								<dd class="break-words text-lg font-semibold tabular-nums">
+									{formatMoney(purchase.unit_price, purchase.currency) || '—'}
+								</dd>
+							</div>
+							<div>
+								<dt class="inline text-on-surface-variant">{$t('search.tableQty')}:</dt>
+								<dd class="inline tabular-nums">{purchase.quantity ?? '—'}</dd>
+							</div>
+						</dl>
+					</div>
+				</li>
+			{/each}
+		</ul>
 	{/if}
 </section>

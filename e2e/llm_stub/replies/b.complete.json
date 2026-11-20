@@ -1,0 +1,35 @@
+{
+  "confidence": 92,
+  "merchant_name": "Billa Test",
+  "date": "2026-06-15",
+  "time": "09:15",
+  "currency": "EUR",
+  "line_items": [
+    {
+      "description": "Milk",
+      "quantity": 1,
+      "unit_price": "2.40",
+      "total_price": "2.40"
+    }
+  ],
+  "taxes": [
+    {
+      "name": "VAT",
+      "rate": 0.19,
+      "amount": "0.43"
+    }
+  ],
+  "subtotal": "2.40",
+  "tax_total": "0.43",
+  "total": "2.83",
+  "payment_method": "debit_card",
+  "discount_total": "0",
+  "tip": null,
+  "amount_policy": {
+    "tax_basis": "net",
+    "discount_treatment": "included_in_lines",
+    "tip_treatment": "none",
+    "subtotal_origin": "printed",
+    "tax_information": "present"
+  }
+}

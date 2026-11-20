@@ -3,20 +3,17 @@ import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-
+from test_analysis_scheduler import context
 from test_receipts_api import (
     IMAGE_ID,
     IMAGES_URL,
     JPEG_BYTES,
     _image_row,
     _upload_jpeg,
-    api_context,
 )
-from test_analysis_scheduler import scheduler_context, _pending_image, _make_receipt, _receipt_row
-from vision_bill.model.db.image import ImagePart
-from vision_bill.provider.llm.errors import AnalysisTimeoutError, UnreadableReceiptError
-from vision_bill.provider.db.image_db import LIST_PENDING_IMAGES_SQL
+from test_receipts_api import (
+    api_context as api_context,  # noqa: PLC0414 - re-export imported pytest fixture
+)
 
 
 def test_multi_upload_persists_order_and_wakes_worker_without_calling_llm(api_context, monkeypatch):
@@ -32,32 +29,13 @@ def test_multi_upload_persists_order_and_wakes_worker_without_calling_llm(api_co
         ],
     )
     assert response.status_code == 202
-    assert response.json()["image_id"] == str(IMAGE_ID)
+    assert response.json()["id"] == str(IMAGE_ID)
     wake.assert_called_once()
     ctx.provider.analyse_receipt_from_model.assert_not_awaited()
+    ctx.provider.get_available_models.assert_not_awaited()
     args = ctx.conn.fetchrow.call_args.args
-    assert args[1] == "top.jpg"
+    assert args[2] == "top.jpg"
     assert json.loads(args[9])[0]["original_filename"] == "bottom.jpg"
-
-
-@pytest.mark.parametrize(
-    "error,status,http_status",
-    [
-        (AnalysisTimeoutError("Timed out"), "timed_out", 504),
-        (UnreadableReceiptError("Blurry"), "unreadable", 422),
-    ],
-)
-def test_single_upload_records_terminal_error(api_context, error, status, http_status):
-    ctx = api_context
-    ctx.provider.analysis_timeout_seconds = 1
-    ctx.provider.analyse_receipt_from_model.side_effect = error
-    ctx.conn.fetchrow.return_value = _image_row()
-    response = ctx.client.post(IMAGES_URL, files={"receipt": _upload_jpeg()})
-    assert response.status_code == http_status
-    assert response.json()["status"] == status
-    assert response.json()["image_id"] == str(IMAGE_ID)
-    assert ctx.conn.execute.call_args.args[2] == status
-    assert status not in LIST_PENDING_IMAGES_SQL
 
 
 def test_invalid_second_photo_cleans_up_first(api_context, settings):
@@ -77,7 +55,7 @@ def test_additional_photo_can_be_viewed(api_context, tmp_path):
     photo.write_bytes(JPEG_BYTES)
     api_context.conn.fetchrow.return_value = _image_row(
         image_path="first.jpg",
-        additional_images=[dict(image_path=str(photo), media_type="image/jpeg")],
+        additional_images=[{"image_path": str(photo), "media_type": "image/jpeg"}],
     )
     response = api_context.client.get(f"{IMAGES_URL}/{IMAGE_ID}/file?part=1")
     assert response.status_code == 200
@@ -85,8 +63,8 @@ def test_additional_photo_can_be_viewed(api_context, tmp_path):
     assert api_context.client.get(f"{IMAGES_URL}/{IMAGE_ID}/file?part=2").status_code == 404
 
 
-async def test_worker_trigger_does_not_wait_for_interval(scheduler_context):
-    scheduler, *_ = scheduler_context
+async def test_worker_trigger_does_not_wait_for_interval(settings):
+    scheduler, *_ = context(settings)
     ran = asyncio.Event()
 
     async def process():
@@ -102,35 +80,3 @@ async def test_worker_trigger_does_not_wait_for_interval(scheduler_context):
         await asyncio.wait_for(ran.wait(), 1)
     finally:
         await scheduler.stop()
-
-
-@pytest.mark.parametrize(
-    "error,status",
-    [
-        (AnalysisTimeoutError("Timed out"), "timed_out"),
-        (UnreadableReceiptError("Blurry"), "unreadable"),
-    ],
-)
-async def test_worker_records_terminal_errors(scheduler_context, tmp_path, error, status):
-    scheduler, _, service, db = scheduler_context
-    photo = tmp_path / "top.jpg"
-    photo.write_bytes(JPEG_BYTES)
-    db.mark_terminal = AsyncMock()
-    service.analyse_receipt_from_path.side_effect = error
-    result = await scheduler._analyze_one(_pending_image(IMAGE_ID, photo), "test")
-    assert result.status == status
-    db.mark_terminal.assert_awaited_once_with(IMAGE_ID, status, str(error))
-    db.mark_failed.assert_not_awaited()
-
-
-async def test_worker_passes_all_photos_in_order(scheduler_context, tmp_path):
-    scheduler, _, service, db = scheduler_context
-    photo = tmp_path / "top.jpg"
-    photo.write_bytes(JPEG_BYTES)
-    image = _pending_image(IMAGE_ID, photo)
-    image.additional_images = [ImagePart(image_path="bottom.jpg")]
-    service.analyse_receipt_from_path.return_value = _make_receipt()
-    service.persist_receipt.return_value = _receipt_row()
-    result = await scheduler._analyze_one(image, "test")
-    assert result.status == "analyzed"
-    service.analyse_receipt_from_path.assert_awaited_once_with("test", [photo, Path("bottom.jpg")])

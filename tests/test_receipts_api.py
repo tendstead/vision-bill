@@ -1,7 +1,7 @@
 """Endpoint wiring tests: real FastAPI app + TestClient, mocked DB and provider."""
 
 import base64
-import shutil
+import json
 from collections.abc import Generator
 from datetime import UTC, datetime
 from datetime import date as Date
@@ -21,8 +21,11 @@ from vision_bill.api import images as images_api_module
 from vision_bill.api.system import main as system_api_module
 from vision_bill.config import Settings
 from vision_bill.model.receipt import LineItem, Receipt
+from vision_bill.model.review import CHECKS_VERSION, AmountPolicy
 from vision_bill.provider.db import image_db as image_db_module
 from vision_bill.provider.db import receipt_db as receipt_db_module
+from vision_bill.provider.db import user_db as user_db_module
+from vision_bill.provider.db import workflow_db as workflow_db_module
 from vision_bill.provider.llm.base import LLMProvider, ModelInfo
 from vision_bill.security.dependencies import get_current_user
 from vision_bill.security.models import User
@@ -81,6 +84,7 @@ def _make_pool(conn: AsyncMock) -> MagicMock:
 
 def _make_provider() -> MagicMock:
     provider = MagicMock(spec=LLMProvider)
+    provider.inference_identity = "ollama:" + "d" * 64
     provider.analysis_timeout_seconds = 600
     provider.check_connection = AsyncMock(return_value=True)
     provider.get_available_models = AsyncMock(return_value=[ModelInfo(id="test-model")])
@@ -164,6 +168,9 @@ def _patch_app(
     monkeypatch.setattr(images_api_module, "settings", settings)
     monkeypatch.setattr(system_api_module, "settings", settings)
     monkeypatch.setattr(main_module, "get_llm_provider", lambda cfg: provider)
+    monkeypatch.setattr(main_module, "bootstrap_admin", AsyncMock())
+    monkeypatch.setattr(main_module.AnalysisScheduler, "start", AsyncMock())
+    monkeypatch.setattr(main_module.BenchmarkService, "start", AsyncMock())
 
     fake_asyncpg = MagicMock()
     if db_down:
@@ -173,6 +180,8 @@ def _patch_app(
 
     monkeypatch.setattr(receipt_db_module, "asyncpg", fake_asyncpg)
     monkeypatch.setattr(image_db_module, "asyncpg", fake_asyncpg)
+    monkeypatch.setattr(user_db_module, "asyncpg", fake_asyncpg)
+    monkeypatch.setattr(workflow_db_module, "asyncpg", fake_asyncpg)
 
 
 def _admin_user() -> User:
@@ -187,6 +196,7 @@ def api_context(
     conn = AsyncMock()
     conn.fetchrow = AsyncMock(return_value={"missing": False})
     conn.fetch = AsyncMock(return_value=[])
+    conn.fetchval = AsyncMock(return_value=None)
     conn.execute = AsyncMock()
     provider = _make_provider()
     _patch_app(monkeypatch, settings, conn, provider)
@@ -205,6 +215,7 @@ def broken_context(
     conn = AsyncMock()
     conn.fetchrow = AsyncMock(return_value={"missing": False})
     conn.fetch = AsyncMock(return_value=[])
+    conn.fetchval = AsyncMock(return_value=None)
     conn.execute = AsyncMock()
     provider = _make_provider()
     provider.check_connection = AsyncMock(return_value=False)
@@ -223,168 +234,22 @@ def _upload_jpeg() -> tuple[str, bytes, str]:
 # ── Image upload (POST /images) ────────────────────────────────────────
 
 
-def test_upload_image_analyzes_and_returns_201(api_context: ApiContext, settings: Settings) -> None:
-    """POST /images validates, runs the LLM, persists and keeps the tmp image."""
+@pytest.mark.parametrize(
+    "explicit,default,expected",
+    [(None, False, False), (None, True, True), (False, True, False), (True, False, True)],
+)
+def test_upload_stores_resolved_review_snapshot(api_context, settings, explicit, default, expected):
+    settings.images.bypass_review_default = default
     ctx = api_context
-    ctx.conn.fetchrow = AsyncMock(
-        side_effect=[
-            _image_row(id=IMAGE_ID, original_filename="bauhaus.jpeg"),
-            _image_row(id=IMAGE_ID, original_filename="bauhaus.jpeg", status="processing"),
-            _receipt_row(id=RECEIPT_ID, image_id=IMAGE_ID),
-        ]
-    )
-
-    response = ctx.client.post(
-        IMAGES_URL,
-        params={"model_id": "test-model"},
-        files={"receipt": _upload_jpeg()},
-    )
-
-    assert response.status_code == 201
-    body = response.json()
-    assert body["image_id"] == str(IMAGE_ID)
-    assert body["receipt_id"] == str(RECEIPT_ID)
-    assert body["status"] == "analyzed"
-    assert body["media_type"] == "image/jpeg"
-    assert body["size_bytes"] > 0
-    assert body["original_filename"] == "bauhaus.jpeg"
-    assert response.headers["Location"] == f"{IMAGES_URL}/{IMAGE_ID}"
-
-    tmp_files = list(Path(settings.images.tmp_dir).glob("*.png"))
-    assert len(tmp_files) == 1
-    assert len(list(Path(settings.images.tmp_dir).glob("thumbnails/*.thumb.webp"))) == 1
-    ctx.provider.analyse_receipt_from_model.assert_awaited_once()
-    llm_call = ctx.provider.analyse_receipt_from_model.call_args
-    assert llm_call is not None
-    assert llm_call.args[0] == "test-model"
-
-
-def test_upload_image_bypass_review_verifies_and_moves(
-    api_context: ApiContext, settings: Settings
-) -> None:
-    """POST /images?bypass_review=true persists a verified receipt and moves the image."""
-    ctx = api_context
-    ctx.conn.fetchrow = AsyncMock(
-        side_effect=[
-            _image_row(id=IMAGE_ID, original_filename="bauhaus.jpeg", bypass_review=True),
-            _image_row(
-                id=IMAGE_ID,
-                original_filename="bauhaus.jpeg",
-                bypass_review=True,
-                status="processing",
-            ),
-            _receipt_row(id=RECEIPT_ID, image_id=IMAGE_ID, status="verified", verified=True),
-        ]
-    )
-    ctx.conn.execute = AsyncMock()
-
-    # store_perm_image now returns (original, thumbnail) tuple; mock moves the file
-    save_dir = Path(settings.images.save_dir)
-    perm_path = save_dir / f"receipt_{RECEIPT_ID}.png"
-    thumb_path = save_dir / "thumbnails" / f"receipt_{RECEIPT_ID}.thumb.webp"
-    save_dir.mkdir(parents=True, exist_ok=True)
-    thumb_path.parent.mkdir(parents=True, exist_ok=True)
-    perm_path.write_bytes(JPEG_BYTES)
-    thumb_path.write_bytes(b"thumb-bytes")
-
-    def _mock_store_perm(src, rid):
-        shutil.move(str(src), str(perm_path))
-        return (perm_path, thumb_path)
-
-    ctx.client.app.state.image_service.store_perm_image = MagicMock(side_effect=_mock_store_perm)
-
-    response = ctx.client.post(
-        IMAGES_URL,
-        params={"model_id": "test-model", "bypass_review": "true"},
-        files={"receipt": _upload_jpeg()},
-    )
-
-    assert response.status_code == 201
-    body = response.json()
-    assert body["image_id"] == str(IMAGE_ID)
-    assert body["receipt_id"] == str(RECEIPT_ID)
-    assert body["status"] == "analyzed"
-
-    # The tmp file has been moved into permanent storage under the receipt id.
-    assert list(Path(settings.images.tmp_dir).glob("*.png")) == []
-    assert list(Path(settings.images.save_dir).glob(f"receipt_{RECEIPT_ID}*.png")) != []
-
-    update_calls = [
-        call
-        for call in ctx.conn.execute.call_args_list
-        if call.args and call.args[0] == image_db_module.UPDATE_IMAGE_PATH_SQL
-    ]
-    assert len(update_calls) == 1
-    assert update_calls[0].args[1] == IMAGE_ID
-    assert str(Path(settings.images.save_dir)) in update_calls[0].args[2]
-
-    thumb_calls = [
-        call
-        for call in ctx.conn.execute.call_args_list
-        if call.args and call.args[0] == image_db_module.UPDATE_IMAGE_THUMB_PATH_SQL
-    ]
-    assert len(thumb_calls) == 1
-    assert thumb_calls[0].args[1] == IMAGE_ID
-    assert str(Path(settings.images.save_dir)) in thumb_calls[0].args[2]
-
-
-def test_upload_image_uses_configured_bypass_review_default(
-    api_context: ApiContext, settings: Settings
-) -> None:
-    """An omitted query parameter uses the configured review default."""
-    settings.images.bypass_review_default = True
-    ctx = api_context
-    ctx.conn.fetchrow = AsyncMock(
-        side_effect=[
-            _image_row(id=IMAGE_ID, original_filename="bauhaus.jpeg", bypass_review=True),
-            _image_row(
-                id=IMAGE_ID,
-                original_filename="bauhaus.jpeg",
-                bypass_review=True,
-                status="processing",
-            ),
-            _receipt_row(id=RECEIPT_ID, image_id=IMAGE_ID, status="verified", verified=True),
-        ]
-    )
-
-    response = ctx.client.post(IMAGES_URL, files={"receipt": _upload_jpeg()})
-
-    assert response.status_code == 201
-    store_call = next(
-        call
-        for call in ctx.conn.fetchrow.call_args_list
-        if call.args and call.args[0] == image_db_module.INSERT_IMAGE_SQL
-    )
-    assert store_call.args[8] is True
-
-
-def test_upload_image_explicit_false_overrides_configured_default(
-    api_context: ApiContext, settings: Settings
-) -> None:
-    """The browser can still request manual review when the default is enabled."""
-    settings.images.bypass_review_default = True
-    ctx = api_context
-    ctx.conn.fetchrow = AsyncMock(
-        side_effect=[
-            _image_row(id=IMAGE_ID, original_filename="bauhaus.jpeg"),
-            _image_row(id=IMAGE_ID, original_filename="bauhaus.jpeg", status="processing"),
-            _receipt_row(id=RECEIPT_ID, image_id=IMAGE_ID),
-        ]
-    )
-
-    response = ctx.client.post(
-        IMAGES_URL,
-        params={"bypass_review": "false"},
-        files={"receipt": _upload_jpeg()},
-    )
-
-    assert response.status_code == 201
-    store_call = next(
-        call
-        for call in ctx.conn.fetchrow.call_args_list
-        if call.args and call.args[0] == image_db_module.INSERT_IMAGE_SQL
-    )
-    assert store_call.args[8] is False
+    ctx.conn.fetchrow.return_value = _image_row(bypass_review=expected)
+    params = {"bypass_review": explicit} if explicit is not None else {}
+    response = ctx.client.post(IMAGES_URL, params=params, files={"receipt": _upload_jpeg()})
+    assert response.status_code == 202
+    assert response.json()["bypass_review"] is expected
+    assert response.json()["receipt_id"] is None
+    assert ctx.conn.fetchrow.call_args.args[8] is expected
+    ctx.provider.analyse_receipt_from_model.assert_not_awaited()
+    ctx.provider.get_available_models.assert_not_awaited()
 
 
 def test_ui_config_exposes_bypass_review_default(
@@ -395,7 +260,14 @@ def test_ui_config_exposes_bypass_review_default(
     response = api_context.client.get("/api/v1/system/ui-config")
 
     assert response.status_code == 200
-    assert response.json() == {"bypass_review_default": True, "registration_open": True}
+    assert response.json() == {
+        "bypass_review_default": True,
+        "registration_open": True,
+        "ocr_enabled": False,
+        "ocr_required": False,
+        "ocr_allow_vision_fallback": False,
+        "formatter_max_output_tokens": settings.llm.max_output_tokens,
+    }
 
 
 def test_upload_image_rejects_non_image(api_context: ApiContext) -> None:
@@ -427,8 +299,8 @@ def test_upload_image_returns_202_when_no_models(api_context: ApiContext) -> Non
     assert response.status_code == 202
     body = response.json()
     assert body["status"] == "pending"
-    assert body["image_id"] == str(IMAGE_ID)
-    assert "warning" in body
+    assert body["id"] == str(IMAGE_ID)
+    assert "warning" not in body
     assert response.headers["Location"] == f"{IMAGES_URL}/{IMAGE_ID}"
     ctx.provider.analyse_receipt_from_model.assert_not_awaited()
 
@@ -448,10 +320,35 @@ def test_upload_image_returns_202_when_provider_unreachable(api_context: ApiCont
     assert response.status_code == 202
     body = response.json()
     assert body["status"] == "pending"
-    assert body["image_id"] == str(IMAGE_ID)
-    assert "warning" in body
+    assert body["id"] == str(IMAGE_ID)
+    assert "warning" not in body
     ctx.provider.get_available_models.assert_not_awaited()
     ctx.provider.analyse_receipt_from_model.assert_not_awaited()
+
+
+def test_upload_cannot_freeze_a_stale_dedicated_ocr_topology(api_context, monkeypatch, tmp_path):
+    from ocr_contract.activation import (
+        ActivationPhase,
+        ActivationStatus,
+        ActivationStore,
+        MaintenanceIntent,
+    )
+
+    from vision_bill.config import settings
+    from vision_bill.service import activation_admission
+
+    store = ActivationStore(tmp_path / "request", tmp_path / "status", tmp_path / "lock")
+    monkeypatch.setattr(activation_admission, "ActivationStore", lambda: store)
+    monkeypatch.setenv("VISION_BILL_OCR_ACTIVATION", "true")
+    monkeypatch.setattr(settings.ocr, "enabled", True)
+    request = store.submit_request(MaintenanceIntent.SEPARATE_OCR_DEVICE)
+    store.set_shared_gpu(False)
+    assert store.publish_status(ActivationStatus(request.generation, ActivationPhase.READY))
+    ctx = api_context
+    ctx.conn.fetchrow = AsyncMock(return_value=_image_row(id=IMAGE_ID))
+    response = ctx.client.post(IMAGES_URL, files={"receipt": _upload_jpeg()})
+    assert response.status_code == 409 and response.json()["detail"] == "execution_policy_changed"
+    ctx.conn.fetchrow.assert_not_called()
 
 
 # ── Image collection (GET /images) ─────────────────────────────────────
@@ -630,22 +527,27 @@ def test_delete_image(api_context: ApiContext, settings: Settings) -> None:
     ctx = api_context
     tmp_file = Path(settings.images.tmp_dir) / "x.png"
     tmp_file.write_bytes(b"queued-image-bytes")
-    ctx.conn.fetchrow = AsyncMock(
-        return_value=_image_row(id=IMAGE_ID, status="pending", image_path=str(tmp_file))
-    )
+    async def rows(query, *args):
+        if "SELECT files FROM resource_deletions" in query:
+            insert = next(call for call in ctx.conn.execute.call_args_list if "INSERT INTO resource_deletions" in call.args[0])
+            return {"files": insert.args[4]}
+        if "resource_deletions" in query:
+            return None
+        return _image_row(id=IMAGE_ID, user_id=USER_ID, status="pending", image_path=str(tmp_file))
+    ctx.conn.fetchrow = AsyncMock(side_effect=rows)
     ctx.conn.execute = AsyncMock()
 
     response = ctx.client.delete(f"{IMAGES_URL}/{IMAGE_ID}")
 
     assert response.status_code == 200
     assert response.json()["deleted"] == str(IMAGE_ID)
-    ctx.conn.execute.assert_awaited_once()
+    assert any("DELETE FROM images" in call.args[0] for call in ctx.conn.execute.call_args_list)
     assert not tmp_file.exists()
 
 
 def test_delete_analyzed_image_conflict(api_context: ApiContext) -> None:
     ctx = api_context
-    ctx.conn.fetchrow = AsyncMock(return_value=_image_row(id=IMAGE_ID, status="analyzed"))
+    ctx.conn.fetchrow = AsyncMock(side_effect=[None, _image_row(id=IMAGE_ID, status="analyzed")])
 
     response = ctx.client.delete(f"{IMAGES_URL}/{IMAGE_ID}")
 
@@ -680,45 +582,37 @@ def test_analyze_images_manual_trigger(api_context: ApiContext) -> None:
 
 
 def test_analyze_images_success(api_context: ApiContext, tmp_path: Path) -> None:
-    """POST /images/analyze analyzes a queued image whose file exists on disk."""
+    """The manual route runs the same fenced worker as the scheduled path."""
+    from types import SimpleNamespace
+
+    from vision_bill.model.db.image import ImageRow
+    from vision_bill.model.workflow import CommitResult, SubmissionStatus
+
     ctx = api_context
     queued_file = tmp_path / "queued.png"
     queued_file.write_bytes(b"queued-image-bytes")
-
-    # Both list_pending_images and the tag lookup for the prompt use fetch, so
-    # dispatch on the SQL to keep the two from clobbering each other.
-    def fetch_side_effect(sql: str, *args: object) -> list[dict[str, object]]:
-        if sql == receipt_db_module.LIST_TAGS_SQL:
-            return [{"name": "coffee"}, {"name": "food"}]
-        return [_image_row(id=IMAGE_ID, status="pending", image_path=str(queued_file))]
-
-    ctx.conn.fetch = AsyncMock(side_effect=fetch_side_effect)
-
-    # list_pending_images uses fetch; claiming the image and persisting the
-    # receipt use fetchrow with different row shapes.
-    def fetchrow_side_effect(sql: str, *args: object) -> dict[str, object] | None:
-        if sql == image_db_module.CLAIM_IMAGE_SQL:
-            return _image_row(id=IMAGE_ID, status="processing", image_path=str(queued_file))
-        if sql == receipt_db_module.GET_RECEIPT_BY_IMAGE_ID_SQL:
-            return None
-        return _receipt_row(id=RECEIPT_ID, image_id=IMAGE_ID)
-
-    ctx.conn.fetchrow = AsyncMock(side_effect=fetchrow_side_effect)
-    ctx.conn.execute = AsyncMock()
-
+    image = ImageRow(id=IMAGE_ID, image_path=str(queued_file), user_id=USER_ID)
+    claim = SimpleNamespace(image=image)
+    service = ctx.client.app.state.submission_service
+    service.db.due_candidates = AsyncMock(return_value=[image])
+    service.db.claim_next = AsyncMock(return_value=claim)
+    service.ready_for = AsyncMock(return_value=True)
+    service.process_claim = AsyncMock(
+        return_value=CommitResult(
+            stale=False,
+            submission=SubmissionStatus(id=IMAGE_ID, status="analyzed", receipt_id=RECEIPT_ID),
+        )
+    )
     response = ctx.client.post(f"{IMAGES_URL}/analyze")
-
     assert response.status_code == 200
     results = response.json()["results"]
     assert len(results) == 1
     assert results[0]["image_id"] == str(IMAGE_ID)
     assert results[0]["status"] == "analyzed"
     assert results[0]["receipt_id"] == str(RECEIPT_ID)
-    ctx.conn.execute.assert_awaited()
-    # The tag vocabulary was passed into the extraction prompt.
-    llm_call = ctx.provider.analyse_receipt_from_model.call_args
-    assert llm_call is not None
-    assert llm_call.kwargs.get("tags") == ["coffee", "food"]
+    service.db.claim_next.assert_awaited_once_with(image_id=IMAGE_ID, lease_seconds=900)
+    service.process_claim.assert_awaited_once_with(claim)
+    assert queued_file.read_bytes() == b"queued-image-bytes"
 
 
 # ── Tags (GET /tags, POST /tags) ──────────────────────────────────────
@@ -833,6 +727,7 @@ def test_update_receipt_accepts_suggested_tags(api_context: ApiContext) -> None:
         "subtotal": "10.00",
         "total": "10.00",
     }
+    body["expected_operation_revision"] = 1
     body["line_items"][0]["tags"] = ["brunch", "  Brunch  ", ""]
 
     response = ctx.client.put(
@@ -852,17 +747,45 @@ def test_update_receipt_accepts_suggested_tags(api_context: ApiContext) -> None:
     assert insert_calls[0].args[6] == ["brunch"]
 
 
+@pytest.mark.parametrize("discount", [{}, {"discount_total": None}, {"discount_total": "0"}])
+def test_update_receipt_distinguishes_unobserved_discount_from_printed_zero(api_context, discount):
+    ctx = api_context
+    current = _receipt_row(discount_total=None)
+    expected = Decimal(0) if discount.get("discount_total") == "0" else None
+
+    def rows(query, *args):
+        if query.startswith(receipt_db_module.UPDATE_RECEIPT_SQL):
+            current["discount_total"] = args[9]
+        return current
+
+    ctx.conn.fetchrow = AsyncMock(side_effect=rows)
+    body = _make_receipt().model_dump(mode="json", exclude={"discount_total"})
+    body.update(discount, expected_operation_revision=1)
+
+    response = ctx.client.put(f"{RECEIPTS_URL}/{RECEIPT_ID}", json=body)
+
+    assert response.status_code == 200
+    assert current["discount_total"] == expected
+    assert response.json()["discount_total"] == discount.get("discount_total")
+
+
 @pytest.mark.parametrize("invalid", [["milk"], {"code": "milk"}, "fake_code"])
-def test_update_rejects_invalid_spending_category(
-    api_context: ApiContext, invalid: object
-) -> None:
+def test_update_rejects_invalid_spending_category(api_context: ApiContext, invalid: object) -> None:
     body = {
-        "confidence": 95, "merchant_name": "ACME", "date": "2024-01-15",
-        "line_items": [{
-            "description": "Widget", "quantity": 1, "unit_price": "10.00",
-            "total_price": "10.00", "spending_category": invalid,
-        }],
-        "subtotal": "10.00", "total": "10.00",
+        "confidence": 95,
+        "merchant_name": "ACME",
+        "date": "2024-01-15",
+        "line_items": [
+            {
+                "description": "Widget",
+                "quantity": 1,
+                "unit_price": "10.00",
+                "total_price": "10.00",
+                "spending_category": invalid,
+            }
+        ],
+        "subtotal": "10.00",
+        "total": "10.00",
     }
     response = api_context.client.put(f"{RECEIPTS_URL}/{RECEIPT_ID}", json=body)
     assert response.status_code == 422
@@ -1003,63 +926,50 @@ def test_list_receipts_passes_filters_to_db(api_context: ApiContext) -> None:
     assert args[5] == 5
 
 
-def test_verify_receipt_moves_image(api_context: ApiContext, settings: Settings) -> None:
-    """Verify moves the tmp image to permanent storage and flips status to verified."""
+def test_verify_receipt_preserves_original_path(api_context, settings):
+    """Review changes receipt metadata; original/legacy paths stay immutable."""
     ctx = api_context
+    original = Path(settings.images.tmp_dir) / "legacy.jpeg"
+    original.write_bytes(JPEG_BYTES)
+    from vision_bill.model.db.image import ImageRow
+    from vision_bill.model.db.receipt import ReceiptRow
 
-    # Step 1: create an unverified receipt via POST /images
-    ctx.conn.fetchrow = AsyncMock(
-        side_effect=[
-            _image_row(id=IMAGE_ID, original_filename="bauhaus.jpeg"),
-            _image_row(id=IMAGE_ID, original_filename="bauhaus.jpeg", status="processing"),
-            _receipt_row(id=RECEIPT_ID, image_id=IMAGE_ID),
-        ]
+    service = ctx.client.app.state.receipt_service
+    service.get_receipt_by_id = AsyncMock(
+        return_value=ReceiptRow(
+            **_receipt_row(image_id=IMAGE_ID, time=None, created_at=Date(2024, 1, 15))
+        )
     )
-    analyze_response = ctx.client.post(
-        IMAGES_URL,
-        params={"model_id": "test-model"},
-        files={"receipt": _upload_jpeg()},
+    service.get_image_by_id = AsyncMock(
+        return_value=ImageRow(**_image_row(image_path=str(original)))
     )
-    assert analyze_response.status_code == 201
-    receipt_id = analyze_response.json()["receipt_id"]
-
-    tmp_files = list(Path(settings.images.tmp_dir).glob("*.png"))
-    assert len(tmp_files) == 1
-    tmp_path = str(tmp_files[0])
-
-    # Step 2: verify -> fetchrow called for receipt, image, then the verified row
-    ctx.conn.fetchrow = AsyncMock(
-        side_effect=[
-            _receipt_row(id=RECEIPT_ID, image_id=IMAGE_ID, status="unverified"),
-            _image_row(
-                id=IMAGE_ID,
-                status="analyzed",
-                receipt_id=RECEIPT_ID,
-                image_path=tmp_path,
-            ),
-            _receipt_row(id=RECEIPT_ID, image_id=IMAGE_ID, status="verified", verified=True),
-        ]
+    service.verify_receipt = AsyncMock(
+        return_value=ReceiptRow(
+            **_receipt_row(
+                status="verified", verified=True, time=None, created_at=Date(2024, 1, 15)
+            )
+        )
     )
-    ctx.conn.execute = AsyncMock()
-    response = ctx.client.post(f"{RECEIPTS_URL}/{receipt_id}/verify")
-
+    move = MagicMock(side_effect=AssertionError("verification moved original"))
+    ctx.client.app.state.image_service.store_perm_image = move
+    response = ctx.client.post(f"{RECEIPTS_URL}/{RECEIPT_ID}/verify")
     assert response.status_code == 200
-    body = response.json()
-    assert body["status"] == "verified"
-    assert body["verified"] is True
-
-    assert list(Path(settings.images.tmp_dir).glob("*.png")) == []
-    saved = Path(settings.images.save_dir) / f"receipt_{RECEIPT_ID}.png"
-    assert saved.exists()
-    assert saved.read_bytes() == JPEG_BYTES
+    assert response.json()["verified"] is True
+    assert original.read_bytes() == JPEG_BYTES
+    move.assert_not_called()
 
 
 def test_verify_receipt_already_verified_conflict(api_context: ApiContext) -> None:
-    """Verifying a receipt that is already verified -> 409, no state change."""
+    """An already-human review returns 409 on duplicate verification."""
     ctx = api_context
     ctx.conn.fetchrow = AsyncMock(
         return_value=_receipt_row(
-            id=RECEIPT_ID, image_id=IMAGE_ID, status="verified", verified=True
+            id=RECEIPT_ID,
+            image_id=IMAGE_ID,
+            status="verified",
+            verified=True,
+            verification_source="human",
+            checks_version=CHECKS_VERSION,
         )
     )
 
@@ -1067,6 +977,72 @@ def test_verify_receipt_already_verified_conflict(api_context: ApiContext) -> No
 
     assert response.status_code == 409
     assert response.json()["detail"] == "Receipt already verified"
+    ctx.conn.execute.assert_not_awaited()
+
+
+def test_human_review_under_old_checks_requires_current_findings_and_revisions(api_context, tmp_path):
+    ctx = api_context
+    original = tmp_path / "original.jpeg"
+    original.write_bytes(JPEG_BYTES)
+    policy = AmountPolicy(tax_basis="gross", subtotal_origin="printed", tax_information="explicit_zero")
+    old_ack = {"finding_id": "old-checks-finding", "comment": "Printed total checked"}
+    current = _receipt_row(
+        image_id=IMAGE_ID, status="verified", verified=True, verification_source="human",
+        checks_version="2", subtotal=Decimal(0), tax_total=Decimal(0), total=Decimal(1),
+        payment_method="cash", amount_policy=policy.model_dump(), acknowledgements=[old_ack],
+    )
+    image = _image_row(
+        image_path=str(original), source_manifest=[], requested_options={}, effective_options={},
+        request_fingerprint=None, idempotency_key=None, ocr_checkpoint=None, attempt_count=0,
+        generation=1,
+    )
+
+    def rows(query, *args):
+        if "FROM images" in query:
+            return image
+        if "UPDATE receipts SET status='verified'" in query:
+            current.update(findings=json.loads(args[1]), checks_version=args[2],
+                           acknowledgements=json.loads(args[3]), operation_revision=2)
+        return current
+
+    ctx.conn.fetchrow = AsyncMock(side_effect=rows)
+    ctx.conn.fetchval = AsyncMock(return_value=False)
+    receipt_url = f"{RECEIPTS_URL}/{RECEIPT_ID}"
+    verify_url = f"{receipt_url}/verify"
+
+    assert ctx.client.get(receipt_url).json()["can_rereview"] is True
+    assert ctx.client.post(verify_url).json()["detail"] == "review_revision_required"
+    response = ctx.client.get(verify_url)
+    assert response.status_code == 200, response.text
+    preview = response.json()
+    assert [finding["code"] for finding in preview["findings"]] == ["amount_discrepancy"]
+    revisions = {"expected_operation_revision": preview["operation_revision"],
+                 "expected_review_revision": preview["review_revision"]}
+    stale = ctx.client.post(verify_url, json={**revisions, "acknowledgements": [old_ack]})
+    assert stale.status_code == 422 and stale.json()["detail"] == "review_acknowledgements_invalid"
+    accepted = ctx.client.post(verify_url, json={**revisions, "acknowledgements": [
+        {**old_ack, "finding_id": preview["findings"][0]["id"]},
+    ]})
+    assert accepted.status_code == 200 and accepted.json()["checks_version"] == CHECKS_VERSION
+    assert ctx.client.get(receipt_url).json()["can_rereview"] is False
+    assert ctx.client.get(verify_url).status_code == 409
+
+
+def test_bypass_rereview_requires_explicit_revisions(api_context: ApiContext) -> None:
+    ctx = api_context
+    ctx.conn.fetchrow = AsyncMock(
+        return_value=_receipt_row(
+            image_id=IMAGE_ID,
+            status="verified",
+            verified=True,
+            verification_source="automatic_bypass",
+        )
+    )
+
+    response = ctx.client.post(f"{RECEIPTS_URL}/{RECEIPT_ID}/verify")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "review_revision_required"
     ctx.conn.execute.assert_not_awaited()
 
 
@@ -1103,17 +1079,16 @@ def test_delete_receipt(api_context: ApiContext, settings: Settings) -> None:
     ctx = api_context
     tmp_file = Path(settings.images.tmp_dir) / "img.png"
     tmp_file.write_bytes(b"receipt-image-bytes")
-    ctx.conn.fetchrow = AsyncMock(
-        side_effect=[
-            _receipt_row(id=RECEIPT_ID, image_id=IMAGE_ID, merchant_name="Doomed Store"),
-            _image_row(
-                id=IMAGE_ID,
-                status="analyzed",
-                receipt_id=RECEIPT_ID,
-                image_path=str(tmp_file),
-            ),
-        ]
-    )
+    async def rows(query, *args):
+        if "SELECT files FROM resource_deletions" in query:
+            insert = next(call for call in ctx.conn.execute.call_args_list if "INSERT INTO resource_deletions" in call.args[0])
+            return {"files": insert.args[4]}
+        if "resource_deletions" in query:
+            return None
+        if "FROM receipts" in query:
+            return _receipt_row(id=RECEIPT_ID, user_id=USER_ID, image_id=IMAGE_ID, merchant_name="Doomed Store")
+        return _image_row(id=IMAGE_ID, status="analyzed", receipt_id=RECEIPT_ID, image_path=str(tmp_file))
+    ctx.conn.fetchrow = AsyncMock(side_effect=rows)
     ctx.conn.execute = AsyncMock()
 
     response = ctx.client.delete(f"{RECEIPTS_URL}/{RECEIPT_ID}")
@@ -1121,7 +1096,7 @@ def test_delete_receipt(api_context: ApiContext, settings: Settings) -> None:
     assert response.status_code == 200
     assert response.json()["deleted"] == str(RECEIPT_ID)
     executed = [call.args[0] for call in ctx.conn.execute.call_args_list]
-    assert image_db_module.DELETE_IMAGE_SQL in executed
+    assert any("DELETE FROM images" in query for query in executed)
     assert not tmp_file.exists()
 
 
@@ -1158,7 +1133,10 @@ def test_update_receipt_sets_collections(api_context: ApiContext) -> None:
     ctx = api_context
     ctx.conn.fetchrow = AsyncMock(return_value=_receipt_row(id=RECEIPT_ID))
 
+    ctx.conn.fetch = AsyncMock(side_effect=lambda sql, *args: [{"id": UUID("00000000-0000-4000-8000-0000000000c1")}] if "SELECT id FROM collections" in sql else [])
+
     body = {
+        "expected_operation_revision": 1,
         "confidence": 90,
         "merchant_name": "M",
         "date": "2026-06-05",
@@ -1175,10 +1153,9 @@ def test_update_receipt_sets_collections(api_context: ApiContext) -> None:
     }
     r = ctx.client.put(f"{RECEIPTS_URL}/{RECEIPT_ID}", json=body)
     assert r.status_code == 200
-    coll_svc.set_receipt_collections.assert_awaited_once()
-    args = coll_svc.set_receipt_collections.call_args.args
-    assert args[0] == RECEIPT_ID
-    assert list(args[1]) == [UUID("00000000-0000-4000-8000-0000000000c1")]
+    calls = [c for c in ctx.conn.execute.call_args_list if "INSERT INTO receipt_collections" in c.args[0]]
+    assert len(calls) == 1 and calls[0].args[1:] == (RECEIPT_ID, UUID("00000000-0000-4000-8000-0000000000c1"))
+    coll_svc.set_receipt_collections.assert_not_awaited()
 
 
 def test_update_receipt_empty_collection_ids_clears_all(api_context: ApiContext) -> None:
@@ -1192,6 +1169,7 @@ def test_update_receipt_empty_collection_ids_clears_all(api_context: ApiContext)
     ctx.conn.fetchrow = AsyncMock(return_value=_receipt_row(id=RECEIPT_ID))
 
     body = {
+        "expected_operation_revision": 1,
         "confidence": 90,
         "merchant_name": "M",
         "date": "2026-06-05",
@@ -1208,10 +1186,9 @@ def test_update_receipt_empty_collection_ids_clears_all(api_context: ApiContext)
     }
     r = ctx.client.put(f"{RECEIPTS_URL}/{RECEIPT_ID}", json=body)
     assert r.status_code == 200
-    coll_svc.set_receipt_collections.assert_awaited_once()
-    args = coll_svc.set_receipt_collections.call_args.args
-    assert args[0] == RECEIPT_ID
-    assert list(args[1]) == []
+    assert any("DELETE FROM receipt_collections" in c.args[0] for c in ctx.conn.execute.call_args_list)
+    assert not any("INSERT INTO receipt_collections" in c.args[0] for c in ctx.conn.execute.call_args_list)
+    coll_svc.set_receipt_collections.assert_not_awaited()
 
 
 def test_update_receipt_omitted_collection_ids_noop(api_context: ApiContext) -> None:
@@ -1225,6 +1202,7 @@ def test_update_receipt_omitted_collection_ids_noop(api_context: ApiContext) -> 
     ctx.conn.fetchrow = AsyncMock(return_value=_receipt_row(id=RECEIPT_ID))
 
     body = {
+        "expected_operation_revision": 1,
         "confidence": 90,
         "merchant_name": "M",
         "date": "2026-06-05",
@@ -1241,3 +1219,85 @@ def test_update_receipt_omitted_collection_ids_noop(api_context: ApiContext) -> 
     r = ctx.client.put(f"{RECEIPTS_URL}/{RECEIPT_ID}", json=body)
     assert r.status_code == 200
     coll_svc.set_receipt_collections.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "viewer,admin,see_all,expected",
+    [
+        ("first", False, False, ["first"]),
+        ("second", False, False, ["second"]),
+        ("admin", True, False, []),
+        ("admin", True, True, ["first", "second"]),
+    ],
+)
+def test_manual_analysis_results_follow_owner_and_admin_scope(
+    api_context, viewer, admin, see_all, expected
+):
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from vision_bill.model.db.image import ImageRow
+    from vision_bill.model.workflow import CommitResult, SubmissionStatus
+
+    owners = {name: uuid4() for name in ["first", "second", "admin"]}
+    images = {name: ImageRow(id=uuid4(), user_id=owners[name]) for name in ["first", "second"]}
+    receipts = {name: uuid4() for name in images}
+    service = api_context.client.app.state.submission_service
+    service.db.due_candidates = AsyncMock(return_value=list(images.values()))
+    service.ready_for = AsyncMock(return_value=True)
+
+    async def claim(*, image_id, lease_seconds):
+        return SimpleNamespace(image=next(i for i in images.values() if i.id == image_id))
+
+    async def process(claim):
+        name = next(name for name, image in images.items() if image.id == claim.image.id)
+        return CommitResult(
+            stale=False,
+            submission=SubmissionStatus(
+                id=claim.image.id,
+                user_id=claim.image.user_id,
+                status="analyzed",
+                receipt_id=receipts[name],
+                result_code=f"{name}_code",
+            ),
+        )
+
+    service.db.claim_next = AsyncMock(side_effect=claim)
+    service.process_claim = AsyncMock(side_effect=process)
+    user = User(id=owners[viewer], username=viewer, is_admin=admin, can_see_all=see_all)
+    api_context.client.app.dependency_overrides[get_current_user] = lambda: user
+    response = api_context.client.post(f"{IMAGES_URL}/analyze")
+    assert response.status_code == 200
+    results = response.json()["results"]
+    assert {r["image_id"] for r in results} == {str(images[name].id) for name in expected}
+    for name in set(images) - set(expected):
+        assert str(receipts[name]) not in response.text
+        assert f"{name}_code" not in response.text
+
+
+@pytest.mark.parametrize("error,status", [("operation_revision_conflict",409), ("review_acknowledgements_invalid",422), ("receipt_integrity_failed",422)])
+def test_locked_review_gate_errors_are_http_responses(api_context, error, status):
+    service = api_context.client.app.state.receipt_service
+    service.get_receipt_by_id = AsyncMock(return_value=__import__("types").SimpleNamespace(status="unverified"))
+    service.verify_receipt = AsyncMock(side_effect=ValueError(error))
+    response = api_context.client.post(f"{RECEIPTS_URL}/{RECEIPT_ID}/verify", json={"expected_operation_revision":2,"expected_review_revision":2,"acknowledgements":[]})
+    assert response.status_code == status
+    assert response.json()["detail"] == error
+
+
+def test_put_decodes_unquoted_decimal_observations_exactly(api_context: ApiContext) -> None:
+    ctx = api_context
+    ctx.conn.fetchrow = AsyncMock(return_value=_receipt_row(id=RECEIPT_ID))
+    response = ctx.client.put(
+        f"{RECEIPTS_URL}/{RECEIPT_ID}",
+        headers={"Content-Type": "application/json"},
+        content="""{"confidence": 95, "merchant_name": "Shop", "date": "2024-01-15",
+            "line_items": [{"description": "Item", "quantity": 1.0000000000000001,
+                            "unit_price": 10, "total_price": 10}],
+            "taxes": [{"name": "VAT", "rate": 0.20000000000000001, "amount": 0}],
+            "subtotal": 10, "total": 10, "expected_operation_revision": 1}""",
+    )
+    assert response.status_code == 200, response.text
+    writes = {call.args[0]: call.args for call in ctx.conn.execute.call_args_list}
+    assert writes[receipt_db_module.INSERT_LINE_ITEM_SQL][3] == Decimal("1.0000000000000001")
+    assert writes[receipt_db_module.INSERT_TAX_SQL][3] == Decimal("0.20000000000000001")

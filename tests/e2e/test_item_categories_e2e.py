@@ -6,7 +6,12 @@ from decimal import Decimal
 import pytest
 
 from e2e.discovery import first_case
-from e2e.helpers import API, register_user, wait_until
+from e2e.helpers import (
+    API,
+    receipt_write,
+    register_user,
+    wait_until,
+)
 
 pytestmark = pytest.mark.e2e
 
@@ -16,11 +21,10 @@ def upload(client):
     assert case is not None
     with case.image_path.open("rb") as image:
         response = client.post(f"{API}/images", files={"receipt": (case.image_path.name, image)})
-    assert response.status_code in (201, 202), response.text
-    image_id = response.json()["image_id"]
+    assert response.status_code == 202, response.text
+    image_id = response.json()["id"]
 
     def ready():
-        client.post(f"{API}/images/analyze")
         row = client.get(f"{API}/images/{image_id}").json()
         return row.get("receipt_id") if row["status"] == "analyzed" else None
 
@@ -29,7 +33,7 @@ def upload(client):
 
 
 def save(client, details, lines, **updates):
-    body = {**details["receipt"], "line_items": lines, "taxes": details["taxes"], **updates}
+    body = receipt_write(details, line_items=lines, **updates)
     response = client.put(f"{API}/receipts/{details['receipt']['id']}", json=body)
     assert response.status_code == 200, response.text
     return client.get(f"{API}/receipts/{details['receipt']['id']}").json()
@@ -79,27 +83,27 @@ def test_item_statistics_scoping_dates_deposits_and_collections(http_factory):
     today = datetime.now(UTC).date()
     details = upload(alice)
     lines = [
-        dict(
-            description="Milk",
-            quantity=1,
-            unit_price="6",
-            total_price="6",
-            spending_category="milk",
-        ),
-        dict(
-            description="Unclear",
-            quantity=1,
-            unit_price="4",
-            total_price="4",
-            spending_category="unknown",
-        ),
-        dict(
-            description="Pfand",
-            quantity=1,
-            unit_price="0.25",
-            total_price="0.25",
-            spending_category="deposit",
-        ),
+        {
+            "description": "Milk",
+            "quantity": 1,
+            "unit_price": "6",
+            "total_price": "6",
+            "spending_category": "milk",
+        },
+        {
+            "description": "Unclear",
+            "quantity": 1,
+            "unit_price": "4",
+            "total_price": "4",
+            "spending_category": "unknown",
+        },
+        {
+            "description": "Pfand",
+            "quantity": 1,
+            "unit_price": "0.25",
+            "total_price": "0.25",
+            "spending_category": "deposit",
+        },
     ]
     details = save(
         alice,
@@ -111,10 +115,38 @@ def test_item_statistics_scoping_dates_deposits_and_collections(http_factory):
         discount_total="1",
         tax_total="0",
         taxes=[],
+        amount_policy={
+            "tax_basis": "unknown",
+            "subtotal_origin": "unknown",
+            "tax_information": "missing",
+            "discount_treatment": "unknown",
+            "tip_treatment": "none",
+        },
     )
     receipt_id = details["receipt"]["id"]
     assert alice.get(f"{API}/statistics/items").json()["categories"] == []
-    assert alice.post(f"{API}/receipts/{receipt_id}/verify").status_code == 200
+    row = details["receipt"]
+    assert {f["code"] for f in row["findings"]} == {
+        "unknown_tax_basis",
+        "unknown_subtotal_origin",
+        "missing_tax_information",
+        "unknown_discount_treatment",
+    }
+    assert all(f["severity"] == "review" for f in row["findings"])
+    verified = alice.post(
+        f"{API}/receipts/{receipt_id}/verify",
+        json={
+            "expected_operation_revision": row["operation_revision"],
+            "expected_review_revision": row["review_revision"],
+            "acknowledgements": [
+                {"finding_id": f["id"], "comment": "Test fixture printed values confirmed"}
+                for f in row["findings"]
+                if f["severity"] == "review"
+            ],
+        },
+    )
+    assert verified.status_code == 200, verified.text
+    details = alice.get(f"{API}/receipts/{receipt_id}").json()
     report = alice.get(f"{API}/statistics/items", params={"months": 3})
     assert report.status_code == 200, report.text
     report = report.json()

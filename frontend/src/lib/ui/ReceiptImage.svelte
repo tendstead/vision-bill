@@ -1,6 +1,9 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
+	import { captureSessionActor } from '$lib/session-lifetime';
 	import { api } from '$lib/api/client';
 	import { t } from '$lib/i18n';
+	import Dialog from '$lib/ui/Dialog.svelte';
 	import Icon from '$lib/ui/Icon.svelte';
 	import { missingThumbSource } from '$lib/ui/image-policy';
 
@@ -8,110 +11,81 @@
 		imageId,
 		thumbnailPath,
 		alt,
-		class: className = '',
-		clickable = true
+		previewLabel,
+		class: className = ''
 	}: {
 		imageId: string | null;
 		thumbnailPath: string | null;
 		alt: string;
+		previewLabel?: string;
 		class?: string;
-		clickable?: boolean;
 	} = $props();
 
+	const actor = captureSessionActor();
+	const compactViewport =
+		typeof window === 'undefined' ? undefined : window.matchMedia?.('(max-width: 768px)');
+	let compact = $state(compactViewport?.matches ?? false);
 	let lightboxOpen = $state(false);
-	let thumbFailed = $state(false);
+	let failedThumbnail = $state<string | null>(null);
+	const thumbnail = $derived(
+		imageId && thumbnailPath && compact ? api.imageThumbUrl(imageId, actor) : null
+	);
+	const imageSource = $derived(
+		thumbnail && thumbnail !== failedThumbnail
+			? thumbnail
+			: imageId
+				? missingThumbSource(imageId, actor)
+				: null
+	);
 
-	function showThumb(): boolean {
-		// Expecting tablet and desktop view to have enough bandwidth to load the proper image
-		let phoneView = window.matchMedia('(max-width: 768px)').matches;
-		return imageId !== null && thumbnailPath !== null && !thumbFailed && phoneView;
-	}
-
-	function fallback(): string | 'icon' {
-		return imageId === null ? 'icon' : missingThumbSource(imageId);
-	}
-
-	function open(e: MouseEvent) {
-		if (!clickable || imageId === null) return;
-		e.preventDefault();
-		e.stopPropagation();
-		lightboxOpen = true;
-	}
-
-	$effect(() => {
-		if (!lightboxOpen) return;
-		function onKey(e: KeyboardEvent) {
-			if (e.key === 'Escape') lightboxOpen = false;
-		}
-		window.addEventListener('keydown', onKey);
-		return () => window.removeEventListener('keydown', onKey);
+	onMount(() => {
+		const onViewportChange = (event: MediaQueryListEvent) => (compact = event.matches);
+		compactViewport?.addEventListener('change', onViewportChange);
+		return () => compactViewport?.removeEventListener('change', onViewportChange);
 	});
 </script>
 
-{#if imageId === null}
+{#if imageSource === null || imageSource === 'icon'}
 	<span class="flex items-center justify-center bg-surface-container {className}">
 		<Icon icon="receipts" />
 	</span>
-{:else if showThumb()}
+{:else}
 	<button
 		type="button"
 		class="appearance-none p-0 {className}"
-		onclick={open}
-		tabindex={clickable ? 0 : -1}
-		aria-label={alt}
+		onclick={() => (lightboxOpen = true)}
+		aria-haspopup="dialog"
+		aria-label={previewLabel || alt || $t('receipt.viewFullImage')}
 	>
 		<img
-			src={api.imageThumbUrl(imageId)}
-			{alt}
+			src={imageSource}
+			alt=""
 			loading="lazy"
 			decoding="async"
-			onerror={() => (thumbFailed = true)}
-			class="w-full h-full object-contain"
+			onerror={() => {
+				if (imageSource === thumbnail) failedThumbnail = imageSource;
+			}}
+			class="h-full w-full object-contain"
 		/>
 	</button>
-{:else}
-	{@const fb = fallback()}
-	{#if fb === 'icon'}
-		<span class="flex items-center justify-center bg-surface-container {className}">
-			<Icon icon="receipts" />
-		</span>
-	{:else}
-		<button
-			type="button"
-			class="appearance-none p-0 {className}"
-			onclick={open}
-			tabindex={clickable ? 0 : -1}
-			aria-label={alt}
-		>
-			<img src={fb} {alt} loading="lazy" decoding="async" class="w-full h-full object-contain" />
-		</button>
-	{/if}
 {/if}
 
 {#if lightboxOpen && imageId !== null}
-	<div
-		class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
-		role="dialog"
-		aria-modal="true"
-		aria-label={$t('receipt.viewFullImage')}
-		tabindex="-1"
-		onclick={(e) => e.target === e.currentTarget && (lightboxOpen = false)}
-		onkeydown={(e) => {
-			if (e.key === 'Escape' || e.key === 'Enter' || e.key === ' ') lightboxOpen = false;
-		}}
-	>
-		<button
-			type="button"
-			class="absolute right-4 top-4 rounded-full bg-black/50 p-2 text-white"
-			aria-label={$t('common.close')}
-			onclick={() => (lightboxOpen = false)}
-		>
-			<Icon icon="close" />
-		</button>
+	<Dialog title={$t('receipt.viewFullImage')} wide onCancel={() => (lightboxOpen = false)}>
+		<div class="flex justify-end p-1">
+			<button
+				type="button"
+				class="rounded-lg p-2 hover:bg-surface-container-high"
+				aria-label={$t('common.close')}
+				onclick={() => (lightboxOpen = false)}
+			>
+				<Icon icon="close" />
+			</button>
+		</div>
 		<img
-			src={api.imageFileUrl(imageId)}
-			{alt}
-			class="max-h-full max-w-full rounded-lg object-contain"
+			src={api.imageFileUrl(imageId, 0, actor)}
+			alt={alt || $t('submission.photo', { values: { number: 1 } })}
+			class="mx-auto max-h-[calc(90dvh-4.5rem)] max-w-full rounded-lg object-contain"
 		/>
-	</div>
+	</Dialog>
 {/if}

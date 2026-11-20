@@ -1,6 +1,27 @@
-# Manual releases to GHCR
+# Release procedures
 
-After merging this workflow, open **Actions → Release → Run workflow**, select the
+For schema-v2 prebuilt installation variants, input staging, physical
+qualification and assets-last publication, use the
+[distribution guide](distribution/README.md). The variants are `app`, `ocr-cuda`,
+`ocr-rocm`, `app-ocr-cuda` and `app-ocr-rocm`. App installations use an external
+LLM endpoint and an explicit installed model. This update verifies the software
+gates locally. Public distribution and physical accelerator qualification require
+a separate release run. The app-image workflow below publishes the app image.
+
+## Unreleased package
+
+Durable 202 uploads/retries, source-preserving receipt review, exact money, explicit
+Gold/v4 diagnostics, strict optional OCR, independent native OCR candidates and external-only LLM distribution are integrated in this package. The update also
+includes account and view isolation and completion-only receipt recovery. Dedicated
+OCR downloads and verifies its four pinned models when enabled. Its first prediction
+uses the first submitted receipt. The source launcher supports upgrading the admitted
+installation in place. Pending uploads bind their formatter endpoint, and migrated
+unverified receipts can be reviewed using their current findings. Historical split/CPU results retain
+their original meaning. See [upgrade prerequisites and accepted evidence](UPGRADE_AND_VERIFY.md).
+No version/tag/release or deployment has been authorized by this documentation
+update. In particular, publishing the app image does not qualify CUDA/ROCm OCR.
+
+After maintainers deliberately adopt this workflow on the default branch, open **Actions → Release → Run workflow**, select the
 repository's default branch, and choose `patch`, `minor`, or `major`. Merging a PR
 or adding a label never publishes a release. Only users with repository write
 access can dispatch workflows; protect the default branch and workflow changes

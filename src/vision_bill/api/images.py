@@ -1,26 +1,37 @@
-import asyncio
+import json
 import logging
+from hashlib import sha256
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
+from ocr_contract.limits import APP_SOURCE_MAX_BYTES
 
 from ..config import settings
 from ..model.db.image import ImagePart, ImageRow
-from ..provider.llm.errors import AnalysisTimeoutError, UnreadableReceiptError
+from ..model.handoff import HandoffWait
+from ..model.workflow import AccessScope, SubmissionCreate, SubmissionStatus
 from ..security.dependencies import get_current_user
 from ..security.models import User
+from ..service.activation_admission import policy_capture
 from ..service.analysis_scheduler import AnalysisScheduler
 from ..service.image_service import ImageService, UnsupportedImageTypeError
 from ..service.receipt_service import ReceiptService
 from .helper.helper import get_analysis_scheduler, get_image_service, get_receipt_service
 
+router = APIRouter(dependencies=[Depends(get_current_user)])
 logger = logging.getLogger(__name__)
 
-router = APIRouter(dependencies=[Depends(get_current_user)])
 
-PENDING_QUEUE_WARNING = "LLM provider not available – image queued for background analysis"
+def _discard_unreferenced(parts: list[ImagePart], image_service: ImageService) -> None:
+    """Caller must prove these uniquely allocated candidate files unreferenced."""
+    for part in parts:
+        try:
+            image_service.delete_image(Path(part.image_path))
+        except OSError:
+            # Cleanup may leave an orphan, but cannot change committed acceptance.
+            logger.warning("Could not remove unreferenced upload candidate")
 
 
 def _location(image_id: UUID) -> str:
@@ -28,183 +39,106 @@ def _location(image_id: UUID) -> str:
     return f"/api/v1/images/{image_id}"
 
 
-@router.post("", status_code=201, response_model=None)
+@router.post("", status_code=202, response_model=SubmissionStatus)
 async def upload_image(
     receipt: list[UploadFile] = File(...),  # noqa: B008
     model_id: str | None = None,
     bypass_review: bool | None = Query(None),
+    allow_ocr_fallback: bool | None = Query(None),
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
     receipt_service: ReceiptService = Depends(get_receipt_service),  # noqa: B008
     image_service: ImageService = Depends(get_image_service),  # noqa: B008
     analysis_scheduler: AnalysisScheduler = Depends(get_analysis_scheduler),  # noqa: B008
     current_user: User = Depends(get_current_user),  # noqa: B008
 ) -> JSONResponse:
-    """Create a receipt submission from one or more ordered photos.
-
-    Multiple photos return 202 immediately after storage and wake the scheduler.
-    Their image UUID identifies the durable submission and all its source photos.
-
-    For one photo, when a model is reachable the image is analysed synchronously, a
-    receipt is persisted and a ``201`` is returned. When no model is reachable
-    the image is queued as ``pending`` and a ``202`` is returned; the background
-    scheduler picks it up later. Both responses carry a ``Location`` header so a
-    client can poll the image and, once analysed, follow ``receipt_id`` to the
-    receipt. The tmp image file is always retained so a later verify step (or a
-    background retry) can still find it.
-    """
-    if not receipt_service.db_ready:
+    """Accept ordered originals durably; extraction belongs to the worker."""
+    if not receipt_service.db_ready or not receipt_service.workflow_ready:
         raise HTTPException(status_code=503, detail="Database not available")
-
-    effective_bypass_review = (
-        settings.images.bypass_review_default if bypass_review is None else bypass_review
-    )
-
+    if idempotency_key is not None and not idempotency_key.strip():
+        raise HTTPException(status_code=422, detail="Idempotency-Key must not be empty")
     if not 1 <= len(receipt) <= 10:
         raise HTTPException(status_code=422, detail="Upload between 1 and 10 photos of one receipt")
+
+    submission_id = uuid4()
     parts: list[ImagePart] = []
+    # Before enqueue begins these paths cannot be referenced by a DB transaction.
     try:
-        for upload in receipt:
-            content = await upload.read(20 * 1024 * 1024 + 1)
-            if len(content) > 20 * 1024 * 1024:
+        for index, upload in enumerate(receipt):
+            content = await upload.read(APP_SOURCE_MAX_BYTES + 1)
+            if len(content) > APP_SOURCE_MAX_BYTES:
                 raise HTTPException(status_code=413, detail="Each photo must be at most 20 MB")
             try:
                 info = image_service.validate_and_inspect(content)
             except UnsupportedImageTypeError as exc:
                 raise HTTPException(status_code=415, detail="Unsupported image type") from exc
-            path = image_service.store_tmp_image(content)
-            part = ImagePart(
-                image_path=str(path), original_filename=upload.filename,
-                media_type=info.media_type, size_bytes=info.size_bytes,
-            )
+            part = image_service.store_original(content, submission_id, index, info.media_type)
             parts.append(part)
-            thumb = image_service.generate_thumbnail(path)
+            part.original_filename = upload.filename
+            thumb = image_service.generate_thumbnail(Path(part.image_path))
             part.thumbnail_path = str(thumb) if thumb else None
+        with policy_capture(settings.ocr):
+            effective_options = receipt_service.current_execution_snapshot(settings)
+    except HandoffWait as exc:
+        _discard_unreferenced(parts, image_service)
+        raise HTTPException(status_code=409, detail=str(exc)) from None
     except BaseException:
-        for part in parts:
-            image_service.delete_image(Path(part.image_path))
+        _discard_unreferenced(parts, image_service)
         raise
 
-    first = parts[0]
-    tmp_path = Path(first.image_path)
-    models = []
-    if len(parts) == 1:
-        try:
-            async with asyncio.timeout(5):
-                if await receipt_service.check_connection():
-                    models = await receipt_service.get_available_models()
-        except Exception:  # noqa: BLE001 - discovery failure leaves the persisted upload queued
-            logger.warning("LLM provider unreachable - queueing image for background analysis")
-    provider_available = bool(models)
-
-    try:
-        image_row = await receipt_service.store_image(
-            image_path=first.image_path,
-            original_filename=first.original_filename,
-            media_type=first.media_type,
-            size_bytes=first.size_bytes,
-            status="pending",
-            user_id=current_user.id,
-            bypass_review=effective_bypass_review,
-            thumbnail_path=first.thumbnail_path,
-            additional_images=parts[1:],
-            model_id=model_id,
-        )
-    except BaseException:
-        for part in parts:
-            image_service.delete_image(Path(part.image_path))
-        raise
-
-    if len(parts) > 1:
-        analysis_scheduler.trigger()
-        return JSONResponse(
-            status_code=202, headers={"Location": _location(image_row.id)},
-            content={"image_id": str(image_row.id), "status": "pending"},
-        )
-
-    if not provider_available:
-        return JSONResponse(
-            status_code=202,
-            headers={"Location": _location(image_row.id)},
-            content={
-                "image_id": str(image_row.id),
-                "status": "pending",
-                "warning": PENDING_QUEUE_WARNING,
-            },
-        )
-
-    claimed = await receipt_service.claim_image_for_analysis(image_row.id)
-    if claimed is None:
-        logger.info("Image %s was claimed by the background worker", image_row.id)
-        return JSONResponse(
-            status_code=202,
-            headers={"Location": _location(image_row.id)},
-            content={
-                "image_id": str(image_row.id),
-                "status": "pending",
-                "warning": PENDING_QUEUE_WARNING,
-            },
-        )
-    image_row = claimed
-
-    available_ids = {m.id for m in models}
-    preferred_model = settings.llm.model_name
-    chosen_model = (
-        model_id
-        if model_id and model_id in available_ids
-        else preferred_model
-        if preferred_model in available_ids
-        else models[0].id
+    requested: dict[str, object] = {}
+    if model_id is not None:
+        requested["model_id"] = model_id
+    if bypass_review is not None:
+        requested["bypass_review"] = bypass_review
+    if allow_ocr_fallback is not None:
+        requested["allow_ocr_fallback"] = allow_ocr_fallback
+    manifest = [
+        {"photo_index": index, "source_sha256": part.source_sha256}
+        for index, part in enumerate(parts)
+    ]
+    fingerprint = sha256(
+        json.dumps(
+            {"sources": manifest, "requested_options": requested},
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode()
+    ).hexdigest()
+    submission = SubmissionCreate(
+        id=submission_id,
+        parts=parts,
+        source_manifest=manifest,
+        requested_options=requested,
+        request_fingerprint=fingerprint,
+        effective_options=effective_options,
+        model_id=model_id if model_id is not None else settings.llm.model_name,
+        bypass_review=(
+            settings.images.bypass_review_default if bypass_review is None else bypass_review
+        ),
     )
     try:
-        llm_response = await receipt_service.analyse_receipt_from_path(chosen_model, tmp_path)
-    except (AnalysisTimeoutError, UnreadableReceiptError) as exc:
-        status = "timed_out" if isinstance(exc, AnalysisTimeoutError) else "unreadable"
-        await receipt_service.mark_image_terminal(image_row.id, status, str(exc))
-        return JSONResponse(
-            status_code=504 if status == "timed_out" else 422,
-            headers={"Location": _location(image_row.id)},
-            content={"detail": str(exc), "image_id": str(image_row.id), "status": status},
+        result = await receipt_service.enqueue_submission(
+            submission, scope=AccessScope(user_id=current_user.id), idempotency_key=idempotency_key
         )
-    except Exception as exc:
-        await receipt_service.mark_image_failed(image_row.id, str(exc))
+    except ValueError as exc:
+        if str(exc) == "upload idempotency payload conflict":
+            # Task 7 raises only after rejecting identity before any INSERT;
+            # its transaction has rolled back. These unique paths never entered
+            # the database. All ambiguous outcomes retain their candidate files.
+            _discard_unreferenced(parts, image_service)
+            raise HTTPException(
+                status_code=409, detail="Idempotency-Key conflicts with upload"
+            ) from exc
         raise
-
-    if effective_bypass_review:
-        row = await receipt_service.persist_receipt(
-            llm_response,
-            image_id=image_row.id,
-            status="verified",
-            verified=True,
-            user_id=current_user.id,
-        )
-        await receipt_service.mark_image_analyzed(image_row.id, row.id)
-        try:
-            perm_path, perm_thumb = image_service.store_perm_image(tmp_path, row.id)
-            if perm_path is not None:
-                await receipt_service.update_image_path(image_row.id, str(perm_path))
-            if perm_thumb is not None:
-                await receipt_service.update_image_thumbnail_path(image_row.id, str(perm_thumb))
-        except Exception:
-            logger.exception(
-                "Failed to move bypass-reviewed image %s to permanent storage", image_row.id
-            )
-    else:
-        row = await receipt_service.persist_receipt(
-            llm_response, image_id=image_row.id, status="unverified", user_id=current_user.id
-        )
-        await receipt_service.mark_image_analyzed(image_row.id, row.id)
-
+    if not result.created and result.submission.id != submission_id:
+        # A completed replay returned another UUID; this unique candidate was
+        # never inserted and cannot contain any winner's referenced originals.
+        _discard_unreferenced(parts, image_service)
+    analysis_scheduler.trigger()
     return JSONResponse(
-        status_code=201,
-        headers={"Location": _location(image_row.id)},
-        content={
-            "image_id": str(image_row.id),
-            "status": "analyzed",
-            "receipt_id": str(row.id),
-            "original_filename": image_row.original_filename,
-            "media_type": first.media_type,
-            "size_bytes": first.size_bytes,
-            "image_path": image_row.image_path,
-        },
+        status_code=202,
+        headers={"Location": _location(result.submission.id)},
+        content=result.submission.model_dump(mode="json"),
     )
 
 
@@ -236,29 +170,32 @@ async def list_images(
 async def analyze_pending(
     receipt_service: ReceiptService = Depends(get_receipt_service),  # noqa: B008
     analysis_scheduler: AnalysisScheduler = Depends(get_analysis_scheduler),  # noqa: B008
+    current_user: User = Depends(get_current_user),  # noqa: B008
 ) -> dict[str, object]:
     """Manually trigger one analysis cycle over the pending queue."""
     if not receipt_service.db_ready:
         raise HTTPException(status_code=503, detail="Database not available")
-    results = await analysis_scheduler.process_pending()
+    results = await analysis_scheduler.process_pending(
+        scope=AccessScope(user_id=current_user.id, can_see_all=current_user.can_see_all)
+    )
     return {"results": results}
 
 
-@router.get("/{image_id}")
+@router.get("/{image_id}", response_model=SubmissionStatus)
 async def get_image(
     image_id: UUID,
     receipt_service: ReceiptService = Depends(get_receipt_service),  # noqa: B008
     current_user: User = Depends(get_current_user),  # noqa: B008
-) -> ImageRow:
-    """Fetch a single image resource by id."""
-    if not receipt_service.db_ready:
+) -> SubmissionStatus:
+    """Read the persistent public status, including immediately after acceptance."""
+    if not receipt_service.db_ready or not receipt_service.workflow_ready:
         raise HTTPException(status_code=503, detail="Database not available")
-    image = await receipt_service.get_image_by_id(
-        image_id, user_id=current_user.id, can_see_all=current_user.can_see_all
+    submission = await receipt_service.get_submission(
+        image_id, scope=AccessScope(user_id=current_user.id, can_see_all=current_user.can_see_all)
     )
-    if image is None:
+    if submission is None:
         raise HTTPException(status_code=404, detail="Image not found")
-    return image
+    return submission
 
 
 @router.get("/{image_id}/file")
@@ -283,7 +220,11 @@ async def get_image_file(
     path = Path(source.image_path)
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Image file not found")
-    return FileResponse(path, media_type=source.media_type or "application/octet-stream")
+    return FileResponse(
+        path,
+        media_type=source.media_type or "application/octet-stream",
+        headers={"Cache-Control": "private, no-store"},
+    )
 
 
 @router.get("/{image_id}/thumb")
@@ -307,7 +248,7 @@ async def get_image_thumb(
     path = Path(image.thumbnail_path)
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Image thumbnail not found")
-    return FileResponse(path, media_type="image/webp")
+    return FileResponse(path, media_type="image/webp", headers={"Cache-Control": "private, no-store"})
 
 
 @router.delete("/{image_id}")
@@ -317,20 +258,19 @@ async def delete_image(
     image_service: ImageService = Depends(get_image_service),  # noqa: B008
     current_user: User = Depends(get_current_user),  # noqa: B008
 ) -> dict[str, object]:
-    """Remove a queued (pending or failed) image resource and its on-disk file."""
+    """Delete an owned pending, needs-review, failed, timed-out or unreadable submission.
+
+    Unfinalized drafts and owned files are removed through durable cleanup;
+    processing submissions and submissions linked to receipts conflict.
+    """
     if not receipt_service.db_ready:
         raise HTTPException(status_code=503, detail="Database not available")
 
-    image = await receipt_service.get_image_by_id(
-        image_id, user_id=current_user.id, can_see_all=current_user.can_see_all
-    )
-    if image is None:
+    try:
+        deleted = await receipt_service.delete_resource(image_id, receipt=False,
+            scope=AccessScope(user_id=current_user.id, can_see_all=current_user.can_see_all), images=image_service)
+    except ValueError:
+        raise HTTPException(status_code=409, detail="Cannot delete an active or referenced submission") from None
+    if not deleted:
         raise HTTPException(status_code=404, detail="Image not found")
-    if image.status not in ("pending", "failed", "timed_out", "unreadable"):
-        raise HTTPException(status_code=409, detail="Cannot delete an active or analyzed submission")
-
-    await receipt_service.delete_image_row(image_id)
-    for part in image.parts():
-        if part.image_path:
-            image_service.delete_image(Path(part.image_path))
     return {"deleted": image_id}

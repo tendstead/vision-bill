@@ -15,7 +15,6 @@ dependencies = [
     "pillow-heif>=0.16.0",
     "pydantic-settings>=2.14.2",
     "pyyaml>=6.0",
-    "pytest>=9.1.1",
     "python-magic>=0.4.27",
     "python-multipart>=0.0.32",
     "sqlalchemy[asyncio]>=2.0.52",
@@ -26,12 +25,13 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.0",
+    "pytest>=9.1.1",
     "pytest-asyncio>=0.24",
     "httpx>=0.27",
     "httpx2>=2.0.0",
     "ruff>=0.6",
     "mypy>=1.11",
+    "numpy==2.2.6",
     "types-pyyaml>=6.0",
 ]
 
@@ -40,12 +40,12 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/vision_bill"]
+packages = ["src/vision_bill", "paddleocr-service/ocr_contract"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-pythonpath = ["src", "tests"]
+pythonpath = ["src", "tests", ".", "paddleocr-service"]
 markers = ["e2e: end-to-end tests requiring the docker-compose.e2e.yml stack"]
 
 [tool.ruff]
@@ -56,6 +56,9 @@ extend-exclude = ["alembic"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
+namespace_packages = true
+explicit_package_bases = true
+mypy_path = ["$MYPY_CONFIG_FILE_DIR/src", "$MYPY_CONFIG_FILE_DIR/paddleocr-service", "$MYPY_CONFIG_FILE_DIR"]
 exclude = ["^alembic/"]
 
 [[tool.mypy.overrides]]

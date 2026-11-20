@@ -1,0 +1,22 @@
+paddleocr @ https://github.com/PaddlePaddle/PaddleOCR/archive/b03f46425e8ff4442b268ce449e3eef758146cd4.tar.gz#sha256=af62d37268bc342e45d1f08dcf90fc418637cf8fb335d9db2b38f4e84c594d91
+paddlex[ocr] @ https://github.com/PaddlePaddle/PaddleX/archive/ffb64904d23708863ff5b8da312a5cbd52a7f462.tar.gz#sha256=52f4717c07402bd1aa1ad89e20713cd8074e5dab86cf63f6ba04f3d8ffd18d86
+fastapi==0.128.0
+uvicorn==0.41.0
+python-multipart==0.0.32
+numpy==2.2.6
+Pillow==12.3.0
+pillow-heif==1.7.0
+pydantic==2.13.4
+packaging==26.2
+
+# Native Paddle 3.3.1 source execution dependencies (the native wheel is separate).
+httpx
+protobuf>=3.20.2
+opt_einsum==3.3.0
+networkx
+typing_extensions
+safetensors>=0.6.0
+setuptools<82
+wheel
+# The full SDK build environment retains botocore, which requires dateutil <3.
+python-dateutil<3

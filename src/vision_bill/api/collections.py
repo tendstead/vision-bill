@@ -61,7 +61,7 @@ async def get_active_collection(
     """
     if not receipt_service.db_ready:
         raise HTTPException(status_code=503, detail="Database not available")
-    coll = await receipt_service.active_collection(current_user.id, current_user.can_see_all)
+    coll = await receipt_service.active_collection(current_user.id, can_see_all=False)
     if coll is None:
         # A bare Response renders an empty body for a 204. JSONResponse(None)
         # would render the 4-byte body "null", which h11 rejects for a 204

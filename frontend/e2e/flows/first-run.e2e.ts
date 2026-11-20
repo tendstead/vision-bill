@@ -29,6 +29,8 @@ test.describe('first run', () => {
 			buffer: fixture.bytes
 		});
 		await page.getByRole('button', { name: 'Upload' }).click();
+		await expect(page).toHaveURL(/\/upload\?job=[a-f0-9-]+/);
+		await page.getByRole('link', { name: 'Open and review receipt' }).click();
 		await expect(page.getByRole('heading', { name: 'Aldi Test' })).toBeVisible({
 			timeout: 30_000
 		});

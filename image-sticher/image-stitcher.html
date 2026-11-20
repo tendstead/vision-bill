@@ -54,6 +54,9 @@
     const imageList = document.getElementById('imageList');
 
     let loadedImages = [];
+    let selectionGeneration = 0;
+    let batchReady = false;
+    let stitchedGeneration = null;
 
     imageInput.addEventListener('change', handleFileSelect);
     stitchButton.addEventListener('click', stitchImages);
@@ -66,20 +69,42 @@
     function preventDefaults(e) { e.preventDefault(); e.stopPropagation(); }
 
     function handleFileSelect(event) {
-        const files = event.target.files;
-        if (files.length === 0) return;
-
-        statusText.textContent = `Loading ${files.length} images...`;
+        const files = Array.from(event.target.files);
+        const generation = ++selectionGeneration;
+        batchReady = false;
+        stitchedGeneration = null;
+        stitchButton.disabled = true;
+        downloadButton.disabled = true;
+        downloadButton.style.display = 'none';
         loadedImages = [];
+        imageList.innerHTML = '';
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        statusText.textContent = files.length ? `Loading ${files.length} images...` : 'No images selected.';
         fileCountDisplay.textContent = `${files.length} files selected.`;
-
-        Array.from(files).forEach((file) => {
+        if (!files.length) return;
+        const results = new Array(files.length);
+        let completed = 0, failed = false;
+        const current = () => generation === selectionGeneration && !failed;
+        const fail = (operation, file) => {
+            if (!current()) return;
+            failed = true;
+            statusText.textContent = `Could not ${operation} image: ${file.name}. Select a complete readable batch to continue.`;
+        };
+        files.forEach((file, index) => {
             const reader = new FileReader();
+            reader.onerror = () => fail('read', file);
+            reader.onabort = () => fail('read', file);
             reader.onload = (e) => {
+                if (!current()) return;
                 const img = new Image();
+                img.onerror = () => fail('decode', file);
                 img.onload = () => {
-                    loadedImages.push({ image: img, filename: file.name });
-                    if (loadedImages.length === files.length) {
+                    if (!current()) return;
+                    results[index] = { image: img, filename: file.name };
+                    completed++;
+                    if (completed === files.length) {
+                        loadedImages = results;
+                        batchReady = true;
                         statusText.textContent = `All images loaded successfully (${files.length} total).`;
                         stitchButton.disabled = false;
                         renderImageList();
@@ -119,7 +144,10 @@
     function onDragOver(e) { e.preventDefault(); }
     function onDrop(e) {
         const targetIndex = e.target.closest('.imageItem')?.dataset.index;
-        if (targetIndex !== undefined && dragItemIndex !== targetIndex) {
+        if (batchReady && targetIndex !== undefined && dragItemIndex !== null && dragItemIndex !== targetIndex) {
+            stitchedGeneration = null;
+            downloadButton.disabled = true;
+            downloadButton.style.display = 'none';
             const [movedItem] = loadedImages.splice(dragItemIndex, 1);
             loadedImages.splice(targetIndex, 0, movedItem);
             renderImageList();
@@ -128,7 +156,7 @@
     function onDragEnd(e) { e.target.classList.remove('dragging'); }
 
     function stitchImages() {
-        if (loadedImages.length === 0) return;
+        if (!batchReady || loadedImages.length === 0) return;
 
         stitchButton.disabled = true;
         downloadButton.style.display = 'none';
@@ -151,11 +179,14 @@
         });
 
         statusText.textContent = `✅ Stitching complete!`;
+        stitchedGeneration = selectionGeneration;
+        downloadButton.disabled = false;
         downloadButton.style.display = 'inline-block';
         stitchButton.disabled = false;
     }
 
     function downloadStitchedImage() {
+        if (!batchReady || stitchedGeneration !== selectionGeneration) return;
         const dataURL = canvas.toDataURL('image/png');
         const a = document.createElement('a');
         a.href = dataURL;

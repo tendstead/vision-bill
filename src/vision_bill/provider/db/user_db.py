@@ -47,7 +47,7 @@ class UserDB:
             return
 
         dsn = self._settings.pg_dsn
-        logger.info("Creating asyncpg user connection pool (dsn=%s…)", dsn[:30])
+        logger.info("Creating asyncpg user connection pool")
         self._pool = await asyncpg.create_pool(dsn=dsn)
 
     async def destroy_db(self) -> None:

@@ -1,0 +1,350 @@
+{
+  "$defs": {
+    "Archive": {
+      "additionalProperties": false,
+      "properties": {
+        "files": {
+          "additionalProperties": {
+            "$ref": "#/$defs/FileRecord"
+          },
+          "maxProperties": 100000,
+          "minProperties": 1,
+          "title": "Files",
+          "type": "object"
+        },
+        "license": {
+          "$ref": "#/$defs/License"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size_bytes": {
+          "exclusiveMinimum": 0,
+          "maximum": 21474836480,
+          "title": "Size Bytes",
+          "type": "integer"
+        },
+        "source": {
+          "minLength": 1,
+          "title": "Source",
+          "type": "string"
+        },
+        "tree_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Tree Sha256",
+          "type": "string"
+        },
+        "unpacked_bytes": {
+          "exclusiveMinimum": 0,
+          "maximum": 53687091200,
+          "title": "Unpacked Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source",
+        "sha256",
+        "size_bytes",
+        "unpacked_bytes",
+        "files",
+        "tree_sha256",
+        "license",
+        "provenance"
+      ],
+      "title": "Archive",
+      "type": "object"
+    },
+    "Case": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "upright",
+            "rotated",
+            "warped",
+            "table",
+            "formula"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "license": {
+          "$ref": "#/$defs/License"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "required_labels": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Required Labels",
+          "type": "array"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "path",
+        "sha256",
+        "license",
+        "provenance"
+      ],
+      "title": "Case",
+      "type": "object"
+    },
+    "FileRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size_bytes": {
+          "maximum": 53687091200,
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sha256",
+        "size_bytes"
+      ],
+      "title": "FileRecord",
+      "type": "object"
+    },
+    "Fixtures": {
+      "additionalProperties": false,
+      "properties": {
+        "cases": {
+          "items": {
+            "$ref": "#/$defs/Case"
+          },
+          "maxItems": 5,
+          "minItems": 5,
+          "title": "Cases",
+          "type": "array"
+        },
+        "files": {
+          "additionalProperties": {
+            "$ref": "#/$defs/FileRecord"
+          },
+          "maxProperties": 100000,
+          "minProperties": 1,
+          "title": "Files",
+          "type": "object"
+        },
+        "license": {
+          "$ref": "#/$defs/License"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size_bytes": {
+          "exclusiveMinimum": 0,
+          "maximum": 21474836480,
+          "title": "Size Bytes",
+          "type": "integer"
+        },
+        "source": {
+          "minLength": 1,
+          "title": "Source",
+          "type": "string"
+        },
+        "tree_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Tree Sha256",
+          "type": "string"
+        },
+        "unpacked_bytes": {
+          "exclusiveMinimum": 0,
+          "maximum": 53687091200,
+          "title": "Unpacked Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source",
+        "sha256",
+        "size_bytes",
+        "unpacked_bytes",
+        "files",
+        "tree_sha256",
+        "license",
+        "provenance",
+        "cases"
+      ],
+      "title": "Fixtures",
+      "type": "object"
+    },
+    "License": {
+      "additionalProperties": false,
+      "properties": {
+        "redistribution_allowed": {
+          "const": true,
+          "title": "Redistribution Allowed",
+          "type": "boolean"
+        },
+        "spdx": {
+          "minLength": 1,
+          "title": "Spdx",
+          "type": "string"
+        },
+        "text_file": {
+          "minLength": 1,
+          "title": "Text File",
+          "type": "string"
+        }
+      },
+      "required": [
+        "spdx",
+        "text_file",
+        "redistribution_allowed"
+      ],
+      "title": "License",
+      "type": "object"
+    },
+    "Provenance": {
+      "additionalProperties": false,
+      "properties": {
+        "revision": {
+          "minLength": 1,
+          "title": "Revision",
+          "type": "string"
+        },
+        "url": {
+          "pattern": "^https://[^\\s]+$",
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url",
+        "revision"
+      ],
+      "title": "Provenance",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "External verified native OCR release bundle. Semantic validation additionally requires exactly four approved model names, five distinct case kinds, matching complete file/tree/size inventories, sealed license texts, pinned packages, and exhaustive installed source identities. No supplied artifact is release qualified until the unchanged full physical native gate succeeds.",
+  "if": {
+    "properties": { "accelerator": { "const": "cuda" } }
+  },
+  "then": {
+    "properties": {
+      "expected_packages": {
+        "properties": { "paddlepaddle-dcu": false }
+      }
+    }
+  },
+  "properties": {
+    "accelerator": {
+      "enum": [
+        "cuda",
+        "rocm"
+      ],
+      "title": "Accelerator",
+      "type": "string"
+    },
+    "expected_packages": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Pinned package versions with exactly one native Paddle distribution. The paddlepaddle-dcu identity is available for ROCm.",
+      "minProperties": 3,
+      "oneOf": [
+        { "required": ["paddlepaddle"] },
+        { "required": ["paddlepaddle-gpu"] },
+        { "required": ["paddlepaddle-dcu"] }
+      ],
+      "title": "Expected Packages",
+      "type": "object"
+    },
+    "expected_paddle_commit": {
+      "pattern": "^[0-9a-f]{40}$",
+      "title": "Expected Paddle Commit",
+      "type": "string"
+    },
+    "fixtures": {
+      "$ref": "#/$defs/Fixtures"
+    },
+    "gpu_index": {
+      "minimum": 0,
+      "title": "Gpu Index",
+      "type": "integer"
+    },
+    "image_config_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Image Config Sha256",
+      "type": "string"
+    },
+    "image_identity": {
+      "pattern": "^(?:[^\\s]+@)?sha256:[0-9a-f]{64}$",
+      "title": "Image Identity",
+      "type": "string"
+    },
+    "models": {
+      "additionalProperties": {
+        "$ref": "#/$defs/Archive"
+      },
+      "title": "Models",
+      "type": "object"
+    },
+    "profile_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Profile Sha256",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "source_files": {
+      "additionalProperties": {
+        "pattern": "^[0-9a-f]{64}$",
+        "type": "string"
+      },
+      "minProperties": 1,
+      "title": "Source Files",
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema_version",
+    "accelerator",
+    "gpu_index",
+    "image_identity",
+    "image_config_sha256",
+    "profile_sha256",
+    "source_files",
+    "expected_paddle_commit",
+    "expected_packages",
+    "models",
+    "fixtures"
+  ],
+  "title": "ReleaseBundle",
+  "type": "object"
+}

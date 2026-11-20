@@ -1,6 +1,7 @@
 import { expect, type BrowserContext, type Page } from '@playwright/test';
 import { registerUser } from './auth';
 import type { Fixture } from './fixtures';
+import { awaitSubmission } from './api';
 
 const SNACKBAR_TIMEOUT = 15_000;
 
@@ -29,7 +30,9 @@ export async function cancelDialog(page: Page, title: string): Promise<void> {
 }
 
 export function receiptIdFromUrl(page: Page): string {
-	return page.url().split('/').pop() ?? '';
+	const match = new URL(page.url()).pathname.match(/^\/receipts\/([^/]+)$/);
+	if (!match) throw new Error('Expected a receipt URL');
+	return match[1];
 }
 
 export async function ensureSession(context: BrowserContext): Promise<void> {
@@ -63,10 +66,18 @@ export async function uploadFixture(
 			buffer: fixture.bytes
 		});
 	await page.getByRole('button', { name: 'Upload' }).click();
+	await expect(page).toHaveURL(/\/upload\?job=[0-9a-f-]+/);
+	const jobId = new URL(page.url()).searchParams.get('job')!;
+	const outcome = await awaitSubmission(context, jobId);
+	expect(outcome.status, `submission ${jobId}: ${outcome.result_code}`).toBe('analyzed');
+	expect(typeof outcome.receipt_id).toBe('string');
+	await page.getByRole('link', { name: 'Open and review receipt' }).click();
 	await expect(page.getByRole('heading', { name: fixture.expected.merchant_name })).toBeVisible({
 		timeout: 30_000
 	});
 	if (opts.bypass) {
+		const result = await context.request.get(`/api/v1/receipts/${outcome.receipt_id}`);
+		expect((await result.json()).receipt.verified).toBe(true);
 		return receiptIdFromUrl(page);
 	}
 	if (opts.verify !== false) {

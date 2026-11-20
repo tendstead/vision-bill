@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { createQuery } from '@tanstack/svelte-query';
+	import { sessionViewGuard } from '$lib/session-view';
 	import { resolve } from '$app/paths';
 	import { t, translate } from '$lib/i18n';
 	import { api } from '$lib/api/client';
@@ -8,9 +9,12 @@
 	import { formatMoney } from '$lib/ui/money';
 	import { snackbar } from '$lib/ui/snackbar.svelte';
 	import { PRESET_COLORS, colorToStyle } from '$lib/collection-colors';
+	import Dialog from '$lib/ui/Dialog.svelte';
 	import ConfirmDialog from '$lib/ui/ConfirmDialog.svelte';
 	import Icon from '$lib/ui/Icon.svelte';
 	import type { CollectionSummary } from '$lib/types';
+
+	const isCurrentView = sessionViewGuard();
 
 	let dialogOpen = $state(false);
 	let creating = $state(false);
@@ -55,7 +59,7 @@
 	}
 
 	async function submitForm(): Promise<void> {
-		if (creating) return;
+		if (!isCurrentView() || creating) return;
 		if (!name.trim()) {
 			formError = translate('collections.name');
 			return;
@@ -73,43 +77,47 @@
 				start_date: startDate || null,
 				end_date: endDate || null
 			});
+			if (!isCurrentView()) return;
 			await queryClient.invalidateQueries({ queryKey: queryKeys.collections() });
-			dialogOpen = false;
+			if (isCurrentView()) dialogOpen = false;
 		} catch {
-			snackbar.notify('error', translate('collections.createFailed'));
+			if (isCurrentView()) snackbar.notify('error', translate('collections.createFailed'));
 		} finally {
-			creating = false;
+			if (isCurrentView()) creating = false;
 		}
 	}
 
 	async function toggleActive(c: CollectionSummary): Promise<void> {
-		if (togglingId) return;
+		if (!isCurrentView() || togglingId) return;
 		togglingId = c.id;
 		try {
 			if (c.active) await api.deactivateCollection(c.id);
 			else await api.activateCollection(c.id);
+			if (!isCurrentView()) return;
 			await queryClient.invalidateQueries({ queryKey: queryKeys.collections() });
 		} catch {
+			if (!isCurrentView()) return;
 			snackbar.notify(
 				'error',
 				translate(c.active ? 'collections.deactivateFailed' : 'collections.activateFailed')
 			);
 		} finally {
-			togglingId = null;
+			if (isCurrentView()) togglingId = null;
 		}
 	}
 
 	async function removeCollection(): Promise<void> {
-		if (!confirmDelete || deleting) return;
+		if (!isCurrentView() || !confirmDelete || deleting) return;
 		deleting = true;
 		try {
 			await api.deleteCollection(confirmDelete.id);
+			if (!isCurrentView()) return;
 			confirmDelete = null;
 			await queryClient.invalidateQueries({ queryKey: queryKeys.collections() });
 		} catch {
-			snackbar.notify('error', translate('collections.deleteFailed'));
+			if (isCurrentView()) snackbar.notify('error', translate('collections.deleteFailed'));
 		} finally {
-			deleting = false;
+			if (isCurrentView()) deleting = false;
 		}
 	}
 </script>
@@ -126,13 +134,21 @@
 		</div>
 		<button
 			type="button"
-			class="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-on-primary hover:bg-primary/90"
+			class="inline-flex items-center gap-2 rounded-lg bg-action px-4 py-2 text-sm font-medium text-on-primary hover:bg-action/90"
 			onclick={openDialog}
 		>
 			<Icon icon="plus" />
 			{$t('collections.new')}
 		</button>
 	</div>
+
+	{#each (list.data ?? []).filter((collection) => collection.active) as active (active.id)}
+		<p
+			class="mt-4 rounded-xl border border-primary bg-primary-container p-3 text-sm font-medium text-on-primary-container"
+		>
+			{$t('statistics.activeCollection', { values: { name: active.name } })}
+		</p>
+	{/each}
 
 	<p class="mt-2 text-xs text-on-surface-variant">{$t('collections.doubleCountNote')}</p>
 
@@ -151,17 +167,17 @@
 	{:else}
 		<ul class="mt-4 space-y-3">
 			{#each list.data as c (c.id)}
-				<li class="flex items-center gap-3">
+				<li class="flex flex-wrap items-center gap-3 sm:flex-nowrap">
 					<a
 						href={resolve(`/collections/${c.id}`)}
-						class="flex min-w-0 flex-1 items-center gap-3 rounded-xl border border-outline-variant bg-surface-container-low p-4 transition-colors hover:border-primary/50"
+						class="flex min-w-0 basis-full flex-wrap items-center gap-3 rounded-xl sm:flex-1 sm:basis-auto border border-outline-variant bg-surface-container-low p-4 transition-colors hover:border-primary/50"
 					>
 						<span
 							class="flex size-12 shrink-0 items-center justify-center rounded-lg"
 							style={colorToStyle(c.color)}
 						></span>
 						<div class="min-w-0 flex-1">
-							<p class="truncate text-sm font-medium">{c.name}</p>
+							<p class="break-words text-sm font-medium">{c.name}</p>
 							<p class="text-xs text-on-surface-variant">
 								{$t('collections.receiptCount', { values: { count: c.receipt_count } })}
 								{#if c.start_date || c.end_date}
@@ -224,115 +240,107 @@
 </section>
 
 {#if dialogOpen}
-	<div class="fixed inset-0 z-40 flex items-center justify-center p-4" role="presentation">
-		<div class="absolute inset-0 bg-black/50" role="presentation" onclick={closeDialog}></div>
-		<div
-			role="dialog"
-			aria-modal="true"
-			aria-label={$t('collections.new')}
-			class="relative w-full max-w-md rounded-xl bg-surface p-5 shadow-elevation-4"
+	<Dialog title={$t('collections.new')} busy={creating} onCancel={closeDialog}>
+		<form
+			onsubmit={(event) => {
+				event.preventDefault();
+				void submitForm();
+			}}
 		>
-			<form
-				onsubmit={(event) => {
-					event.preventDefault();
-					void submitForm();
-				}}
-			>
-				<h2 class="text-lg font-semibold">{$t('collections.new')}</h2>
+			<h2 class="text-lg font-semibold">{$t('collections.new')}</h2>
 
-				<label class="mt-4 block text-sm">
-					{$t('collections.name')}
+			<label class="mt-4 block text-sm">
+				{$t('collections.name')}
+				<input
+					type="text"
+					required
+					class="mt-1 w-full rounded-lg border border-outline-variant bg-surface-container-lowest px-3 py-2 text-sm"
+					value={name}
+					oninput={(event) => (name = (event.currentTarget as HTMLInputElement).value)}
+				/>
+			</label>
+
+			<div class="mt-4">
+				<span class="block text-sm">{$t('collections.color')}</span>
+				<div class="mt-1 flex flex-wrap items-center gap-2">
+					{#each PRESET_COLORS as preset (preset)}
+						<button
+							type="button"
+							aria-label={preset}
+							aria-pressed={color === preset}
+							class="size-8 rounded-full ring-2 ring-offset-2 {color === preset
+								? 'ring-primary'
+								: 'ring-transparent'}"
+							style={colorToStyle(preset, true)}
+							onclick={() => (color = preset)}
+						></button>
+					{/each}
+					<!-- Custom color: a labeled pill (clearly not a preset dot) that
+						     opens the native color picker; selected when a non-preset color is set. -->
+					<label
+						class="flex h-8 cursor-pointer items-center gap-2 rounded-lg border border-outline-variant px-2.5 text-sm transition-colors hover:border-primary/50 focus-within:border-primary focus-within:ring-1 focus-within:ring-primary {isCustomColor
+							? 'border-primary ring-2 ring-primary/30'
+							: ''}"
+					>
+						<span
+							class="size-5 shrink-0 rounded-full border border-outline-variant"
+							style={colorToStyle(color, true)}
+						></span>
+						{$t('collections.colorCustom')}
+						<input
+							type="color"
+							class="sr-only"
+							aria-label={$t('collections.colorCustom')}
+							value={color && color !== '' ? color : '#64748B'}
+							oninput={onColorPicker}
+						/>
+					</label>
+				</div>
+			</div>
+
+			<div class="mt-4 grid gap-3 sm:grid-cols-2">
+				<label class="block text-sm">
+					{$t('collections.start')}
 					<input
-						type="text"
-						required
+						type="date"
 						class="mt-1 w-full rounded-lg border border-outline-variant bg-surface-container-lowest px-3 py-2 text-sm"
-						value={name}
-						oninput={(event) => (name = (event.currentTarget as HTMLInputElement).value)}
+						value={startDate}
+						oninput={(event) => (startDate = (event.currentTarget as HTMLInputElement).value)}
 					/>
 				</label>
+				<label class="block text-sm">
+					{$t('collections.end')}
+					<input
+						type="date"
+						class="mt-1 w-full rounded-lg border border-outline-variant bg-surface-container-lowest px-3 py-2 text-sm"
+						value={endDate}
+						oninput={(event) => (endDate = (event.currentTarget as HTMLInputElement).value)}
+					/>
+				</label>
+			</div>
 
-				<div class="mt-4">
-					<span class="block text-sm">{$t('collections.color')}</span>
-					<div class="mt-1 flex flex-wrap items-center gap-2">
-						{#each PRESET_COLORS as preset (preset)}
-							<button
-								type="button"
-								aria-label={preset}
-								aria-pressed={color === preset}
-								class="size-8 rounded-full ring-2 ring-offset-2 {color === preset
-									? 'ring-primary'
-									: 'ring-transparent'}"
-								style={colorToStyle(preset)}
-								onclick={() => (color = preset)}
-							></button>
-						{/each}
-						<!-- Custom color: a labeled pill (clearly not a preset dot) that
-						     opens the native color picker; selected when a non-preset color is set. -->
-						<label
-							class="flex h-8 cursor-pointer items-center gap-2 rounded-lg border border-outline-variant px-2.5 text-sm transition-colors hover:border-primary/50 focus-within:border-primary focus-within:ring-1 focus-within:ring-primary {isCustomColor
-								? 'border-primary ring-2 ring-primary/30'
-								: ''}"
-						>
-							<span
-								class="size-5 shrink-0 rounded-full border border-outline-variant"
-								style={colorToStyle(color)}
-							></span>
-							{$t('collections.colorCustom')}
-							<input
-								type="color"
-								class="sr-only"
-								aria-label={$t('collections.colorCustom')}
-								value={color && color !== '' ? color : '#64748B'}
-								oninput={onColorPicker}
-							/>
-						</label>
-					</div>
-				</div>
+			{#if formError}
+				<p class="mt-3 text-sm text-error" role="alert">{formError}</p>
+			{/if}
 
-				<div class="mt-4 grid grid-cols-2 gap-3">
-					<label class="block text-sm">
-						{$t('collections.start')}
-						<input
-							type="date"
-							class="mt-1 w-full rounded-lg border border-outline-variant bg-surface-container-lowest px-3 py-2 text-sm"
-							value={startDate}
-							oninput={(event) => (startDate = (event.currentTarget as HTMLInputElement).value)}
-						/>
-					</label>
-					<label class="block text-sm">
-						{$t('collections.end')}
-						<input
-							type="date"
-							class="mt-1 w-full rounded-lg border border-outline-variant bg-surface-container-lowest px-3 py-2 text-sm"
-							value={endDate}
-							oninput={(event) => (endDate = (event.currentTarget as HTMLInputElement).value)}
-						/>
-					</label>
-				</div>
-
-				{#if formError}
-					<p class="mt-3 text-sm text-error" role="alert">{formError}</p>
-				{/if}
-
-				<div class="mt-5 flex justify-end gap-2">
-					<button
-						type="button"
-						class="rounded-lg border border-outline-variant px-4 py-2 text-sm font-medium hover:bg-surface-container-high"
-						onclick={closeDialog}
-					>
-						{$t('collections.cancel')}
-					</button>
-					<button
-						type="submit"
-						disabled={creating}
-						class="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-on-primary hover:bg-primary/90 disabled:opacity-60"
-					>
-						{$t('collections.save')}
-					</button>
-				</div>
-			</form>
-		</div>
-	</div>
+			<div class="mt-5 flex justify-end gap-2">
+				<button
+					type="button"
+					class="rounded-lg border border-outline-variant px-4 py-2 text-sm font-medium hover:bg-surface-container-high"
+					onclick={closeDialog}
+				>
+					{$t('collections.cancel')}
+				</button>
+				<button
+					type="submit"
+					disabled={creating}
+					class="rounded-lg bg-action px-4 py-2 text-sm font-medium text-on-primary hover:bg-action/90 disabled:opacity-60"
+				>
+					{$t('collections.save')}
+				</button>
+			</div>
+		</form>
+	</Dialog>
 {/if}
 
 <ConfirmDialog

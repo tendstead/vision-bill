@@ -1,0 +1,46 @@
+{
+  "confidence": 95,
+  "merchant_name": "Aldi Test",
+  "merchant_address": "Testweg 1, 12345 Teststadt",
+  "receipt_number": "A-1001",
+  "date": "2026-05-01",
+  "time": "14:30",
+  "currency": "EUR",
+  "category": "grocery",
+  "line_items": [
+    {
+      "description": "Milk",
+      "quantity": null,
+      "unit_price": null,
+      "total_price": "2.00",
+      "tags": null
+    },
+    {
+      "description": "Bread",
+      "quantity": 1,
+      "unit_price": "1.50",
+      "total_price": "1.50",
+      "tags": null
+    }
+  ],
+  "taxes": [
+    {
+      "name": "VAT",
+      "rate": 0.19,
+      "amount": "0.36"
+    }
+  ],
+  "subtotal": "3.50",
+  "tax_total": null,
+  "total": "3.86",
+  "payment_method": "credit_card",
+  "discount_total": null,
+  "tip": null,
+  "amount_policy": {
+    "tax_basis": "net",
+    "discount_treatment": "included_in_lines",
+    "tip_treatment": "none",
+    "subtotal_origin": "printed",
+    "tax_information": "present"
+  }
+}

@@ -125,6 +125,12 @@ def _tax_row(receipt_id: UUID = RECEIPT_ID) -> dict[str, Any]:
     }
 
 
+def _review_update(receipt):
+    result = receipt if isinstance(receipt, ReceiptUpdate) else ReceiptUpdate.model_validate(receipt.model_dump())
+    result.expected_operation_revision = 1
+    return result
+
+
 def _make_receipt(merchant_name: str = "Test Store") -> Receipt:
     return Receipt(
         confidence=95,
@@ -309,11 +315,11 @@ async def test_persist_receipt_binds_negative_line_item_prices(db: ReceiptDB) ->
     ]
     assert len(insert_calls) == 2
     pfand_call = insert_calls[1]
-    # $4 = unit_price and $5 = total_price arrive as negative floats, not clamped.
+    # Monetary binds preserve exact Decimal values, including negative prices.
     assert pfand_call.args[4] == -0.25
     assert pfand_call.args[5] == -0.75
-    assert isinstance(pfand_call.args[4], float)
-    assert isinstance(pfand_call.args[5], float)
+    assert isinstance(pfand_call.args[4], Decimal)
+    assert isinstance(pfand_call.args[5], Decimal)
 
 
 @pytest.mark.asyncio
@@ -432,7 +438,7 @@ async def test_get_receipt_with_details(db: ReceiptDB) -> None:
     assert details.line_items[0].quantity == 2.0
     assert details.line_items[0].tags == ["test"]
     assert len(details.taxes) == 1
-    assert details.taxes[0].rate == 0.19
+    assert details.taxes[0].rate == Decimal("0.19")
 
 
 @pytest.mark.asyncio
@@ -476,7 +482,7 @@ async def test_update_receipt(db: ReceiptDB) -> None:
 
     receipt = _make_receipt(merchant_name="Updated Store")
 
-    result = await db.update_receipt(RECEIPT_ID, receipt)
+    result = await db.update_receipt(RECEIPT_ID, _review_update(receipt))
 
     assert result is not None
     assert result.merchant_name == "Updated Store"
@@ -510,29 +516,14 @@ async def test_update_receipt_not_found(db: ReceiptDB) -> None:
 
 
 @pytest.mark.asyncio
-async def test_verify_receipt(db: ReceiptDB) -> None:
-    """verify_receipt should set status='verified' and map the RETURNING row."""
+async def test_verify_receipt_rejects_already_verified(db: ReceiptDB) -> None:
+    """The locked state, rather than an earlier API read, rejects duplicate verification."""
     mock_conn = AsyncMock()
     db._pool = _make_pool(mock_conn)
-    mock_conn.fetchrow = AsyncMock(
-        return_value=_receipt_row(
-            receipt_id=RECEIPT_ID, status="verified", verified=True, image_id=IMAGE_ID
-        )
-    )
-
-    result = await db.verify_receipt(RECEIPT_ID)
-
-    assert result is not None
-    assert result.status == "verified"
-    assert result.verified is True
-    assert result.image_id == IMAGE_ID
-
-    fetchrow_call = mock_conn.fetchrow.call_args
-    assert fetchrow_call is not None
-    assert "status = 'verified'" in fetchrow_call.args[0]
-    assert "verified = TRUE" in fetchrow_call.args[0]
-    assert "RETURNING *" in fetchrow_call.args[0]
-    assert fetchrow_call.args[1] == RECEIPT_ID
+    mock_conn.fetchrow = AsyncMock(return_value=_receipt_row(status="verified", verified=True))
+    with pytest.raises(ValueError, match="already_verified"):
+        await db.verify_receipt(RECEIPT_ID)
+    mock_conn.execute.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -777,10 +768,10 @@ async def test_update_preserves_original_and_owner_history(
     owner = UUID("00000000-0000-4000-8000-000000000099")
     admin = UUID("00000000-0000-4000-8000-000000000098")
     conn.fetchrow = AsyncMock(return_value=_receipt_row(user_id=owner))
-    conn.fetch = AsyncMock(return_value=[{
+    conn.fetch = AsyncMock(side_effect=lambda sql, *args: [{
         **_line_item_row(), "description": "Milk", "original_description": "H-MILCH 1,5%",
         "spending_category": "milk", "category_source": "user",
-    }])
+    }] if sql == LIST_LINE_ITEMS_SQL else [])
     receipt = ReceiptUpdate.model_validate(_make_receipt().model_dump())
     receipt.line_items = [LineItemUpdate(
         id=LINE_ITEM_ID, description="Organic milk", quantity=1,
@@ -788,7 +779,7 @@ async def test_update_preserves_original_and_owner_history(
         remember_category=remember,
     )]
 
-    await db.update_receipt(RECEIPT_ID, receipt, user_id=admin, can_see_all=True)
+    await db.update_receipt(RECEIPT_ID, _review_update(receipt), user_id=admin, can_see_all=True)
 
     inserted = next(c for c in conn.execute.call_args_list if c.args[0] == INSERT_LINE_ITEM_SQL)
     assert inserted.args[8:12] == (LINE_ITEM_ID, "milk", "user", "H-MILCH 1,5%")
@@ -804,13 +795,13 @@ async def test_legacy_replacement_does_not_inherit_removed_item(db: ReceiptDB) -
     conn = AsyncMock()
     db._pool = _make_pool(conn)
     conn.fetchrow = AsyncMock(return_value=_receipt_row())
-    conn.fetch = AsyncMock(return_value=[{
+    conn.fetch = AsyncMock(side_effect=lambda sql, *args: [{
         **_line_item_row(), "description": "Removed item",
         "original_description": "Removed item", "spending_category": "milk",
         "category_source": "user",
-    }])
+    }] if sql == LIST_LINE_ITEMS_SQL else [])
     receipt = _make_receipt()
-    await db.update_receipt(RECEIPT_ID, receipt)
+    await db.update_receipt(RECEIPT_ID, _review_update(receipt))
     inserted = next(c for c in conn.execute.call_args_list if c.args[0] == INSERT_LINE_ITEM_SQL)
     assert inserted.args[8:12] == (None, "unknown", "unknown", "Item A")
 
@@ -821,18 +812,37 @@ async def test_explicit_unknown_removes_both_confirmed_aliases(db: ReceiptDB) ->
     db._pool = _make_pool(conn)
     owner = UUID("00000000-0000-4000-8000-000000000099")
     conn.fetchrow = AsyncMock(return_value=_receipt_row(user_id=owner))
-    conn.fetch = AsyncMock(return_value=[{
+    conn.fetch = AsyncMock(side_effect=lambda sql, *args: [{
         **_line_item_row(), "description": "Milk", "original_description": "H-MILCH 1,5%",
         "spending_category": "milk", "category_source": "history",
-    }])
+    }] if sql == LIST_LINE_ITEMS_SQL else [])
     receipt = ReceiptUpdate.model_validate(_make_receipt().model_dump())
     receipt.line_items = [LineItemUpdate(
         id=LINE_ITEM_ID, description="Milk", quantity=1,
         unit_price=Decimal(2), total_price=Decimal(2),
         spending_category="unknown", remember_category=True,
     )]
-    await db.update_receipt(RECEIPT_ID, receipt, user_id=owner)
+    await db.update_receipt(RECEIPT_ID, _review_update(receipt), user_id=owner)
     inserted = next(c for c in conn.execute.call_args_list if c.args[0] == INSERT_LINE_ITEM_SQL)
     assert inserted.args[9:11] == ("unknown", "user")
     deletes = [c for c in conn.execute.call_args_list if c.args[0] == DELETE_CATEGORY_ALIAS_SQL]
     assert {c.args[3] for c in deletes} == {"h-milch 1,5%", "milk"}
+
+
+@pytest.mark.asyncio
+async def test_details_and_replacement_only_access_visible_collection_links(db: ReceiptDB) -> None:
+    owner, target = OTHER_RECEIPT_ID, IMAGE_ID
+    conn = AsyncMock()
+    conn.fetchrow = AsyncMock(return_value=_receipt_row())
+    db._pool = _make_pool(conn)
+    conn.fetch.side_effect = [[], [], [{"collection_id": target}], [{"id": target}]]
+    detail = await db.get_receipt_with_details(RECEIPT_ID, user_id=owner)
+    assert detail is not None and detail.collection_ids == [target]
+    read_sql, *read_args = conn.fetch.await_args.args
+    assert "JOIN collections" in read_sql and "c.user_id" in read_sql
+    assert read_args == [RECEIPT_ID, owner]
+
+    await db._set_collections(conn, RECEIPT_ID, [target], owner, False)
+    delete_sql, *delete_args = conn.execute.await_args_list[0].args
+    assert "USING collections" in delete_sql and "c.user_id" in delete_sql
+    assert delete_args == [RECEIPT_ID, owner]

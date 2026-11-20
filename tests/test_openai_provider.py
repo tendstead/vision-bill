@@ -245,7 +245,7 @@ async def test_send_message_empty_content(mock_client):
 
 
 @pytest.mark.asyncio
-async def test_send_message_sends_temperature_and_reasoning_effort(mock_client):
+async def test_send_message_sends_temperature_without_optional_reasoning_extension(mock_client):
     mock_client.chat.completions.create.return_value = _chat_response("ok")
 
     provider = OpenAIProvider(host="http://localhost:8642/v1", api_key="none", temperature=0.3)
@@ -254,7 +254,7 @@ async def test_send_message_sends_temperature_and_reasoning_effort(mock_client):
     kwargs = mock_client.chat.completions.create.call_args.kwargs
     assert kwargs["model"] == "model-x"
     assert kwargs["temperature"] == 0.3
-    assert kwargs["reasoning_effort"] == "low"
+    assert "reasoning_effort" not in kwargs
 
 
 @pytest.mark.asyncio
@@ -442,3 +442,37 @@ def _flatten_message_contents(messages):
                 if isinstance(item, dict) and item.get("type") == "text":
                     parts.append(item.get("text", ""))
     return parts
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hybrid", [False, True])
+async def test_discovery_distinguishes_image_input_from_unrelated_modalities(mock_client, hybrid):
+    entries = [
+        {"id": "output-only", "input_modalities": ["text"], "meta": {"output_modalities": ["image"]}},
+        {"id": "explicit-text", "meta": {"input_modalities": ["text"]}, "capabilities": ["vision"]},
+        {"id": "architecture-input", "architecture": {"input_modalities": ["image", "text"]}},
+        {"id": "meta-input", "meta": {"input_modalities": ["image", "text"]}},
+        {"id": "top-input", "input_modalities": ["image", "text"]},
+        {"id": "declared", "meta": {"output_modalities": ["image"]}},
+        {"id": "vision-name-without-input-evidence", "meta": {"other": ["image"]}},
+        {"id": "text-capabilities", "capabilities": ["completion"]},
+    ]
+    hybrid_entries = [
+        _ollama_entry(model["id"], model.get("capabilities", [])) for model in entries
+    ] if hybrid else []
+    mock_client.models.with_raw_response.list.return_value = _raw_response(
+        _json.dumps({"models": hybrid_entries, "data": entries}).encode()
+    )
+    provider = OpenAIProvider(
+        host="http://localhost:8642/v1",
+        api_key="none",
+        vision_model_ids=["output-only", "explicit-text", "declared", "text-capabilities"],
+    )
+
+    expected = {"architecture-input", "meta-input", "top-input", "declared"}
+    assert {model.id for model in await provider.get_available_models()} == expected
+    all_models = await provider.get_available_models(capability="all")
+    assert {model.id for model in all_models} == {entry["id"] for entry in entries}
+    assert {
+        model.id for model in all_models if {"vision", "multimodal"}.intersection(model.capabilities)
+    } == expected

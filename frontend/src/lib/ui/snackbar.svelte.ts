@@ -29,6 +29,9 @@ function createSnackbar() {
 
 	return {
 		subscribe,
+		clear(): void {
+			update(() => []);
+		},
 		notify(kind: SnackbarKind, text: string, duration = 6000): void {
 			const id = uuid();
 			update((items) => [...items, { id, kind, text }]);

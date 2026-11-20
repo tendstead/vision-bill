@@ -1,0 +1,5 @@
+# UNRESOLVED RELEASE GATE — no native CUDA image can be built from this file.
+# Official cu129 paddlepaddle_gpu-3.3.1 cp312 x86_64 URL/hash/METADATA must be
+# resolved from actual official bytes by build/resolve_cuda.py before Docker build.
+# The execution environment denied CONNECT to the official index/BOS with 403.
+# No placeholder --hash=sha256 value is accepted or supplied.

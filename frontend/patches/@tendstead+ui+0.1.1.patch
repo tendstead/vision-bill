@@ -1,5 +1,4 @@
 diff --git a/node_modules/@tendstead/ui/dist/AppShell.svelte b/node_modules/@tendstead/ui/dist/AppShell.svelte
-index 443c3c4..6274f66 100644
 --- a/node_modules/@tendstead/ui/dist/AppShell.svelte
 +++ b/node_modules/@tendstead/ui/dist/AppShell.svelte
 @@ -6,7 +6,14 @@
@@ -29,7 +28,7 @@ index 443c3c4..6274f66 100644
        {#each services as service (service.id)}
          <a class="ts-nav-link" href={service.href}>
            {#if service.icon}<service.icon size={21} aria-hidden="true"/>{/if}
-@@ -65,13 +72,13 @@
+@@ -65,38 +72,38 @@
  <div class="ts-shell" style:--ts-mobile-space={`${barHeight+24}px`}>
    <div class="ts-shell-background" data-shell-background inert={$open}>
 -    <a class="ts-skip" href={`#${uid}-content`}>Skip to content</a>
@@ -47,7 +46,9 @@ index 443c3c4..6274f66 100644
      </aside>
      <div class="ts-workspace">
        <header class="ts-header">
-@@ -80,23 +87,23 @@
+-        <div class="ts-page-heading"><p class="ts-eyebrow">{appLabel}</p><h1>{pageTitle}</h1></div>
++        <div class="ts-page-heading"><p class="ts-header-brand">{brand}</p></div>
+         <div class="ts-header-actions">{#if pageActions}{@render pageActions()}{/if}{#if primaryAction}<div class="ts-desktop-action"><Action action={primaryAction}/></div>{/if}</div>
        </header>
        <main id={`${uid}-content`} class="ts-page-content" tabindex="-1">{@render children()}</main>
      </div>

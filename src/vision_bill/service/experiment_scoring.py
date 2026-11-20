@@ -7,7 +7,8 @@ from typing import Any
 
 from ..model.receipt import Receipt
 
-DETAIL_SCORING_VERSION = "3"
+DETAIL_SCORING_VERSION = "4"
+LEGACY_DETAIL_SCORING_VERSION = "3"
 HEADER = ("merchant_name", "merchant_address", "receipt_number", "date", "time", "currency", "payment_method")
 TOTALS = ("subtotal", "discount_total", "tax_total", "tip", "total")
 ITEM = ("description", "quantity", "unit_price", "total_price")
@@ -24,7 +25,7 @@ def _fraction(values: list[bool]) -> float:
     return sum(values) / len(values) if values else 1.0
 
 
-def detailed_score(expected: Receipt, actual: Receipt, *, classification: bool = True) -> dict[str, Any]:
+def detailed_score_v3(expected: Receipt, actual: Receipt, *, classification: bool = True) -> dict[str, Any]:
     left, right = expected.model_dump(mode="json"), actual.model_dump(mode="json")
     differences: list[dict[str, Any]] = []
     strict: dict[str, list[bool]] = {k: [] for k in ("header", "totals", "line_items", "taxes")}
@@ -37,6 +38,9 @@ def detailed_score(expected: Receipt, actual: Receipt, *, classification: bool =
             # Decimal serialization differences (12.9 vs 12.90) are equivalent;
             # a one-cent error is not forgiven. No lossy rounding is applied.
             equal = Decimal(str(e)) == Decimal(str(a))
+            # These v3 fields were JSON numbers. Their scale never affected strict scores.
+            if path.endswith((".quantity", ".rate")):
+                exact = equal
         else:
             equal = normalized(e) == normalized(a)
         if path == "time" and isinstance(e, str) and isinstance(a, str):
@@ -105,12 +109,115 @@ def detailed_score(expected: Receipt, actual: Receipt, *, classification: bool =
                   )
                   for index, item in enumerate(left["line_items"])
               ]) if len(left["line_items"]) == len(right["line_items"]) else 0.0}
-    return {"version": DETAIL_SCORING_VERSION, "scores": scores,
+    return {"version": LEGACY_DETAIL_SCORING_VERSION, "scores": scores,
             "differences": differences,
             "rows": {"missing": missing, "extra": extra, "matched": matched},
             "checks": {
                 "tax_lines_sum_matches_tax_total": sum((t.amount for t in actual.taxes), Decimal(0)) == actual.tax_total,
-                "schema_net_plus_tax_matches_total": actual.subtotal - actual.discount_total + actual.tax_total + (actual.tip or 0) == actual.total,
+                "schema_net_plus_tax_matches_total": actual.subtotal - (actual.discount_total or 0) + actual.tax_total + (actual.tip or 0) == actual.total,
                 "line_totals_sum": str(sum((item.total_price for item in actual.line_items), Decimal(0))),
                 "note": "Arithmetic checks are diagnostics; tax-inclusive receipt conventions may differ from the schema."
             }}
+
+
+OBSERVABLE_FIELDS = (*HEADER, *TOTALS, 'line_items', 'taxes')
+
+
+def _description(value: str) -> str:
+    return ' '.join(unicodedata.normalize('NFKC', value).split()).casefold()
+
+
+def _item_key(row: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        _description(row['description']),
+        *(None if value is None else Decimal(str(value))
+          for value in (row.get('quantity'), row.get('unit_price'), row['total_price'])),
+    )
+
+
+def _lcs(left: list[tuple[Any, ...]], right: list[tuple[Any, ...]]) -> list[list[int]]:
+    """Maximum ordered exact matches, then lexicographically earliest index pairs."""
+    n, m = len(left), len(right)
+    lengths = [[0] * (m + 1) for _ in range(n + 1)]
+    for i in range(n - 1, -1, -1):
+        for j in range(m - 1, -1, -1):
+            lengths[i][j] = (1 + lengths[i + 1][j + 1] if left[i] == right[j]
+                             else max(lengths[i + 1][j], lengths[i][j + 1]))
+    matches: list[list[int]] = []
+    start_i = start_j = 0
+    remaining = lengths[0][0]
+    while remaining:
+        found = False
+        for i in range(start_i, n):
+            for j in range(start_j, m):
+                if left[i] == right[j] and 1 + lengths[i + 1][j + 1] == remaining:
+                    matches.append([i, j])
+                    start_i, start_j = i + 1, j + 1
+                    remaining -= 1
+                    found = True
+                    break
+            if found:
+                break
+    return matches
+
+
+def detailed_score(
+    expected: Receipt | dict[str, Any], actual: Receipt | None, *, classification: bool = True,
+    scored_fields: list[str] | None = None,
+) -> dict[str, Any]:
+    """Add exact receipt/occurrence metrics without redefining historical v3 scores.
+
+    The frozen mask names observable top-level fields; row collections include every
+    ordered printed field and occurrence. Classification and confidence never qualify.
+    A failed extraction remains a zero-score observation in the dataset denominator.
+    """
+    mask = list(OBSERVABLE_FIELDS) if scored_fields is None else list(scored_fields)
+    if set(mask) - set(OBSERVABLE_FIELDS):
+        raise ValueError('Unknown observable scoring field')
+    left = expected.model_dump(mode='json') if isinstance(expected, Receipt) else expected
+    legacy_expected = expected if isinstance(expected, Receipt) else Receipt.model_validate(expected)
+    failed = actual is None
+    right = actual.model_dump(mode='json') if actual is not None else {}
+    litems = [_item_key(row) for row in left['line_items']]
+    ritems = [_item_key(row) for row in right.get('line_items', [])]
+    matches = _lcs(litems, ritems)
+    tp, fp, fn = len(matches), len(ritems) - len(matches), len(litems) - len(matches)
+    equality: dict[str, bool] = {}
+    for key in HEADER:
+        e, a = left[key], right.get(key)
+        equal = normalized(e) == normalized(a)
+        if key == 'time' and isinstance(e, str) and isinstance(a, str):
+            try:
+                equal = time.fromisoformat(e) == time.fromisoformat(a)
+            except ValueError:
+                pass
+        equality[key] = equal
+    for key in TOTALS:
+        e, a = left.get(key, getattr(legacy_expected, key)), right.get(key)
+        equality[key] = e == a if e is None or a is None else Decimal(str(e)) == Decimal(str(a))
+    equality['line_items'] = litems == ritems
+    def tax_key(row: dict[str, Any]) -> tuple[Any, ...]:
+        return (normalized(row['name']), *(None if row[k] is None else Decimal(str(row[k]))
+                                          for k in ('rate', 'amount')))
+    equality['taxes'] = [tax_key(row) for row in left['taxes']] == [
+        tax_key(row) for row in right.get('taxes', [])]
+    result: dict[str, Any] = detailed_score_v3(legacy_expected, actual, classification=classification) if actual is not None else {
+        'scores': {key: 0.0 for key in ('header', 'totals', 'line_items', 'taxes', 'strict',
+                                      'normalized', 'ordered_items')},
+        'differences': [], 'checks': {},
+        'rows': {'missing': len(litems), 'extra': 0, 'matched': 0},
+    }
+    result.update(
+        version=DETAIL_SCORING_VERSION, legacy_detail_version=LEGACY_DETAIL_SCORING_VERSION,
+        scored_fields=mask, extraction_failed=failed,
+        full_receipt_correct=not failed and all(equality[key] for key in mask),
+        item_tp=tp, item_fp=fp, item_fn=fn, item_matches=matches,
+        precision=tp / (tp + fp) if tp + fp else (0.0 if failed or fn else 1.0),
+        recall=tp / (tp + fn) if tp + fn else (0.0 if failed else 1.0),
+        exact_item_count=not failed and len(litems) == len(ritems),
+        exact_item_order=not failed and litems == ritems,
+        exact_amounts=not failed and all(equality[key] for key in TOTALS)
+        and [row[1:] for row in litems] == [row[1:] for row in ritems]
+        and equality['taxes'],
+    )
+    return result

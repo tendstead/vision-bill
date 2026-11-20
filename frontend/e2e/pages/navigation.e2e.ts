@@ -100,7 +100,10 @@ for (const admin of [false, true]) {
 		await expect(page).toHaveURL(/\/search$/);
 		await expect(drawer).toHaveCount(0);
 		await page.getByRole('button', { name: 'Menu', exact: true }).click();
-		await page.getByRole('dialog').getByRole('button', { name: 'Toggle theme' }).click();
+		await page
+			.getByRole('dialog')
+			.getByRole('combobox', { name: 'Appearance' })
+			.selectOption('dark');
 		await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
 		await page.keyboard.press('Escape');
 		await expect(page.getByRole('button', { name: 'Menu', exact: true })).toBeFocused();

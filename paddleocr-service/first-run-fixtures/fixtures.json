@@ -1,0 +1,18 @@
+{
+  "license": {
+    "spdx": "AGPL-3.0-or-later",
+    "text_file": "LICENSE.txt",
+    "redistribution_allowed": true
+  },
+  "provenance": {
+    "url": "https://github.com/tendstead/vision-bill",
+    "revision": "first-run-ocr-fixtures-v1"
+  },
+  "cases": {
+    "upright": "upright.png",
+    "rotated": "rotated.png",
+    "warped": "warped.png",
+    "table": "table.png",
+    "formula": "formula.png"
+  }
+}

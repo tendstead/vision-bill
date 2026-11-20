@@ -85,7 +85,7 @@ async def _run(args: argparse.Namespace) -> int:
     import asyncpg
 
     settings = Settings()  # type: ignore[call-arg]
-    image_service = ImageService(settings.images)
+    image_service = None if args.dry_run else ImageService(settings.images)
     extra_dirs = [settings.images.save_dir, settings.images.tmp_dir]
 
     conn = await asyncpg.connect(dsn=settings.pg.pg_dsn)
@@ -101,7 +101,11 @@ async def _run(args: argparse.Namespace) -> int:
             if path is None:
                 skipped += 1
                 continue
-            thumb = None if args.dry_run else image_service.generate_thumbnail(path)
+            if args.dry_run:
+                processed += 1
+                continue
+            assert image_service is not None
+            thumb = image_service.generate_thumbnail(path)
             if thumb is None:
                 failed += 1
                 continue
@@ -110,10 +114,8 @@ async def _run(args: argparse.Namespace) -> int:
             processed += 1
 
         verb = "would process" if args.dry_run else "processed"
-        print(
-            f"{verb} {processed} image(s); "
-            f"{skipped} had no resolvable file; {failed} failed to decode."
-        )
+        detail = "decoding not attempted (dry-run)." if args.dry_run else f"{failed} failed to decode."
+        print(f"{verb} {processed} image(s); {skipped} had no resolvable file; {detail}")
         return 0
     finally:
         await conn.close()

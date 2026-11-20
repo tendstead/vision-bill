@@ -1,7 +1,9 @@
 # Shared shell localization
 
 `@tendstead+ui+0.1.1.patch` adds optional reactive label overrides to AppShell,
-including visible text and accessible names. English remains the default;
+including visible text and accessible names. It also renders the shell brand as
+a paragraph so each route owns the single page heading, without a duplicate
+heading or decorative eyebrow in the header. English remains the default;
 Vision Bill supplies labels from its existing English/German dictionaries.
 
 `npm ci` applies this patch through `postinstall` and fails if it cannot apply.

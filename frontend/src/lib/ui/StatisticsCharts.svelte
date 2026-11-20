@@ -22,6 +22,7 @@
 	}
 </script>
 
+<p class="mb-4 text-sm text-on-surface-variant">{$t('statistics.receiptScope')}</p>
 <div class="grid gap-4 sm:grid-cols-2">
 	<div class="rounded-xl border border-outline-variant bg-surface-container-low p-5">
 		<p class="text-sm text-on-surface-variant">{$t('statistics.receiptCount')}</p>
@@ -108,6 +109,7 @@
 	{#each weeklyCharts as chart (chart.currency)}
 		<div class="rounded-xl border border-outline-variant bg-surface-container-low p-5">
 			<h2 class="font-semibold">{$t('statistics.weeklySpending')} · {chart.currency}</h2>
+			<p class="mt-1 text-xs text-on-surface-variant">{$t('statistics.weeklyScope')}</p>
 			<div
 				class="mt-5 flex h-40 items-end gap-1"
 				role="img"
@@ -126,6 +128,28 @@
 					</div>
 				{/each}
 			</div>
+			<details class="mt-4">
+				<summary class="cursor-pointer text-sm font-medium">{$t('statistics.chartData')}</summary>
+				<table class="mt-2 w-full text-sm">
+					<caption class="sr-only">{$t('statistics.weeklySpending')} · {chart.currency}</caption>
+					<thead
+						><tr
+							><th scope="col" class="text-left">{$t('statistics.week')}</th><th
+								scope="col"
+								class="text-right">{$t('statistics.amount')}</th
+							></tr
+						></thead
+					>
+					<tbody
+						>{#each chart.points as point (point.week_start)}<tr
+								class="border-t border-outline-variant"
+								><th scope="row" class="py-2 text-left font-normal">{point.week_start}</th><td
+									class="text-right tabular-nums">{formatMoney(point.total, chart.currency)}</td
+								></tr
+							>{/each}</tbody
+					>
+				</table>
+			</details>
 		</div>
 	{/each}
 </div>

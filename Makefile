@@ -1,5 +1,11 @@
 # vision-bill development workflow.
 .DEFAULT_GOAL := help
+.PHONY: ocr-compare receipt-compare
+receipt-compare: ## Compare direct vision and cached OCR with local LLMs (ARGS="--dataset ... --targets ... --ocr-report ...")
+	uv run python -m scripts.ocr_harness.comparison $(ARGS)
+
+ocr-compare: ## Compare local OCR engines (ARGS="run --data-dir /path/to/receipts")
+	uv run python -m scripts.ocr_harness $(ARGS)
 SHELL := /bin/bash
 
 .PHONY: help install-uv setup migrate run docker-up docker-down docker-logs test lint context-budget \
@@ -33,28 +39,32 @@ docker-logs: ## Follow vision_bill container logs
 test: ## Run unit tests (e2e excluded; see test-e2e)
 	uv run --extra dev pytest tests/ -m "not e2e"
 
-e2e-up: ## Build and start the e2e stack (manual; the test targets manage it)
-	$(E2E_COMPOSE) up -d --build
+e2e-up: ## Start a private stack (requires E2E_STATE=/private/directory/state.json)
+	uv run python e2e/run.py up --state "$(E2E_STATE)"
 
-e2e-down: ## Stop the e2e stack and delete its volumes (manual)
-	$(E2E_COMPOSE) down -v
+e2e-down: ## Remove only the explicitly owned stack
+	uv run python e2e/run.py down --state "$(E2E_STATE)"
 
-# The e2e test targets own the stack lifecycle: start it for the run and
-# always tear it down on exit (the EXIT trap covers failures and Ctrl-C).
-E2E_COMPOSE := docker compose -f docker-compose.e2e.yml
-test-e2e: ## Run backend e2e tests (starts the e2e stack, always tears it down)
-	@bash -c 'trap "$(E2E_COMPOSE) down -v" EXIT; \
-		$(E2E_COMPOSE) up -d --build && uv run python e2e/wait_ready.py && \
-		uv run --extra dev pytest tests/e2e/'
+E2E_BUILD_OVERRIDE ?=
+E2E_OVERRIDE_ARG = $(if $(E2E_BUILD_OVERRIDE),--override "$(E2E_BUILD_OVERRIDE)")
 
-fe-test-e2e: ## Playwright e2e (starts the e2e stack, always tears it down)
-	@bash -c 'trap "$(E2E_COMPOSE) down -v" EXIT; \
-		$(E2E_COMPOSE) up -d --build && uv run python e2e/wait_ready.py && \
-		$(NODE) (cd $(FE) && npm run test:e2e)'
+test-e2e: ## Run backend E2E in a unique owned stack
+	uv run --extra dev python e2e/run.py run $(E2E_OVERRIDE_ARG) -- uv run --extra dev pytest tests/e2e/
+
+fe-test-e2e: ## Run Playwright in a unique owned stack
+	$(NODE) uv run python e2e/run.py run --policy fallback $(E2E_OVERRIDE_ARG) -- npm --prefix frontend run test:e2e
+
+PYTHON_CHECK_PATHS := src paddleocr-service/ocr_contract paddleocr-service/ocr_service paddleocr-service/server.py \
+	paddleocr-service/build e2e scripts/ocr_harness scripts/ocr_source_up.py \
+	scripts/receipt_split_experiment.py scripts/standalone_benchmark.py scripts/test_ocr_service.py
+
+.PHONY: compose-check
+compose-check: ## Validate GPU Compose overlays with private synthetic settings (no services)
+	uv run python e2e/check_compose.py
 
 lint: ## Lint (ruff) and type-check (mypy)
-	uv run --extra dev ruff check src
-	uv run --extra dev mypy src
+	uv run --extra dev ruff check $(PYTHON_CHECK_PATHS)
+	uv run --extra dev mypy $(PYTHON_CHECK_PATHS)
 
 # --- Operational scripts -------------------------------------------------
 # Values loaded here become real environment variables and therefore override
@@ -67,6 +77,12 @@ script-context-budget: ## Measure Ollama context usage (ARGS="...")
 
 script-create-benchmark: ## Queue a benchmark API run (ARGS="...")
 	@$(WITH_SCRIPTS_ENV) uv run python scripts/create_benchmark_run.py $(ARGS)
+
+script-standalone-benchmark: ## Run benchmark directly without API (ARGS="...")
+	@$(WITH_SCRIPTS_ENV) uv run python scripts/standalone_benchmark.py $(ARGS)
+
+script-test-ocr: ## Test the PaddleOCR service with local images (ARGS="...")
+	@$(WITH_SCRIPTS_ENV) uv run python scripts/test_ocr_service.py $(ARGS)
 
 db-configure-roles: ## Create/update PostgreSQL runtime and read-only group roles
 	@$(WITH_SCRIPTS_ENV) test -n "$$MIGRATION_DATABASE_URL" || { echo "Set MIGRATION_DATABASE_URL in $(SCRIPTS_ENV)"; exit 2; }; \
@@ -120,3 +136,38 @@ fe-verify: fe-check fe-test fe-typecheck-e2e fe-build ## Run frontend checks, un
 fe: ## Run an npm script in frontend/ (make fe CMD=<script> [ARGS="..."])
 	@test -n "$(CMD)" || { echo "usage: make fe CMD=<npm-script> [ARGS=\"arg1 arg2\"]"; exit 1; }
 	$(NODE) (cd $(FE) && npm run $(CMD) $(ARGS))
+
+.PHONY: ocr-lock-cuda ocr-build-cuda ocr-build-rocm ocr-qualify-cuda ocr-qualify-rocm
+ocr-lock-cuda ocr-build-cuda: export OCR_CUDA_CHANNEL ?= cu129
+ocr-lock-cuda: ## Resolve official CUDA lock (default cu129, optional OCR_CUDA_CHANNEL=cu126)
+	SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PADDLEX=3.7.2 SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PADDLEOCR=3.7.0 uv run --no-project --with packaging==26.2 python paddleocr-service/build/resolve_cuda.py --channel="$${OCR_CUDA_CHANNEL:-cu129}"
+
+ocr-build-cuda: ## Build candidate CUDA image after official lock resolution
+	OCR_CUDA_WHEEL_CONTEXT="$$(uv run --no-project --with packaging==26.2 python paddleocr-service/build/resolve_cuda.py --check paddleocr-service/requirements.cuda.lock --channel="$${OCR_CUDA_CHANNEL:-cu129}" --wheel-context)" && \
+	export OCR_CUDA_WHEEL_CONTEXT && \
+	docker compose --profile ocr -f docker-compose.yml -f docker-compose.cuda.yml build paddleocr-service
+
+ocr-build-rocm: ## Build native full-SDK RDNA2 candidate (large build; no support claim)
+	docker compose --profile ocr -f docker-compose.yml -f docker-compose.rocm.yml build paddleocr-service
+
+ocr-qualify-cuda ocr-qualify-rocm: ## Run an explicit supervised CUDA/ROCm source qualification
+	@set -eu; \
+		accelerator="$(@:ocr-qualify-%=%)"; \
+		intent="$${OCR_MAINTENANCE_INTENT:?Set OCR_MAINTENANCE_INTENT for this invocation}"; \
+		handoff="$${OCR_APP_HANDOFF_LOCK:?Set OCR_APP_HANDOFF_LOCK to the original /app/config lock path}"; \
+		compose=(docker compose --profile ocr -f docker-compose.yml -f "docker-compose.$$accelerator.yml"); \
+		running="$$("$${compose[@]}" ps --status running --status restarting --quiet vision_bill paddleocr-service)"; \
+		if test -n "$$running"; then echo "Stop the source app and OCR sidecar before qualification" >&2; exit 1; fi; \
+		"$${compose[@]}" -f docker-compose.ocr-qualification.yml run --rm --no-deps --pull never \
+			-v "$$PWD/server_data/ocr-runtime:/var/lib/ocr" -v "$$PWD/server_data/config:/app/config" \
+			paddleocr-service python -m ocr_service.source_maintenance --accelerator "$$accelerator" \
+			--runtime /var/lib/ocr/candidate.runtime.json --cases /var/lib/ocr/fixtures.toml \
+			--output /var/lib/ocr/qualification.json --maintenance-intent "$$intent" --handoff-lock "$$handoff"
+
+.PHONY: distribution-test
+distribution-test: ## Test prebuilt bundle generation/Compose and release gates on CPU (no publication)
+	$(NODE) node --test scripts/distribution.test.mjs scripts/distribution-start-linux.test.mjs
+
+.PHONY: distribution-pid1-test
+distribution-pid1-test: ## Run native coordinator/provision software tests as CPU container PID1 (no GPU or weights)
+	$(NODE) node scripts/distribution-pid1-test.mjs

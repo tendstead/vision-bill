@@ -22,10 +22,15 @@ const { mockApi, mockGoto, setUnauthorizedHandler, getUnauthorizedHandler } = vi
 	};
 });
 
-vi.mock('$lib/api/client', () => ({
-	api: mockApi,
-	onUnauthorized: setUnauthorizedHandler
-}));
+vi.mock(import('$lib/api/client'), async (importOriginal) => {
+	const original = await importOriginal();
+	return {
+		...original,
+		api: { ...original.api, ...mockApi },
+		onUnauthorized: setUnauthorizedHandler,
+		onSessionActorChanged: () => undefined
+	};
+});
 vi.mock('$app/navigation', () => ({ goto: mockGoto }));
 vi.mock('$app/paths', () => ({ resolve: (path: string) => path }));
 

@@ -5,7 +5,11 @@ from pathlib import Path
 import pytest
 
 from e2e.discovery import first_case
-from e2e.helpers import API, register_user, wait_until
+from e2e.helpers import (
+    API,
+    register_user,
+    wait_until,
+)
 
 pytestmark = pytest.mark.e2e
 
@@ -35,7 +39,7 @@ def test_provider_down_keeps_image_pending(http_factory, stub) -> None:
             f"{API}/images", files={"receipt": (case.image_path.name, fh, "image/png")}
         )
     assert response.status_code == 202
-    image_id = response.json()["image_id"]
+    image_id = response.json()["id"]
 
     # Trigger a cycle: with the provider down the image must stay pending
     # (no terminal failure state).
@@ -58,19 +62,18 @@ def test_self_correction_retry_recovers(http_factory, stub) -> None:
         response = client.post(
             f"{API}/images", files={"receipt": (case.image_path.name, fh, "image/png")}
         )
-    assert response.status_code in (201, 202)
-    image_id = response.json()["image_id"]
+    assert response.status_code == 202
+    image_id = response.json()["id"]
 
     def check():
-        client.post(f"{API}/images/analyze")
         row = client.get(f"{API}/images/{image_id}").json()
         return row if row["status"] in ("analyzed", "failed") else None
 
     row = wait_until(check, timeout_s=60.0)
     assert row["status"] == "analyzed", row
 
-    served = [r for r in stub.get_requests() if r["image_sha256"]]
+    served = [r for r in stub.get_requests() if r["kind"] in ("direct", "ocr")]
     broken = [r for r in served if r["served"] == "broken"]
-    good = [r for r in served if r["served"] in ("fixture", "generic")]
+    good = [r for r in served if r["served"] == "fixture"]
     assert len(broken) >= 1, "expected at least one broken first attempt"
     assert len(good) >= 1, "expected a corrected retry"

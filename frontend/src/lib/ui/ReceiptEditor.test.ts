@@ -1,3 +1,4 @@
+import { session } from '$lib/session-lifetime';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LineItemRow, ReceiptRow, ReceiptWrite } from '$lib/types';
@@ -5,6 +6,21 @@ import { queryClient } from '$lib/query/client';
 import ReceiptEditor from './ReceiptEditor.svelte';
 
 const receipt: ReceiptRow = {
+	operation_revision: 1,
+	review_revision: 1,
+	amount_policy: {
+		tax_basis: 'unknown',
+		discount_treatment: 'unknown',
+		tip_treatment: 'unknown',
+		subtotal_origin: 'unknown',
+		tax_information: 'missing'
+	},
+	findings: [],
+	field_sources: {},
+	overlap_decisions: [],
+	acknowledgements: [],
+	verification_source: null,
+	checks_version: null,
 	id: 'receipt-1',
 	confidence: 90,
 	merchant_name: 'Shop A',
@@ -85,6 +101,10 @@ beforeEach(() => {
 		})
 	);
 });
+
+beforeEach(() =>
+	session.set({ id: 'viewer', username: 'alice', is_admin: false, can_see_all: false })
+);
 
 afterEach(() => {
 	cleanup();
@@ -181,5 +201,398 @@ describe('receipt spending category editor', () => {
 			spending_category: 'milk'
 		});
 		expect(onSave.mock.calls[1][0].line_items[0]).not.toHaveProperty('remember_category');
+	});
+});
+
+it('captures actual operation revision and explicit policy/source decisions without rebasing dirty edits', async () => {
+	const onSave = vi.fn();
+	const view = render(ReceiptEditor, {
+		receipt: { ...receipt, operation_revision: 9 },
+		lineItems: [line()],
+		taxes: [],
+		onSave
+	});
+	await fireEvent.input(document.querySelector('#re-total')!, {
+		target: { value: '2.00000000000001' }
+	});
+	await view.rerender({
+		receipt: { ...receipt, operation_revision: 10 },
+		lineItems: [line()],
+		taxes: [],
+		onSave
+	});
+	await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+	expect(onSave.mock.calls[0][0]).toMatchObject({
+		expected_operation_revision: 9,
+		total: '2.00000000000001',
+		amount_policy: receipt.amount_policy,
+		field_sources: {},
+		overlap_decisions: []
+	});
+	expect(screen.queryByText(/Expected total/)).toBeNull();
+});
+it('drops shifted numeric source paths after deletion rather than assigning them to another item', async () => {
+	const onSave = vi.fn();
+	const source = {
+		part_id: 'part',
+		photo_index: 0,
+		source_sha256: 'hash',
+		coordinate_space: 'unknown' as const
+	};
+	render(ReceiptEditor, {
+		receipt: {
+			...receipt,
+			field_sources: {
+				'line_items.0.total_price': [source],
+				'line_items.1.total_price': [source],
+				total: [source]
+			}
+		},
+		lineItems: [line(), { ...line(), id: 'second' }],
+		taxes: [],
+		onSave
+	});
+	await fireEvent.click(screen.getAllByRole('button', { name: 'Remove' })[0]);
+	await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+	expect(onSave.mock.calls[0][0].line_items[0].id).toBe('second');
+	expect(Object.keys(onSave.mock.calls[0][0].field_sources)).toEqual(['total']);
+});
+
+it('submits an explicit reviewed overlap decision and invalidates it when its row order changes', async () => {
+	const onSave = vi.fn();
+	const overlap = { first_index: 0, second_index: 1, verified: null };
+	render(ReceiptEditor, {
+		receipt: { ...receipt, overlap_decisions: [overlap] },
+		lineItems: [line(), { ...line(), id: 'second' }, { ...line(), id: 'third' }],
+		taxes: [],
+		onSave
+	});
+	await fireEvent.click(
+		screen.getByRole('checkbox', { name: 'I reviewed this overlap; keep the current rows' })
+	);
+	await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+	expect(onSave.mock.calls[0][0].overlap_decisions).toEqual([{ ...overlap, verified: true }]);
+	await fireEvent.click(screen.getAllByRole('button', { name: 'Move item down' })[1]);
+	await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+	expect(onSave.mock.calls[1][0].line_items.map((line: { id: string }) => line.id)).toEqual([
+		'line-1',
+		'third',
+		'second'
+	]);
+	expect(onSave.mock.calls[1][0].overlap_decisions[0]).toEqual({
+		verified: false,
+		association_unknown: true
+	});
+	expect(
+		(
+			screen.getByRole('checkbox', {
+				name: 'I reviewed this overlap; keep the current rows'
+			}) as HTMLInputElement
+		).disabled
+	).toBe(true);
+	expect(screen.queryByText('Check rows 1 and 2 against the photos.')).toBeNull();
+});
+
+it('navigates from a field source decision to its exact source references', async () => {
+	const source = {
+		part_id: 'part',
+		photo_index: 0,
+		source_sha256: 'hash',
+		coordinate_space: 'working' as const,
+		view_id: 'view',
+		bbox: [
+			[1, 1],
+			[2, 1],
+			[2, 2]
+		]
+	};
+	const onSource = vi.fn();
+	render(ReceiptEditor, {
+		receipt: { ...receipt, field_sources: { total: [source] } },
+		lineItems: [line()],
+		taxes: [],
+		onSource
+	});
+	await fireEvent.click(screen.getByText('Source decisions'));
+	await fireEvent.click(screen.getByRole('button', { name: 'Show source' }));
+	expect(onSource).toHaveBeenCalledWith([source]);
+});
+it('drops ambiguous tax sources when a preceding tax is deleted', async () => {
+	const onSave = vi.fn();
+	const source = {
+		part_id: 'part',
+		photo_index: 0,
+		source_sha256: 'hash',
+		coordinate_space: 'unknown' as const
+	};
+	render(ReceiptEditor, {
+		receipt: {
+			...receipt,
+			field_sources: { 'taxes.0.amount': [source], 'taxes.1.amount': [source], total: [source] }
+		},
+		lineItems: [],
+		taxes: [
+			{ id: 'tax-a', receipt_id: receipt.id, name: 'A', rate: null, amount: '1' },
+			{ id: 'tax-b', receipt_id: receipt.id, name: 'B', rate: null, amount: '2' }
+		],
+		onSave
+	});
+	await fireEvent.click(screen.getAllByRole('button', { name: 'Remove' })[0]);
+	await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+	expect(onSave.mock.calls[0][0].taxes[0].name).toBe('B');
+	expect(onSave.mock.calls[0][0].field_sources).toEqual({ total: [source] });
+});
+
+it.each([
+	['preceding deletion', 1, 2],
+	['out of range', 0, 9]
+] as const)(
+	'keeps safe display and evidence round-trip after %s',
+	async (kind, first_index, second_index) => {
+		const onSave = vi.fn();
+		render(ReceiptEditor, {
+			receipt: { ...receipt, overlap_decisions: [{ first_index, second_index, verified: true }] },
+			lineItems: [line(), { ...line(), id: 'b' }, { ...line(), id: 'c' }],
+			taxes: [],
+			onSave
+		});
+		if (kind === 'preceding deletion')
+			await fireEvent.click(screen.getAllByRole('button', { name: 'Remove' })[0]);
+		else await fireEvent.input(screen.getByLabelText('Merchant'), { target: { value: 'Changed' } });
+		await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+		expect(onSave.mock.calls[0][0].overlap_decisions).toEqual(
+			kind === 'preceding deletion'
+				? [{ verified: false, association_unknown: true }]
+				: [{ first_index, second_index, verified: true }]
+		);
+		expect(
+			(
+				screen.getByRole('checkbox', {
+					name: 'I reviewed this overlap; keep the current rows'
+				}) as HTMLInputElement
+			).disabled
+		).toBe(true);
+		expect(screen.getByText('Row association unknown; review the original evidence.')).toBeTruthy();
+	}
+);
+
+it.each([1, 2])(
+	'preserves a producer-verified removed-row pair on classification-only save (removed %s)',
+	async (removed_index) => {
+		const decisions = [
+			{ first_index: removed_index - 1, second_index: removed_index, verified: true, removed_index }
+		];
+		const onSave = vi.fn();
+		render(ReceiptEditor, {
+			receipt: { ...receipt, overlap_decisions: decisions },
+			lineItems: [
+				{ ...line(), description: 'A' },
+				{ ...line(), id: 'b', description: 'B' }
+			],
+			taxes: [],
+			onSave
+		});
+		expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
+		expect(screen.queryByText(/^Check rows/)).toBeNull();
+		expect(
+			(
+				screen.getByRole('checkbox', {
+					name: 'I reviewed this overlap; keep the current rows'
+				}) as HTMLInputElement
+			).disabled
+		).toBe(true);
+		await fireEvent.change(screen.getByLabelText('Category'), { target: { value: 'electronics' } });
+		await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+		expect(onSave.mock.calls[0][0]).toMatchObject({
+			category: 'electronics',
+			expected_operation_revision: receipt.operation_revision,
+			amount_policy: receipt.amount_policy,
+			field_sources: receipt.field_sources,
+			overlap_decisions: decisions
+		});
+	}
+);
+
+it('normalizes a read DTO time with seconds to the minute write contract', async () => {
+	const onSave = vi.fn();
+	render(ReceiptEditor, {
+		receipt: { ...receipt, time: '14:30:00' },
+		lineItems: [line()],
+		taxes: [],
+		onSave
+	});
+	await fireEvent.input(screen.getByLabelText('Merchant'), {
+		target: { value: 'Time round trip' }
+	});
+	await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+	expect(onSave).toHaveBeenCalledOnce();
+	expect(onSave.mock.calls[0][0].time).toBe('14:30');
+});
+
+it('preserves legacy nonzero seconds for explicit validation rather than truncating them', async () => {
+	const onSave = vi.fn();
+	render(ReceiptEditor, {
+		receipt: { ...receipt, time: '14:30:15' },
+		lineItems: [line()],
+		taxes: [],
+		onSave
+	});
+	await fireEvent.input(screen.getByLabelText('Merchant'), {
+		target: { value: 'Preserve seconds' }
+	});
+	await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+	expect(onSave.mock.calls[0][0].time).toBe('14:30:15');
+});
+
+describe.each(['Save', 'Save & verify'])('%s time precision', (action) => {
+	it.each([
+		['14:30:00.000000', '14:30', 'time'],
+		['14:30:15', '14:30:15', 'text'],
+		['14:30:15.123000', '14:30:15.123000', 'text'],
+		['14:30:00.000001', '14:30:00.000001', 'text']
+	])('displays and emits %s across reload', async (stored, displayed, type) => {
+		const onSave = vi.fn();
+		const onSaveAndVerify = vi.fn();
+		const view = render(ReceiptEditor, {
+			receipt: { ...receipt, time: stored },
+			lineItems: [line()],
+			taxes: [],
+			onSave,
+			onSaveAndVerify
+		});
+		expect((screen.getByLabelText('Time') as HTMLInputElement).value).toBe(displayed);
+		expect(screen.getByLabelText('Time').getAttribute('type')).toBe(type);
+		await fireEvent.input(screen.getByLabelText('Merchant'), { target: { value: 'Changed' } });
+		await fireEvent.click(screen.getByRole('button', { name: action }));
+		const callback = action === 'Save' ? onSave : onSaveAndVerify;
+		expect(callback.mock.calls[0][0].time).toBe(displayed);
+		await view.rerender({ receipt: { ...receipt, time: stored, operation_revision: 2 } });
+		expect((screen.getByLabelText('Time') as HTMLInputElement).value).toBe(displayed);
+	});
+});
+
+it.each(['re-currency', 're-tax_total'])(
+	'requires an explicit completed receipt value in %s before either save action',
+	async (inputId) => {
+		const onSave = vi.fn();
+		const onSaveAndVerify = vi.fn();
+		const { container } = render(ReceiptEditor, {
+			receipt: { ...receipt, discount_total: '2', tax_total: '1' },
+			lineItems: [line()],
+			taxes: [],
+			onSave,
+			onSaveAndVerify
+		});
+		await fireEvent.input(container.querySelector(`#${inputId}`)!, { target: { value: '' } });
+		await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+		await fireEvent.click(screen.getByRole('button', { name: 'Save & verify' }));
+		expect(onSave).not.toHaveBeenCalled();
+		expect(onSaveAndVerify).not.toHaveBeenCalled();
+		await fireEvent.input(container.querySelector(`#${inputId}`)!, {
+			target: { value: inputId === 're-currency' ? 'chf' : '0' }
+		});
+		await fireEvent.click(screen.getByRole('button', { name: 'Save & verify' }));
+		expect(onSaveAndVerify).toHaveBeenCalledOnce();
+		expect(onSaveAndVerify.mock.calls[0][0]).toMatchObject({
+			currency: inputId === 're-currency' ? 'CHF' : 'EUR',
+			discount_total: '2',
+			tax_total: inputId === 're-tax_total' ? '0' : '1',
+			tip: null
+		});
+	}
+);
+
+it('shows stored null observations as blank and preserves them on save', async () => {
+	const onSave = vi.fn();
+	render(ReceiptEditor, {
+		receipt: { ...receipt, discount_total: null },
+		lineItems: [{ ...line(), quantity: null, unit_price: null }],
+		taxes: [],
+		onSave
+	});
+	for (const label of ['Discount', 'Tip', 'Qty', 'Unit price'])
+		expect((screen.getByLabelText(label) as HTMLInputElement).value).toBe('');
+	await fireEvent.input(screen.getByLabelText('Merchant'), { target: { value: 'Changed' } });
+	await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+	expect(onSave).toHaveBeenCalledWith(
+		expect.objectContaining({
+			discount_total: null,
+			tip: null,
+			line_items: [
+				expect.objectContaining({ quantity: null, unit_price: null, total_price: '2.00' })
+			]
+		})
+	);
+});
+
+it('allows clearing optional observations when saving and verifying', async () => {
+	const onSaveAndVerify = vi.fn();
+	render(ReceiptEditor, {
+		receipt: { ...receipt, discount_total: '0', tip: '0' },
+		lineItems: [line()],
+		taxes: [],
+		onSaveAndVerify
+	});
+	for (const label of ['Discount', 'Tip', 'Qty', 'Unit price'])
+		await fireEvent.input(screen.getByLabelText(label), { target: { value: '' } });
+	await fireEvent.click(screen.getByRole('button', { name: 'Save & verify' }));
+	expect(onSaveAndVerify).toHaveBeenCalledWith(
+		expect.objectContaining({
+			discount_total: null,
+			tip: null,
+			line_items: [expect.objectContaining({ quantity: null, unit_price: null })]
+		})
+	);
+});
+
+it('adds a line without assuming quantity or unit price', async () => {
+	const onSave = vi.fn();
+	const { container } = render(ReceiptEditor, { receipt, lineItems: [], taxes: [], onSave });
+	await fireEvent.click(screen.getByRole('button', { name: 'Add item' }));
+	await fireEvent.input(screen.getByLabelText('Description'), { target: { value: 'Bread' } });
+	await fireEvent.input(container.querySelector('#li-0-total')!, { target: { value: '2' } });
+	await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+	expect(onSave).toHaveBeenCalledWith(
+		expect.objectContaining({
+			line_items: [
+				expect.objectContaining({
+					description: 'Bread',
+					quantity: null,
+					unit_price: null,
+					total_price: '2'
+				})
+			]
+		})
+	);
+});
+
+it.each([
+	['Discount', '-1'],
+	['Qty', '0'],
+	['Unit price', 'invalid'],
+	['Description', ' ']
+])('rejects an invalid %s before saving', async (label, value) => {
+	const onSave = vi.fn();
+	render(ReceiptEditor, { receipt, lineItems: [line()], taxes: [], onSave });
+	await fireEvent.input(screen.getByLabelText(label), { target: { value } });
+	expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+it('submits the exact entered quantity and rate', async () => {
+	const onSave = vi.fn();
+	const { container } = render(ReceiptEditor, {
+		receipt,
+		lineItems: [line()],
+		taxes: [{ id: 'vat', receipt_id: receipt.id, name: 'VAT', rate: null, amount: '0' }],
+		onSave
+	});
+	await fireEvent.input(screen.getByLabelText('Qty'), { target: { value: '1.00000000000000001' } });
+	await fireEvent.input(container.querySelector('#tax-0-rate')!, {
+		target: { value: '0.20000000000000001' }
+	});
+	await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+	expect(onSave.mock.calls[0][0]).toMatchObject({
+		line_items: [expect.objectContaining({ quantity: '1.00000000000000001' })],
+		taxes: [expect.objectContaining({ rate: '0.20000000000000001' })]
 	});
 });

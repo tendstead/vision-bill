@@ -1,0 +1,152 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vision-bill.org/distribution/artifacts.schema.json",
+  "title": "Verified prebuilt distribution artifacts",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "version",
+    "source",
+    "platform",
+    "images",
+    "verification",
+    "assets"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "commit"],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$"
+        },
+        "commit": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$"
+        }
+      }
+    },
+    "platform": {
+      "const": "linux/amd64"
+    },
+    "images": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": false,
+      "properties": {
+        "app": {
+          "$ref": "#/$defs/image"
+        },
+        "postgres": {
+          "$ref": "#/$defs/image"
+        },
+        "ocr-cuda": {
+          "$ref": "#/$defs/image"
+        },
+        "ocr-rocm": {
+          "$ref": "#/$defs/image"
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["app_checks"],
+      "properties": {
+        "app_checks": {
+          "$ref": "#/$defs/path"
+        }
+      }
+    },
+    "native": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cuda": {
+          "$ref": "#/$defs/native"
+        },
+        "rocm": {
+          "$ref": "#/$defs/native"
+        }
+      }
+    },
+    "assets": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sha256", "size_bytes"],
+        "properties": {
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "path": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*$"
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reference", "config_digest"],
+      "properties": {
+        "reference": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9.:-]*/[a-z0-9][a-z0-9._/-]*@sha256:[a-f0-9]{64}$"
+        },
+        "config_digest": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "native": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bundle", "image_config", "qualification", "seal"],
+      "properties": {
+        "bundle": {
+          "$ref": "#/$defs/path"
+        },
+        "image_config": {
+          "$ref": "#/$defs/path"
+        },
+        "qualification": {
+          "$ref": "#/$defs/path"
+        },
+        "seal": {
+          "$ref": "#/$defs/path"
+        },
+        "cuda_lock": {
+          "$ref": "#/$defs/path"
+        },
+        "cuda_channel": {
+          "enum": ["cu126", "cu129"]
+        }
+      }
+    }
+  }
+}

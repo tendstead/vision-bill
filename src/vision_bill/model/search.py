@@ -13,8 +13,8 @@ class ProductPurchase(BaseModel):
     merchant_name: str
     date: Date
     time: str | None = None
-    quantity: float
-    unit_price: Decimal
+    quantity: Decimal | None
+    unit_price: Decimal | None
     currency: str
 
 

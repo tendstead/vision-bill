@@ -1,0 +1,51 @@
+# Only the selected render node and KFD; no privileged/container-wide DRI access.
+services:
+  vision_bill:
+    environment:
+      VISION_BILL_OCR_ACTIVATION: "true"
+      OCR_ACTIVATION_ENDPOINT: http://paddleocr-service:8082
+      OCR_ACTIVATION_HANDOFF_LOCK_PATH: /coord/gpu-handoff.lock
+    volumes:
+      - ocr-activation-request:/activation/request
+      - ocr-activation-status:/activation/status:ro
+      - ocr-activation-lock:/activation/lock
+      - ocr-coordination:/coord
+    networks:
+      - default
+  paddleocr-service:
+    build:
+      context: ./paddleocr-service
+      dockerfile: Dockerfile.rocm
+      args:
+        BUILD_JOBS: ${OCR_BUILD_JOBS:-8}
+        AMDGPU_TARGETS: ${OCR_AMDGPU_TARGETS:-}
+    image: vision-bill-ocr-rocm:${OCR_IMAGE_TAG:-candidate}
+    command: ["python", "-m", "ocr_service.activation"]
+    environment:
+      OCR_IMAGE_ID: "${OCR_IMAGE_ID:-}"
+      OCR_HANDOFF_LOCK_PATH: /coord/gpu-handoff.lock
+      OCR_STATE_DIR: /var/lib/ocr
+      OCR_RUNTIME_SETTINGS_PATH: ""
+      OCR_QUALIFICATION_IMAGE_PATH: ""
+    volumes:
+      - ocr-activation-request:/activation/request:ro
+      - ocr-activation-status:/activation/status
+      - ocr-activation-lock:/activation/lock
+      - ocr-coordination:/coord
+      - ocr-state:/var/lib/ocr
+      - ocr-cache:/var/cache/paddlex
+      - ${OCR_RELEASE_DIR:-./server_data/ocr-release}:/release:ro
+    devices:
+      - /dev/kfd:/dev/kfd
+      - ${OCR_RENDER_NODE:-/dev/dri/renderD128}:${OCR_RENDER_NODE:-/dev/dri/renderD128}
+    group_add:
+      - ${OCR_RENDER_GID:-109}
+      - ${OCR_VIDEO_GID:-44}
+
+volumes:
+  ocr-activation-request:
+  ocr-activation-status:
+  ocr-activation-lock:
+  ocr-coordination:
+  ocr-state:
+  ocr-cache:

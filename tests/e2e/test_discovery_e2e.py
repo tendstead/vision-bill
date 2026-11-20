@@ -20,7 +20,9 @@ VALID_RECEIPT = {
 
 
 def _write_pair(data_dir: Path, name: str, receipt: dict) -> Path:
-    (data_dir / f"{name}.png").write_bytes(b"\x89PNG\r\n\x1a\n" + name.encode())
+    from PIL import Image
+
+    Image.new("RGB", (2, 3)).save(data_dir / f"{name}.png")
     (data_dir / f"{name}.json").write_text(json.dumps(receipt), encoding="utf-8")
     return data_dir / f"{name}.png"
 
@@ -67,3 +69,20 @@ def test_first_case_returns_first_or_none(tmp_path: Path) -> None:
     _write_pair(tmp_path, "alpha", VALID_RECEIPT)
     (tmp_path / "fixtures.toml").write_text('fixtures = ["alpha"]\n')
     assert discovery.first_case(tmp_path) is not None
+
+
+def test_invalid_private_receipt_never_logs_observed_values(tmp_path, capsys):
+    _write_pair(tmp_path, "private", {**VALID_RECEIPT, "confidence": "PRIVATE-RECEIPT-VALUE"})
+    (tmp_path / "fixtures.toml").write_text('fixtures = ["private"]')
+    assert discovery.load_fixture_cases(tmp_path) == []
+    warning = capsys.readouterr().err
+    assert "PRIVATE-RECEIPT-VALUE" not in warning
+    assert "ValidationError" in warning
+
+
+def test_invalid_optional_image_is_explicitly_skipped(tmp_path, capsys):
+    _write_pair(tmp_path, "private", VALID_RECEIPT)
+    (tmp_path / "private.png").write_bytes(b"not-an-image")
+    (tmp_path / "fixtures.toml").write_text('fixtures = ["private"]')
+    assert discovery.load_fixture_cases(tmp_path) == []
+    assert "UnidentifiedImageError" in capsys.readouterr().err

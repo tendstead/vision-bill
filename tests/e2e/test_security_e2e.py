@@ -9,6 +9,7 @@ and free text is stored verbatim in SQL.
 import base64
 import hashlib
 import hmac
+import os
 import time
 import uuid
 
@@ -16,15 +17,13 @@ import asyncpg
 import httpx
 import pytest
 
-from e2e.helpers import API, register_user
+from e2e.helpers import API, await_submission, qualify_gold, register_user, verify_receipt
 
 pytestmark = pytest.mark.e2e
 
-APP_BASE = "http://localhost:53625"
+APP_BASE = API.removesuffix("/api/v1")
 SECRET_KEY = "e2e-secret-do-not-use"  # docker-compose.e2e.yml
-PG = dict(
-    user="vision_bill", password="vision_bill", host="localhost", port=5433, database="vision_bill"
-)
+
 # 1x1 PNG (same bytes as frontend/src/lib/e2e/uploadPng.ts)
 GENERIC_PNG_B64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII="
@@ -33,7 +32,7 @@ GENERIC_PNG_B64 = (
 
 @pytest.fixture
 async def pg() -> asyncpg.Connection:
-    conn = await asyncpg.connect(**PG)
+    conn = await asyncpg.connect(os.environ["VB_E2E_PG_URL"])
     try:
         yield conn
     finally:
@@ -92,7 +91,7 @@ def test_garbage_session_cookie_rejected(http_factory) -> None:
 
 
 def test_expired_session_cookie_rejected(http_factory) -> None:
-    client, user = register_user(http_factory, "sec")
+    _client, user = register_user(http_factory, "sec")
     exp = int(time.time()) - 60
     message = f"{user['id']}.{exp}"
     sig = hmac.new(SECRET_KEY.encode(), message.encode(), hashlib.sha256).hexdigest()
@@ -173,7 +172,7 @@ def test_upload_path_traversal_filename(http_factory) -> None:
     client, _ = register_user(http_factory, "sec")
     png = base64.b64decode(GENERIC_PNG_B64)
     response = client.post(f"{API}/images", files={"receipt": ("../../evil.png", png, "image/png")})
-    assert response.status_code == 201, response.text
+    assert response.status_code == 202, response.text
     images = client.get(f"{API}/images", params={"limit": 5}).json()
     uploaded = next(i for i in images if i["original_filename"] == "../../evil.png")
     # The stored file path must never contain traversal sequences.
@@ -225,8 +224,9 @@ def test_image_delete_after_analysis_conflict(http_factory) -> None:
     client, _ = register_user(http_factory, "sec")
     png = base64.b64decode(GENERIC_PNG_B64)
     response = client.post(f"{API}/images", files={"receipt": ("x.png", png, "image/png")})
-    assert response.status_code == 201, response.text
-    image_id = response.json()["image_id"]
+    assert response.status_code == 202, response.text
+    image_id = response.json()["id"]
+    await_submission(client, image_id)
     deleted = client.delete(f"{API}/images/{image_id}")
     assert deleted.status_code == 409
 
@@ -237,9 +237,10 @@ def test_benchmark_reevaluate_transient(http_factory) -> None:
     # can_see_all in the e2e stack).
     png = base64.b64decode(GENERIC_PNG_B64)
     uploaded = admin.post(f"{API}/images", files={"receipt": ("admin.png", png, "image/png")})
-    assert uploaded.status_code == 201, uploaded.text
-    receipt_id = uploaded.json()["receipt_id"]
-    verified = admin.post(f"{API}/receipts/{receipt_id}/verify")
+    assert uploaded.status_code == 202, uploaded.text
+    receipt_id = await_submission(admin, uploaded.json()["id"])["receipt_id"]
+    verified = verify_receipt(admin, receipt_id)
+    qualify_gold(admin, receipt_id)
     assert verified.status_code == 200
 
     run = admin.post(

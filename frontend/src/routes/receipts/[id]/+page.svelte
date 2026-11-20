@@ -1,9 +1,11 @@
 <script lang="ts">
+	import { tick } from 'svelte';
 	import { createQuery } from '@tanstack/svelte-query';
 	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
 	import { t, translate } from '$lib/i18n';
 	import { api, ApiError } from '$lib/api/client';
+	import { captureSessionActor, isCurrentSessionActor } from '$lib/session-lifetime';
 	import { queryClient } from '$lib/query/client';
 	import { queryKeys } from '$lib/query/keys';
 	import { snackbar } from '$lib/ui/snackbar.svelte';
@@ -11,16 +13,57 @@
 	import Icon from '$lib/ui/Icon.svelte';
 	import ReceiptEditor from '$lib/ui/ReceiptEditor.svelte';
 	import ReceiptPhotos from '$lib/ui/ReceiptPhotos.svelte';
-	import type { ReceiptWrite } from '$lib/types';
+	import type {
+		ReceiptWrite,
+		ReceiptRow,
+		ReviewFinding,
+		ReviewPreview,
+		ReviewRequest,
+		SourceRef
+	} from '$lib/types';
+	import ReviewFindings from '$lib/ui/ReviewFindings.svelte';
+	import ReceiptWorkspace from '$lib/ui/ReceiptWorkspace.svelte';
 
 	let id = $derived(page.url.pathname.split('/').pop() ?? '');
 	const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-	let verifyOpen = $state(false);
+	type ReviewVersion = Pick<ReceiptRow, 'operation_revision' | 'review_revision'>;
+	let renderedVersion = $state<(ReviewVersion & { id: string }) | null>(null);
+	let previewing = $state(false);
+	let humanPreview = $state<ReviewPreview | null>(null);
+	let humanAcknowledgements = $state<ReviewRequest['acknowledgements']>([]);
 	let verifying = $state(false);
 	let saving = $state(false);
 	let editorRevision = $state(0);
 	let savedRevision = $state(0);
 	let editorDirty = $state(false);
+	let childPending = $state(false);
+	let reviewMessage = $state('');
+	let needsReload = $state(false);
+	let selectedSources = $state<SourceRef[] | null>(null);
+	let workspaceView = $state('data');
+	const actor = captureSessionActor();
+	let activeView: { id: string } | null = null;
+	const isCurrentView = (view: typeof activeView) =>
+		view !== null && activeView === view && view.id === id && isCurrentSessionActor(actor);
+	$effect(() => {
+		const view = { id };
+		activeView = view;
+		editorRevision = 0;
+		savedRevision = 0;
+		saving = false;
+		verifying = false;
+		previewing = false;
+		humanPreview = null;
+		humanAcknowledgements = [];
+		selectedSources = null;
+		editorDirty = false;
+		childPending = false;
+		reviewMessage = '';
+		needsReload = false;
+		return () => {
+			if (activeView === view) activeView = null;
+		};
+	});
 
 	const detail = createQuery(
 		() => ({
@@ -36,66 +79,206 @@
 			(detail.status === 'error' && detail.error instanceof ApiError && detail.error.status === 404)
 	);
 	let data = $derived(detail.data ?? null);
+	let enrichment = $derived(data?.classification_enrichment);
+	const sourceJob = createQuery(
+		() => ({
+			queryKey: queryKeys.image(data?.receipt.image_id ?? ''),
+			queryFn: () => api.getImage(data!.receipt.image_id!),
+			enabled: !!data?.receipt.image_id
+		}),
+		() => queryClient
+	);
 	let canVerify = $derived(data !== null && data.receipt.status === 'unverified');
+	let canReviewAsHuman = $derived(data?.can_rereview ?? false);
+	let editorStale = $derived(
+		renderedVersion !== null &&
+			(renderedVersion.id !== id || !sameVersion(renderedVersion, data?.receipt))
+	);
+	let reviewBlocked = $derived(
+		renderedVersion === null ||
+			editorStale ||
+			editorDirty ||
+			saving ||
+			verifying ||
+			needsReload ||
+			childPending
+	);
+	function sameVersion(left: ReviewVersion, right: ReviewVersion | null | undefined) {
+		return (
+			left.operation_revision === right?.operation_revision &&
+			left.review_revision === right.review_revision
+		);
+	}
+	function matchesReview(version: ReviewVersion) {
+		return (
+			renderedVersion?.id === id &&
+			sameVersion(version, data?.receipt) &&
+			sameVersion(version, renderedVersion)
+		);
+	}
+	$effect(() => {
+		if (humanPreview && !matchesReview(humanPreview)) closeReview();
+	});
 
-	async function refresh(): Promise<void> {
-		const fresh = await api.getReceipt(id);
-		queryClient.setQueryData(queryKeys.receipt(id), fresh);
+	function findingsReady(findings: ReviewFinding[], comments: ReviewRequest['acknowledgements']) {
+		return findings.every(
+			(finding) =>
+				finding.severity === 'info' ||
+				(finding.severity === 'review' &&
+					comments.some((comment) => comment.finding_id === finding.id && comment.comment.trim()))
+		);
+	}
+	let humanReviewReady = $derived(
+		!!humanPreview && findingsReady(humanPreview.findings, humanAcknowledgements)
+	);
+	function reviewBody(receipt: ReviewVersion, comments: ReviewRequest['acknowledgements']) {
+		return {
+			expected_operation_revision: receipt.operation_revision,
+			expected_review_revision: receipt.review_revision,
+			acknowledgements: comments
+		};
+	}
+	async function refresh(requestId = id, view = activeView): Promise<void> {
+		if (!isCurrentView(view)) return;
+		const fresh = await api.getReceipt(requestId);
+		if (!isCurrentView(view)) return;
+		queryClient.setQueryData(queryKeys.receipt(requestId), fresh);
 		editorRevision++;
-		await queryClient.invalidateQueries({ queryKey: ['statistics'] });
+		needsReload = false;
+		void queryClient.invalidateQueries({ queryKey: ['statistics'] });
 	}
-
-	async function saveOnly(write: ReceiptWrite) {
+	async function discardReload() {
+		const requestId = id;
+		const view = activeView;
+		if (!isCurrentView(view)) return;
 		saving = true;
 		try {
-			await api.updateReceipt(id, write);
-			savedRevision++;
-			snackbar.notify('success', translate('receipt.saved'));
-			await refresh();
+			await refresh(requestId, view);
+			if (!isCurrentView(view)) return;
+			reviewMessage = '';
 		} catch {
-			snackbar.notify('error', translate('receipt.saveFailed'));
+			if (!isCurrentView(view)) return;
+			reviewMessage = translate('receipt.saveFailed');
 		} finally {
-			saving = false;
+			if (isCurrentView(view)) saving = false;
 		}
 	}
-
-	async function saveAndVerify(write: ReceiptWrite) {
+	async function save(write: ReceiptWrite, verify: boolean) {
+		if (saving || needsReload || editorStale || childPending) return;
+		const requestId = id;
+		const view = activeView;
+		if (!isCurrentView(view)) return;
 		saving = true;
+		reviewMessage = '';
+		let saved: ReceiptRow | null = null;
 		try {
-			await api.updateReceipt(id, write);
+			saved = await api.updateReceipt(requestId, write);
+			if (!isCurrentView(view)) return;
 			savedRevision++;
-			await api.verifyReceipt(id);
-			snackbar.notify('success', translate('receipt.verifySuccess'));
-			await refresh();
+			needsReload = true;
+			// Only a full detail response may advance the cache's review revisions.
+			void queryClient.invalidateQueries({
+				queryKey: queryKeys.receipt(requestId),
+				exact: true,
+				refetchType: 'none'
+			});
+			snackbar.notify('success', translate('receipt.saved'));
+			await refresh(requestId, view);
+			if (!isCurrentView(view)) return;
+			if (verify) {
+				await tick();
+				if (!isCurrentView(view)) return;
+				if (!matchesReview(saved)) {
+					reviewMessage = translate('review.conflict');
+					return;
+				}
+				saving = false;
+				await openReviewPreview(true);
+			}
 		} catch (error) {
-			snackbar.notify(
-				'error',
+			if (!isCurrentView(view)) return;
+			reviewMessage =
 				error instanceof ApiError && error.status === 409
-					? translate('receipt.verifyConflict')
-					: translate('receipt.saveFailed')
-			);
+					? translate('review.conflict')
+					: translate(saved ? 'receipt.verifyFailed' : 'receipt.saveFailed');
+			snackbar.notify('error', reviewMessage);
 		} finally {
-			saving = false;
+			if (isCurrentView(view)) saving = false;
 		}
 	}
-
+	function saveOnly(write: ReceiptWrite) {
+		return save(write, false);
+	}
+	function saveAndVerify(write: ReceiptWrite) {
+		return save(write, true);
+	}
+	function closeReview() {
+		humanPreview = null;
+		humanAcknowledgements = [];
+	}
+	async function openReviewPreview(verifyIfClean = false) {
+		if ((!canReviewAsHuman && !canVerify) || previewing || reviewBlocked || !renderedVersion)
+			return;
+		const version = { ...renderedVersion };
+		const requestId = id;
+		const view = activeView;
+		if (!isCurrentView(view)) return;
+		previewing = true;
+		reviewMessage = '';
+		try {
+			const preview = await api.previewHumanReview(requestId);
+			if (!isCurrentView(view)) return;
+			if (!sameVersion(version, preview) || !matchesReview(version)) {
+				reviewMessage = translate('review.conflict');
+				return;
+			}
+			if (reviewBlocked) return;
+			if (verifyIfClean && findingsReady(preview.findings, [])) {
+				await submitReview(preview, []);
+			} else {
+				humanPreview = preview;
+			}
+		} catch (error) {
+			if (!isCurrentView(view)) return;
+			reviewMessage =
+				error instanceof ApiError && error.status === 409
+					? translate('review.conflict')
+					: translate('receipt.verifyFailed');
+		} finally {
+			if (isCurrentView(view)) previewing = false;
+		}
+	}
 	async function doVerify() {
-		if (verifying) return;
+		if (humanPreview && humanReviewReady)
+			await submitReview(humanPreview, [...humanAcknowledgements]);
+	}
+	async function submitReview(preview: ReviewPreview, comments: ReviewRequest['acknowledgements']) {
+		const requestId = id;
+		const view = activeView;
+		if (!isCurrentView(view) || reviewBlocked) return;
+		if (!matchesReview(preview)) {
+			closeReview();
+			reviewMessage = translate('review.conflict');
+			return;
+		}
+		const request = reviewBody(preview, comments);
 		verifying = true;
 		try {
-			await api.verifyReceipt(id);
+			await api.verifyReceipt(requestId, request);
+			if (!isCurrentView(view)) return;
 			snackbar.notify('success', translate('receipt.verifySuccess'));
-			verifyOpen = false;
-			await refresh();
+			closeReview();
+			await refresh(requestId, view);
 		} catch (error) {
-			snackbar.notify(
-				'error',
+			if (!isCurrentView(view)) return;
+			closeReview();
+			reviewMessage =
 				error instanceof ApiError && error.status === 409
-					? translate('receipt.verifyConflict')
-					: translate('receipt.verifyFailed')
-			);
+					? translate('review.conflict')
+					: translate('receipt.verifyFailed');
+			snackbar.notify('error', reviewMessage);
 		} finally {
-			verifying = false;
+			if (isCurrentView(view)) verifying = false;
 		}
 	}
 </script>
@@ -112,7 +295,7 @@
 		<p class="mt-1 text-on-surface-variant">{$t('receipt.notFoundBody')}</p>
 		<a
 			href={resolve('/receipts')}
-			class="mt-3 inline-block rounded-lg bg-primary px-4 py-2 text-on-primary hover:opacity-90"
+			class="mt-3 inline-block rounded-lg bg-action px-4 py-2 text-on-primary hover:opacity-90"
 		>
 			{$t('common.back')}
 		</a>
@@ -136,17 +319,18 @@
 			<h1 class="flex-1 truncate text-xl font-semibold">
 				{data.receipt.merchant_name || $t('receipts.unknownVendor')}
 			</h1>
-			{#if canVerify}
+			{#if canVerify || canReviewAsHuman}
 				<button
 					type="button"
-					class="flex items-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-on-primary hover:opacity-90 disabled:opacity-50"
-					disabled={editorDirty || saving || verifying}
-					onclick={() => (verifyOpen = true)}
+					class="flex items-center gap-2 rounded-lg bg-action px-4 py-2.5 text-sm font-medium text-on-primary hover:opacity-90 disabled:opacity-50"
+					disabled={reviewBlocked || previewing}
+					onclick={() => openReviewPreview()}
 				>
 					<Icon icon="check" />
-					{$t('receipt.verify')}
+					{$t(canReviewAsHuman ? 'receipt.humanReview' : 'receipt.verify')}
 				</button>
-			{:else}
+			{/if}
+			{#if !canVerify}
 				<span
 					class="rounded-full bg-primary-container px-3 py-1 text-xs font-medium text-on-primary-container"
 				>
@@ -155,19 +339,55 @@
 			{/if}
 		</div>
 
-		<div class="mt-6 min-w-0 lg:grid lg:grid-cols-[minmax(20rem,0.8fr)_minmax(0,1.2fr)] lg:gap-8">
-			{#if data.receipt.image_id !== null}
-				<aside class="mb-6 min-w-0 lg:mb-0">
-					<div class="min-w-0 lg:sticky lg:top-20">
-						<ReceiptPhotos
-							imageId={data.receipt.image_id}
-							thumbnailPath={data.receipt.thumbnail_path ?? null}
-							alt={data.receipt.merchant_name || $t('receipts.unknownVendor')}
-						/>
-					</div>
-				</aside>
-			{/if}
-
+		{#if reviewMessage}<p class="my-3 text-error" role="alert">{reviewMessage}</p>{/if}
+		{#if enrichment?.state === 'unavailable' || (enrichment?.state === 'skipped' && enrichment.reason_code === 'classification_budget_exhausted' && enrichment.missing_fields.length > 0)}
+			<p class="my-3 text-sm text-on-surface-variant">{$t('receipt.optionalLabelsUnavailable')}</p>
+		{/if}
+		{#if reviewMessage || needsReload || editorStale}<button
+				type="button"
+				disabled={saving || verifying}
+				onclick={discardReload}
+				class="my-3 text-primary underline">{$t('review.discardReload')}</button
+			>{/if}
+		<ReviewFindings
+			onField={async (path) => {
+				workspaceView = 'data';
+				await tick();
+				const fields: Record<string, string> = {
+					merchant_name: 'merchant',
+					merchant_address: 'address',
+					receipt_number: 'number',
+					payment_method: 'payment'
+				};
+				const item = /^line_items[.[]([0-9]+)\]?[.]([^.]*)$/.exec(path);
+				const tax = /^taxes[.[]([0-9]+)\]?[.]([^.]*)$/.exec(path);
+				const target = item
+					? `li-${item[1]}-${({ quantity: 'qty', unit_price: 'unit', total_price: 'total', spending_category: 'category' } as Record<string, string>)[item[2]] ?? 'description'}`
+					: tax
+						? `tax-${tax[1]}-${tax[2]}`
+						: `re-${fields[path] ?? path}`;
+				document.getElementById(target)?.focus();
+			}}
+			findings={data.receipt.findings}
+			revision={data.receipt.review_revision}
+			editable={false}
+			onSource={(sources) => (selectedSources = [...sources])}
+		/>
+		<ReceiptWorkspace
+			hasPhoto={data.receipt.image_id !== null}
+			bind:active={workspaceView}
+			showReceipt={selectedSources}
+		>
+			{#snippet photo()}
+				{#if data.receipt.image_id !== null}
+					<ReceiptPhotos
+						imageId={data.receipt.image_id}
+						alt={data.receipt.merchant_name || $t('receipts.unknownVendor')}
+						views={sourceJob.data?.source_views ?? []}
+						sources={selectedSources}
+					/>
+				{/if}
+			{/snippet}
 			<div class="min-w-0 {data.receipt.image_id === null ? 'lg:col-span-2' : ''}">
 				<ReceiptEditor
 					receipt={data.receipt}
@@ -176,22 +396,34 @@
 					lineItems={data.line_items}
 					taxes={data.taxes}
 					collectionIds={data.collection_ids}
-					busy={saving || verifying}
+					busy={saving || verifying || needsReload || editorStale}
 					onSave={saveOnly}
 					onSaveAndVerify={canVerify ? saveAndVerify : undefined}
 					onDirtyChange={(dirty) => (editorDirty = dirty)}
+					onSnapshotChange={(version) => (renderedVersion = version)}
+					onSource={(sources) => (selectedSources = [...sources])}
+					onPendingChange={(pending) => (childPending = pending)}
 				/>
 			</div>
-		</div>
+		</ReceiptWorkspace>
 	</section>
 
 	<ConfirmDialog
-		open={verifyOpen}
-		title={$t('receipt.verifyTitle')}
-		body={$t('receipt.verifyBody')}
-		confirmLabel={$t('receipt.verify')}
+		open={humanPreview !== null && matchesReview(humanPreview)}
+		title={$t(canReviewAsHuman ? 'receipt.humanReviewTitle' : 'receipt.verifyTitle')}
+		body={$t(canReviewAsHuman ? 'receipt.humanReviewBody' : 'receipt.verifyBody')}
+		confirmLabel={$t(canReviewAsHuman ? 'receipt.humanReview' : 'receipt.verify')}
 		busy={verifying}
+		confirmDisabled={reviewBlocked || !humanReviewReady}
 		onConfirm={doVerify}
-		onCancel={() => (verifyOpen = false)}
-	/>
+		onCancel={closeReview}
+	>
+		{#if humanPreview && humanPreview.findings.length}
+			<ReviewFindings
+				findings={humanPreview.findings}
+				revision={humanPreview.operation_revision}
+				onChange={(value) => (humanAcknowledgements = value)}
+			/>
+		{/if}
+	</ConfirmDialog>
 {/if}

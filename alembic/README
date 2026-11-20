@@ -1,1 +1,10 @@
-Generic single-database configuration.
+Hand-written SQL migrations for PostgreSQL. Run `uv run alembic heads` to see
+the latest revision in this checkout.
+
+Run `uv run alembic upgrade head` with the genuine schema owner PG__* settings.
+Alembic/entrypoint does not consume MIGRATION_DATABASE_URL; that variable belongs
+only to `make db-configure-roles`. Drain old analysis/benchmark workers first.
+
+Read ../UPGRADE_AND_VERIFY.md for backup/restore, role bootstrap/grants, supported
+0010 upgrade mapping, runtime-credential startup and compatible recovery. Do not
+start old workers on the new queue or automate a destructive downgrade.

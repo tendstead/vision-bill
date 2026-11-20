@@ -1,5 +1,5 @@
 export type ImageStatus =
-	'pending' | 'processing' | 'analyzed' | 'failed' | 'timed_out' | 'unreadable';
+	'pending' | 'processing' | 'analyzed' | 'failed' | 'timed_out' | 'unreadable' | 'needs_review';
 
 export type ReceiptStatus = 'unverified' | 'verified';
 
@@ -16,7 +16,127 @@ export type Category =
 export type PaymentMethod =
 	'cash' | 'credit_card' | 'debit_card' | 'mobile_payment' | 'check' | 'other' | 'unknown';
 
-export interface ImageRow {
+export type EnrichmentReason =
+	| 'invalid_response'
+	| 'request_rejected'
+	| 'not_dispatched'
+	| 'classification_budget_exhausted'
+	| 'classification_disabled'
+	| 'incomplete_observations'
+	| 'recovered_without_classification';
+
+export interface ClassificationEnrichment {
+	state: 'not_recorded' | 'pending' | 'completed' | 'unavailable' | 'skipped';
+	reason_code: EnrichmentReason | null;
+	missing_fields: string[];
+}
+
+export interface SourceView {
+	view_id: string;
+	photo_index: number;
+	coordinate_space: 'original' | 'working';
+	width: number;
+	height: number;
+	sha256: string;
+	url: string;
+	transforms: Record<string, unknown>[];
+	inverse_mapping: null;
+}
+
+export interface SourceRef {
+	part_id: string;
+	photo_index: number;
+	source_sha256: string;
+	view_id?: string | null;
+	coordinate_space: 'original' | 'working' | 'unknown';
+	block_id?: string | null;
+	bbox?: number[][] | null;
+	text_span?: [number, number] | null;
+}
+export interface AmountPolicy {
+	tax_basis: 'gross' | 'net' | 'unknown';
+	discount_treatment: 'included_in_lines' | 'subtract' | 'unknown';
+	tip_treatment: 'included' | 'add' | 'outside_receipt' | 'none' | 'unknown';
+	subtotal_origin: 'printed' | 'derived_net' | 'unknown';
+	tax_information: 'present' | 'explicit_zero' | 'missing';
+}
+export interface ReviewFinding {
+	id: string;
+	code: string;
+	severity: 'integrity' | 'review' | 'info';
+	field_path: string;
+	source_refs: SourceRef[];
+	comparison: Record<string, string | null>;
+}
+export interface DraftLineItem {
+	description?: string | null;
+	spending_category?: string | null;
+	quantity?: string | number | null;
+	unit_price?: string | null;
+	total_price?: string | null;
+	tags?: string[] | null;
+}
+export interface DraftTaxLine {
+	name?: string | null;
+	rate?: string | number | null;
+	amount?: string | null;
+}
+export interface ExtractionDraft {
+	confidence?: number | null;
+	merchant_name?: string | null;
+	merchant_address?: string | null;
+	receipt_number?: string | null;
+	date?: string | null;
+	time?: string | null;
+	currency?: string | null;
+	category?: Category | null;
+	payment_method?: PaymentMethod | null;
+	subtotal?: string | null;
+	discount_total?: string | null;
+	tax_total?: string | null;
+	tip?: string | null;
+	total?: string | null;
+	line_items?: DraftLineItem[] | null;
+	taxes?: DraftTaxLine[] | null;
+}
+export interface DraftView {
+	image_id: string;
+	revision: number;
+	document: ExtractionDraft;
+	amount_policy: AmountPolicy;
+	findings: ReviewFinding[];
+	source_views: SourceView[];
+	finalized_receipt_id: string | null;
+	field_sources: Record<string, SourceRef[]>;
+	overlap_decisions: Record<string, unknown>[];
+}
+export interface DraftPatch {
+	expected_revision: number;
+	changes: Partial<ExtractionDraft> & {
+		amount_policy?: AmountPolicy;
+		field_sources?: Record<string, SourceRef[]>;
+		overlap_decisions?: Record<string, unknown>[];
+	};
+}
+export interface DraftFinalize {
+	expected_revision: number;
+	request_key: string;
+}
+
+export interface SubmissionStatus {
+	generation: number;
+	terminal: boolean;
+	attempt_count: number;
+	max_attempts: number;
+	retry_at: string | null;
+	result_code: string | null;
+	wait_reason: string | null;
+	draft_available: boolean;
+	observations_available: boolean;
+	latest_extraction_id: string | null;
+	source_views: SourceView[];
+	bypass_review: boolean;
+	model_id: string | null;
 	additional_images?: { original_filename: string | null }[];
 	id: string;
 	original_filename: string | null;
@@ -33,7 +153,45 @@ export interface ImageRow {
 	processing_at: string | null;
 }
 
+/** List rows omit artifact detail; terminal state is determined from status. */
+export type ImageRow = Omit<SubmissionStatus, 'terminal' | 'source_views' | 'latest_extraction_id'>;
+
+export interface UploadOptions {
+	allow_ocr_fallback?: boolean;
+	model_id?: string;
+	bypass_review?: boolean;
+}
+export interface RetryRequest {
+	expected_generation: number;
+	request_key: string;
+	policy?: 'preserve' | 'current';
+}
+export interface ReviewRequest {
+	expected_operation_revision?: number;
+	expected_review_revision?: number;
+	acknowledgements: { finding_id: string; comment: string }[];
+}
+export interface ReviewPreview {
+	operation_revision: number;
+	review_revision: number;
+	findings: ReviewFinding[];
+}
+export interface ModelInfo {
+	id: string;
+	parameter_size?: string | null;
+	context_window_tokens?: number | null;
+}
+
 export interface ReceiptRow {
+	operation_revision: number;
+	review_revision: number;
+	amount_policy: AmountPolicy;
+	findings: ReviewFinding[];
+	field_sources: Record<string, SourceRef[]>;
+	overlap_decisions: Record<string, unknown>[];
+	acknowledgements: { finding_id: string; comment: string }[];
+	verification_source: string | null;
+	checks_version: string | null;
 	id: string;
 	confidence: number;
 	merchant_name: string;
@@ -41,12 +199,12 @@ export interface ReceiptRow {
 	receipt_number: string | null;
 	/** ISO date, YYYY-MM-DD */
 	date: string;
-	/** HH:MM 24h */
+	/** Local HH:MM[:SS[.ffffff]], preserving sub-minute precision */
 	time: string | null;
 	currency: string;
 	category: Category;
 	subtotal: string;
-	discount_total: string;
+	discount_total: string | null;
 	tax_total: string;
 	tip: string | null;
 	total: string;
@@ -61,12 +219,13 @@ export interface ReceiptRow {
 }
 
 export interface LineItemRow {
+	position?: number;
 	id: string;
 	receipt_id: string;
 	description: string;
 	original_description: string | null;
-	quantity: number;
-	unit_price: string;
+	quantity: string | number | null;
+	unit_price: string | null;
 	total_price: string;
 	spending_category: string;
 	category_source: 'llm' | 'history' | 'user' | 'unknown';
@@ -107,29 +266,19 @@ export interface TaxLineRow {
 	id: string;
 	receipt_id: string;
 	name: string;
-	rate: number | null;
+	rate: string | number | null;
 	amount: string;
 }
 
 export interface ReceiptWithDetails {
 	receipt: ReceiptRow;
+	can_rereview: boolean;
 	line_items: LineItemRow[];
 	taxes: TaxLineRow[];
 	image_path: string | null;
 	/** Ids of the collections this receipt belongs to (detail view only). */
 	collection_ids: string[];
-}
-
-/** Body for POST /images (file uploaded via FormData, model_id as query param). */
-export interface ImageCreated {
-	image_id: string;
-	status: ImageStatus;
-	receipt_id?: string | null;
-	warning?: string;
-	original_filename?: string;
-	media_type?: string;
-	size_bytes?: number;
-	image_path?: string;
+	classification_enrichment: ClassificationEnrichment;
 }
 
 /** Authenticated principal (mirrors the backend `User` model). */
@@ -144,6 +293,10 @@ export interface User {
 export interface UiConfig {
 	bypass_review_default: boolean;
 	registration_open: boolean;
+	ocr_enabled?: boolean;
+	ocr_required?: boolean;
+	ocr_allow_vision_fallback?: boolean;
+	formatter_max_output_tokens?: number;
 }
 
 export interface CurrencyStatistics {
@@ -203,23 +356,59 @@ export interface EditableLlmSettings {
 	temperature: number;
 }
 
+export type LlmAuthenticationUpdate = { mode: 'none' } | { mode: 'bearer'; api_key: string };
+
+export interface LlmAuthenticationView {
+	mode: 'none' | 'bearer';
+	source: SettingSource | 'settings';
+	status: 'none' | 'configured' | 'origin_mismatch';
+}
+
+export interface LlmConnectionResult {
+	status:
+		| 'connected'
+		| 'authentication_failed'
+		| 'unreachable'
+		| 'invalid_response'
+		| 'origin_mismatch'
+		| 'unsupported_provider';
+}
+
 export interface SettingsView {
 	llm: EditableLlmSettings;
 	allow_registration: boolean;
 	sources: Record<string, SettingSource>;
 	restart_required: boolean;
+	llm_authentication?: LlmAuthenticationView;
 }
 
 export interface SettingsUpdate {
+	changed_paths?: string[];
 	llm: EditableLlmSettings;
 	allow_registration: boolean;
+	llm_authentication?: LlmAuthenticationUpdate;
+}
+
+export interface DedicatedOcrStatus {
+	selected?: boolean;
+	installed?: boolean;
+	shared_gpu?: boolean;
+	state:
+		| 'unavailable'
+		| 'disabled'
+		| 'requested'
+		| 'installing'
+		| 'active'
+		| 'failed'
+		| 'action_required';
+	reason?: string | null;
 }
 
 export interface LineItemWrite {
 	id?: string;
 	description: string;
-	quantity: number;
-	unit_price: string;
+	quantity: string | number | null;
+	unit_price: string | null;
 	total_price: string;
 	spending_category: string;
 	remember_category?: boolean;
@@ -228,12 +417,16 @@ export interface LineItemWrite {
 
 export interface TaxLineWrite {
 	name: string;
-	rate?: number | null;
+	rate?: string | number | null;
 	amount: string;
 }
 
 /** Body for PUT /receipts/{id} (mirrors the backend `Receipt` write model). */
 export interface ReceiptWrite {
+	expected_operation_revision: number;
+	amount_policy?: AmountPolicy;
+	field_sources?: Record<string, SourceRef[]>;
+	overlap_decisions?: Record<string, unknown>[];
 	confidence: number;
 	merchant_name: string;
 	merchant_address?: string | null;
@@ -246,7 +439,7 @@ export interface ReceiptWrite {
 	line_items: LineItemWrite[];
 	taxes?: TaxLineWrite[];
 	subtotal: string;
-	discount_total?: string;
+	discount_total?: string | null;
 	tax_total?: string;
 	tip?: string | null;
 	total: string;
@@ -296,10 +489,10 @@ export interface ProductPurchase {
 	merchant_name: string;
 	/** ISO date, YYYY-MM-DD */
 	date: string;
-	/** HH:MM 24h */
+	/** Local HH:MM[:SS[.ffffff]], preserving sub-minute precision */
 	time: string | null;
-	quantity: number;
-	unit_price: string;
+	quantity: string | number | null;
+	unit_price: string | null;
 	currency: string;
 }
 
@@ -356,4 +549,82 @@ export interface CollectionUpdate {
 	color?: string | null;
 	start_date?: string | null;
 	end_date?: string | null;
+}
+
+export interface BenchmarkReferenceConfirmation {
+	expected_review_revision: number;
+	expected_document_sha256: string;
+}
+
+export interface BenchmarkReferencePreview {
+	receipt_identity: string;
+	review_revision: number;
+	document_sha256: string;
+	expected: Record<string, unknown>;
+	scored_fields: string[];
+	sources: unknown[];
+	findings: unknown[];
+}
+
+export interface BenchmarkCapabilities {
+	ocr_available: boolean;
+	ocr_enabled: boolean;
+	thinking_control: boolean;
+}
+
+export type BenchmarkCouncilPolicy = 'all' | 'material' | 'custom';
+
+export interface BenchmarkCreate {
+	model_ids: string[];
+	experiment: {
+		pipeline: 'upload' | 'direct_vision' | 'ocr';
+		temperature: number | null;
+		think: boolean | null;
+		include_classification: boolean;
+		allow_ocr_fallback: boolean;
+	};
+	request_timeout_seconds: number;
+	council_policy: BenchmarkCouncilPolicy;
+	apply_council_flags: boolean;
+	receipt_ids?: string[];
+	category?: string;
+	max_source_confidence?: number;
+	limit?: number;
+	council_absolute_threshold?: number;
+	council_relative_threshold?: number;
+}
+
+export interface BenchmarkRun {
+	id: string;
+	status: string;
+	model_ids: string[];
+	receipt_ids: string[];
+	scoring_version: string;
+	experiment?: Record<string, unknown> | null;
+}
+
+export interface BenchmarkSummary {
+	model_id: string;
+	model_digest: string | null;
+	completed: number;
+	succeeded: number;
+	failed: number;
+	average_score: number | null;
+	all_case_average_score: number | null;
+	full_receipt_correct_rate: number | null;
+	average_confidence: number | null;
+	average_attempts: number | null;
+	average_latency_ms: number | null;
+	council_candidates: number;
+	council_findings: number;
+}
+
+export interface BenchmarkStatus {
+	run: BenchmarkRun;
+	queued: number;
+	running: number;
+	retrying: number;
+	waiting_for_model: number;
+	terminal: number;
+	summaries: BenchmarkSummary[];
 }

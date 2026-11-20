@@ -142,3 +142,57 @@ def test_receipt_accepts_net_negative_pfand_return() -> None:
     )
     assert receipt.subtotal == Decimal("-0.75")
     assert receipt.total == Decimal("-0.75")
+
+
+@pytest.mark.parametrize(
+    "field,value", [("time", "25:00"), ("time", "12:60"), ("currency", "usd"), ("currency", "EURO")]
+)
+def test_receipt_rejects_invalid_formatter_time_and_currency(field: str, value: str) -> None:
+    from pydantic import ValidationError
+
+    values = {
+        "confidence": 90,
+        "merchant_name": "Shop",
+        "date": "2025-01-01",
+        "line_items": [],
+        "subtotal": "1.00",
+        "total": "1.00",
+    }
+    values[field] = value
+    with pytest.raises(ValidationError):
+        Receipt(**values)
+
+
+@pytest.mark.parametrize("model_name", ["receipt", "update", "draft"])
+@pytest.mark.parametrize("value,canonical", [
+    (None, None), ("00:00:00.000000", "00:00"), ("14:30", "14:30"),
+    ("14:30:00.0", "14:30"), ("14:30:15", "14:30:15"),
+    ("14:30:15.000000", "14:30:15"), ("14:30:15.1", "14:30:15.100000"),
+    ("14:30:00.000001", "14:30:00.000001"), ("23:59:59.999999", "23:59:59.999999"),
+])
+def test_local_time_preserves_precision_and_matches_stored_review(model_name, value, canonical):
+    from vision_bill.api.receipts import ReceiptUpdate
+    from vision_bill.model.extraction import ExtractionDraft
+
+    model = {"receipt": Receipt, "update": ReceiptUpdate, "draft": ExtractionDraft}[model_name]
+    data = dict(confidence=90, merchant_name="Shop", date="2025-01-01",
+                line_items=[], subtotal="1.00", total="1.00", time=value)
+    result = model.model_validate(data)
+    assert result.time == canonical
+    assert model.model_validate(result.model_dump(mode="json")).time == canonical
+
+
+@pytest.mark.parametrize("value", [
+    "24:00", "25:00:00", "12:60", "12:00:60", "12:00:59.1234567", "9:00",
+    "120000", "12:00.1", "12:00:00.", "12:00\n", "12:00junk", " 12:00", "12:00 ",
+    "12:00:00,1", "12:00Z", "12:00:00+01:00", "2025-01-01T12:00", "１２:００",
+])
+def test_local_time_rejects_lossy_or_nonlocal_input_at_all_write_boundaries(value):
+    from pydantic import ValidationError
+    from vision_bill.api.receipts import ReceiptUpdate
+    from vision_bill.model.extraction import ExtractionDraft
+
+    for model in (Receipt, ReceiptUpdate, ExtractionDraft):
+        with pytest.raises(ValidationError):
+            model.model_validate(dict(confidence=90, merchant_name="Shop", date="2025-01-01",
+                                     line_items=[], subtotal="1", total="1", time=value))

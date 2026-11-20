@@ -9,6 +9,21 @@ import type { ReceiptRow } from './types';
 
 function receipt(overrides: Partial<ReceiptRow>): ReceiptRow {
 	return {
+		operation_revision: 1,
+		review_revision: 1,
+		amount_policy: {
+			tax_basis: 'unknown',
+			discount_treatment: 'unknown',
+			tip_treatment: 'unknown',
+			subtotal_origin: 'unknown',
+			tax_information: 'missing'
+		},
+		findings: [],
+		field_sources: {},
+		overlap_decisions: [],
+		acknowledgements: [],
+		verification_source: null,
+		checks_version: null,
 		id: '00000000-0000-4000-8000-000000000001',
 		confidence: 100,
 		merchant_name: 'Shop',

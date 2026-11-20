@@ -1,0 +1,5 @@
+self-hosted-runner:
+  labels:
+    - vision-bill-release-inputs
+    - vision-bill-cuda
+    - vision-bill-rocm

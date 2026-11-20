@@ -1,5 +1,6 @@
+import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import date as Date
 from datetime import time as Time
@@ -10,14 +11,24 @@ from uuid import UUID
 import asyncpg
 
 from ...config import PGSettings
+from ...model.db.image import ImagePart, ImageRow
 from ...model.db.receipt import (
     LineItemRow,
     ReceiptRow,
     ReceiptWithDetails,
     TaxLineRow,
 )
+from ...model.extraction import (
+    ClassificationEnrichment,
+    DraftLineItem,
+    DraftTaxLine,
+    ExtractionDraft,
+    assert_metadata_only,
+)
 from ...model.item_category import CATEGORY_CODE_SET, normalize_history_key
+from ...model.ocr import SourceRef
 from ...model.receipt import Receipt
+from ...model.review import OriginalAvailability, ReviewEvaluation
 from ...model.search import ProductPurchase
 from ...model.statistics import (
     CurrencyStatistics,
@@ -26,6 +37,14 @@ from ...model.statistics import (
     WeekdayStatistics,
     WeeklyStatistics,
 )
+from ...model.workflow import AccessScope, ReviewPreview, ReviewRequest
+from ...service.receipt_review import (
+    evaluate_receipt,
+    material_document,
+    persistent_findings,
+    validate_acknowledgements,
+)
+from .deadline import connection
 
 # ── SQL (DML; DDL lives in alembic/versions/0001_initial_schema.py) ──
 
@@ -120,8 +139,8 @@ DELETE_CATEGORY_ALIAS_SQL = """
 
 INSERT_TAX_SQL = """
     INSERT INTO taxes
-        (receipt_id, name, rate, amount)
-    VALUES ($1, $2, $3, $4)
+        (receipt_id, name, rate, amount, position)
+    VALUES ($1, $2, $3, $4, $5)
 """
 
 GET_RECEIPT_SQL = "SELECT * FROM receipts WHERE id = $1"
@@ -131,9 +150,14 @@ GET_RECEIPT_BY_IMAGE_ID_SQL = (
 # Join the images table so the detail response can expose the resolved
 # image_path without a second round-trip.
 GET_RECEIPT_WITH_IMAGE_SQL = """
-    SELECT r.*, i.image_path, i.thumbnail_path
+    SELECT r.*, i.image_path, i.thumbnail_path,
+           COALESCE(NULLIF(initial.snapshot -> 'classification_enrichment', 'null'::jsonb),
+                    e.envelope -> 'classification_enrichment') AS classification_enrichment
     FROM receipts r
     LEFT JOIN images i ON i.id = r.image_id
+    LEFT JOIN receipt_extractions e ON e.id = r.extraction_id AND e.image_id = r.image_id
+    LEFT JOIN receipt_review_revisions initial ON initial.receipt_id = r.id
+        AND initial.operation_revision = 1 AND initial.event_kind = 'checkpoint_completed'
     WHERE r.id = $1
 """
 LIST_RECEIPTS_BASE_SQL = (
@@ -166,7 +190,7 @@ STATS_CURRENCY_SQL = """
         MIN(total) AS minimum,
         MAX(total) AS maximum,
         SUM(subtotal) AS subtotal,
-        SUM(discount_total) AS discounts,
+        COALESCE(SUM(discount_total), 0) AS discounts,
         SUM(tax_total) AS taxes,
         SUM(COALESCE(tip, 0)) AS tips
     FROM receipts
@@ -211,8 +235,8 @@ STATS_WEEKLY_SQL = """
     GROUP BY week_start, currency
     ORDER BY week_start, currency
 """
-LIST_LINE_ITEMS_SQL = "SELECT * FROM line_items WHERE receipt_id = $1 ORDER BY position"
-LIST_TAXES_SQL = "SELECT * FROM taxes WHERE receipt_id = $1 ORDER BY id"
+LIST_LINE_ITEMS_SQL = "SELECT * FROM line_items WHERE receipt_id = $1 ORDER BY position, id"
+LIST_TAXES_SQL = "SELECT * FROM taxes WHERE receipt_id = $1 ORDER BY position, id"
 LIST_COLLECTION_IDS_FOR_RECEIPT_SQL = (
     "SELECT collection_id FROM receipt_collections WHERE receipt_id = $1"
 )
@@ -234,10 +258,16 @@ class ItemCategoryDecision:
     source: str
 
 
+MEMBERSHIP_LOCK_SQL = "SELECT pg_advisory_xact_lock(78830741390211)"
+
+OriginalChecker = Callable[[list[ImagePart]], Awaitable[list[OriginalAvailability]]]
+
+
 class ReceiptDB:
     """Owns the asyncpg pool and all SQL for receipts."""
 
-    def __init__(self, settings: PGSettings):
+    def __init__(self, settings: PGSettings, *, original_checker: OriginalChecker | None = None):
+        self._original_checker = original_checker
         self._settings = settings
         self._pool: asyncpg.Pool | None = None
 
@@ -249,7 +279,7 @@ class ReceiptDB:
             return
 
         dsn = self._settings.pg_dsn
-        logger.info("Creating asyncpg connection pool (dsn=%s…)", dsn[:30])
+        logger.info("Creating asyncpg connection pool")
         self._pool = await asyncpg.create_pool(dsn=dsn)
 
         async with self._pool.acquire() as conn:
@@ -310,8 +340,8 @@ class ReceiptDB:
             original_description=d.get("original_description"),
             spending_category=d.get("spending_category", "unknown"),
             category_source=d.get("category_source", "unknown"),
-            quantity=float(d["quantity"]),
-            unit_price=Decimal(d["unit_price"]),
+            quantity=d["quantity"],
+            unit_price=Decimal(d["unit_price"]) if d["unit_price"] is not None else None,
             total_price=Decimal(d["total_price"]),
             tags=list(d.get("tags") or []),
             position=d["position"],
@@ -327,8 +357,8 @@ class ReceiptDB:
             merchant_name=d["merchant_name"],
             date=d["date"],
             time=t.isoformat() if t is not None else None,
-            quantity=float(d["quantity"]),
-            unit_price=Decimal(d["unit_price"]),
+            quantity=d["quantity"],
+            unit_price=Decimal(d["unit_price"]) if d["unit_price"] is not None else None,
             currency=d["currency"],
         )
 
@@ -339,7 +369,7 @@ class ReceiptDB:
             id=d["id"],
             receipt_id=d["receipt_id"],
             name=d["name"],
-            rate=float(d["rate"]) if d["rate"] is not None else None,
+            rate=d["rate"],
             amount=Decimal(d["amount"]),
         )
 
@@ -354,9 +384,9 @@ class ReceiptDB:
                     INSERT_LINE_ITEM_SQL,
                     receipt_id,
                     item.description,
-                    float(item.quantity),
-                    float(item.unit_price),
-                    float(item.total_price),
+                    item.quantity,
+                    item.unit_price,
+                    item.total_price,
                     list(item.tags),
                     index,
                     decision.id,
@@ -366,13 +396,14 @@ class ReceiptDB:
                 )
 
         if receipt.taxes:
-            for tax in receipt.taxes:
+            for position, tax in enumerate(receipt.taxes):
                 await conn.execute(
                     INSERT_TAX_SQL,
                     receipt_id,
                     tax.name,
                     tax.rate,
-                    float(tax.amount),
+                    tax.amount,
+                    position,
                 )
 
     async def get_category_suggestion(
@@ -410,6 +441,65 @@ class ReceiptDB:
 
     # ── Persist extracted data ───────────────────────────────────────
 
+    async def insert_receipt(
+        self, conn: asyncpg.Connection, receipt: Receipt, *, image_id: UUID,
+        user_id: UUID | None, status: str = "unverified", verified: bool = False,
+    ) -> ReceiptRow:
+        """Insert only on the caller's transaction; never overwrite a linked receipt."""
+        row = await conn.fetchrow(
+            INSERT_RECEIPT_SQL, receipt.confidence, receipt.merchant_name,
+            receipt.merchant_address, receipt.receipt_number, receipt.date,
+            self._receipt_time_value(receipt), receipt.currency, receipt.category,
+            receipt.subtotal, receipt.discount_total, receipt.tax_total, receipt.tip,
+            receipt.total, receipt.payment_method, status, image_id, verified, user_id,
+        )
+        history = await self._history_for_items(
+            conn, user_id, receipt.merchant_name, [i.description for i in receipt.line_items]
+        )
+        decisions = [ItemCategoryDecision(
+            id=None, original_description=item.description,
+            category=history.get(normalize_history_key(item.description), item.spending_category),
+            source="history" if normalize_history_key(item.description) in history else (
+                "llm" if item.spending_category != "unknown" else "unknown"
+            ),
+        ) for item in receipt.line_items]
+        await self._insert_children(conn, row["id"], receipt, decisions)
+        await self._capture_initial_collection(conn, row["id"], user_id)
+        return self._receipt_row_from_record(row)
+
+    @staticmethod
+    async def _capture_initial_collection(
+        conn: asyncpg.Connection, receipt_id: UUID, owner_id: UUID | None,
+    ) -> None:
+        if owner_id is None:
+            return
+        # Explicit savepoint operations avoid async-context cleanup awaiting
+        # rollback after cancellation. Fatal errors go straight to the caller's
+        # outer transaction/deadline adapter, which owns full rollback/discard.
+        savepoint = conn.transaction()
+        await savepoint.start()
+        try:
+            # Serialize with deletion's membership enumeration/history.
+            # This receipt is new and cannot yet be locked by another caller.
+            await conn.execute(MEMBERSHIP_LOCK_SQL)
+            collection_id = await conn.fetchval(
+                "SELECT id FROM collections WHERE user_id=$1 AND active=TRUE FOR SHARE",
+                owner_id,
+            )
+            if collection_id is not None:
+                await conn.execute(
+                    """INSERT INTO receipt_collections(receipt_id,collection_id)
+                    VALUES($1,$2) ON CONFLICT(receipt_id,collection_id) DO NOTHING""",
+                    receipt_id, collection_id,
+                )
+        except asyncpg.IntegrityConstraintViolationError:
+            # These operations remain inside the caller's bounded body; a
+            # cancellation or unusable transaction during rollback propagates.
+            await savepoint.rollback()
+            logger.warning("Active collection capture rejected")
+        else:
+            await savepoint.commit()
+
     async def persist_receipt(
         self,
         receipt: Receipt,
@@ -424,11 +514,7 @@ class ReceiptDB:
         is ``None`` for receipts created without an associated image. ``user_id``
         is the owning user (``None`` for legacy/unowned rows).
         """
-        logger.info(
-            "Persisting receipt for '%s' on %s",
-            receipt.merchant_name,
-            receipt.date,
-        )
+        logger.info("Persisting receipt")
 
         values = (
             receipt.confidence,
@@ -439,11 +525,11 @@ class ReceiptDB:
             self._receipt_time_value(receipt),
             receipt.currency,
             receipt.category,
-            float(receipt.subtotal),
-            float(receipt.discount_total),
-            float(receipt.tax_total),
-            float(receipt.tip) if receipt.tip is not None else None,
-            float(receipt.total),
+            receipt.subtotal,
+            receipt.discount_total,
+            receipt.tax_total,
+            receipt.tip,
+            receipt.total,
             receipt.payment_method,
         )
 
@@ -486,6 +572,260 @@ class ReceiptDB:
 
         return self._receipt_row_from_record(row)
 
+    @staticmethod
+    async def _lock_review_receipt(
+        conn: asyncpg.Connection,
+        receipt_id: UUID,
+        user_id: UUID | None,
+        can_see_all: bool,
+        *, lock: bool = True,
+    ) -> asyncpg.Record | None:
+        if not lock:
+            return await conn.fetchrow("SELECT * FROM receipts WHERE id=$1 AND ($3 OR user_id=$2)", receipt_id, user_id, can_see_all)
+        # Match workflow's image-before-receipt lock order. Recheck scope after locking.
+        visible = await conn.fetchrow(
+            "SELECT image_id FROM receipts WHERE id=$1 AND ($3 OR $2::uuid IS NULL OR user_id=$2)",
+            receipt_id,
+            user_id,
+            can_see_all,
+        )
+        if visible is None:
+            return None
+        if visible["image_id"] is not None:
+            await conn.fetchrow("SELECT id FROM images WHERE id=$1 FOR UPDATE", visible["image_id"])
+        return await conn.fetchrow(
+            "SELECT * FROM receipts WHERE id=$1 AND ($3 OR $2::uuid IS NULL OR user_id=$2) FOR UPDATE",
+            receipt_id,
+            user_id,
+            can_see_all,
+        )
+
+    async def _review_document(
+        self, conn: asyncpg.Connection, row: Mapping[str, Any]
+    ) -> ExtractionDraft:
+        # Stored observations must remain repairable even when legacy values violate
+        # today's model. Evaluation validates them explicitly rather than adding defaults.
+        data = dict(row)
+        stored_time = data.get("time")
+        if isinstance(stored_time, Time):
+            data["time"] = (
+                stored_time.isoformat(timespec="minutes")
+                if not stored_time.second and not stored_time.microsecond
+                else stored_time.isoformat()
+            )
+        data["line_items"] = [
+            DraftLineItem.model_validate(self._line_item_row_from_record(item).model_dump())
+            for item in await conn.fetch(LIST_LINE_ITEMS_SQL, row["id"])
+        ]
+        data["taxes"] = [
+            DraftTaxLine.model_validate(self._tax_row_from_record(item).model_dump())
+            for item in await conn.fetch(LIST_TAXES_SQL, row["id"])
+        ]
+        return ExtractionDraft.model_construct(
+            **{key: data.get(key) for key in ExtractionDraft.model_fields}
+        )
+
+    @staticmethod
+    async def _validate_review_sources(
+        conn: asyncpg.Connection,
+        image_id: UUID | None,
+        sources: dict[str, list[SourceRef]],
+        overlaps: list[dict[str, Any]],
+        *, lock: bool = True,
+    ) -> None:
+        assert_metadata_only(overlaps)
+        references = [ref for refs in sources.values() for ref in refs]
+        view_ids: set[UUID] = set()
+
+        def collect(value: Any) -> None:
+            if isinstance(value, dict):
+                if value.get("view_id") is not None:
+                    view_ids.add(UUID(str(value["view_id"])))
+                if "part_id" in value:
+                    references.append(SourceRef.model_validate(value))
+                for item in value.values():
+                    collect(item)
+            elif isinstance(value, list):
+                for item in value:
+                    collect(item)
+
+        collect(overlaps)
+        for view_id in view_ids:
+            if not await conn.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM extraction_working_views WHERE view_id=$1 AND image_id=$2)",
+                view_id, image_id,
+            ):
+                raise ValueError("source reference view does not match saved artifact")
+        if not references:
+            return
+        parts = {
+            part["photo_index"]: part
+            for part in await conn.fetch(
+                "SELECT * FROM image_source_parts WHERE image_id=$1 ORDER BY photo_index" + (" FOR SHARE" if lock else ""),
+                image_id,
+            )
+        }
+        for ref in references:
+            part = parts.get(ref.photo_index)
+            if (
+                part is None
+                or part["part_id"] != ref.part_id
+                or part["source_sha256"] != ref.source_sha256
+            ):
+                raise ValueError("source reference must bind to a real source part")
+            if ref.coordinate_space == "working" and ref.view_id is None:
+                raise ValueError("working source reference requires saved view")
+            if ref.view_id is not None and not await conn.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM extraction_working_views WHERE view_id=$1 AND image_id=$2 AND part_id=$3)",
+                ref.view_id,
+                image_id,
+                ref.part_id,
+            ):
+                raise ValueError("source reference view does not match saved artifact")
+
+    async def _review_originals(
+        self,
+        conn: asyncpg.Connection,
+        image_id: UUID | None,
+        *, lock: bool = True,
+    ) -> list[OriginalAvailability]:
+        if image_id is None:
+            return []
+        row = await conn.fetchrow("SELECT * FROM images WHERE id=$1", image_id)
+        if row is None:
+            return []
+        image = ImageRow.model_validate(dict(row))
+        durable = await conn.fetch(
+            "SELECT * FROM image_source_parts WHERE image_id=$1 ORDER BY photo_index" + (" FOR SHARE" if lock else ""),
+            image_id,
+        )
+        by_index = {part["photo_index"]: part for part in durable}
+        parts = image.parts()
+        # Only pre-workflow images without any durable identity evidence may
+        # retain unknown legacy identities. A missing manifest is corruption,
+        # not permission to replace a known original with any readable file.
+        snapshots = [row[name] for name in ("source_manifest", "requested_options", "effective_options")]
+        has_snapshot = any(
+            json.loads(value) if isinstance(value, str) else value for value in snapshots
+        )
+        requires_manifest = bool(
+            durable or has_snapshot or row["request_fingerprint"] is not None
+            or row["idempotency_key"] is not None or row["ocr_checkpoint"] is not None
+            or row["attempt_count"] > 0 or row["generation"] > 1
+        )
+        if not requires_manifest:
+            requires_manifest = await conn.fetchval(
+                """SELECT EXISTS(SELECT 1 FROM receipt_extractions WHERE image_id=$1)
+                OR EXISTS(SELECT 1 FROM image_retry_requests WHERE image_id=$1)""",
+                image_id,
+            )
+        if requires_manifest and [part["photo_index"] for part in durable] != list(range(len(parts))):
+            raise ValueError("original_integrity_failed")
+        for index, part in enumerate(parts):
+            saved = by_index.get(index)
+            part.part_id = saved["part_id"] if saved else None
+            part.photo_index = index
+            part.source_sha256 = saved["source_sha256"] if saved else part.source_sha256
+            if saved and saved["image_path"] != part.image_path:
+                # An inconsistent manifest is not silently replaced by current file availability.
+                return [
+                    OriginalAvailability(
+                        part_id=part.part_id, photo_index=index, available=False, sha256_matches=False
+                    )
+                ]
+        if self._original_checker is None:
+            raise ValueError("original_checker_required")
+        result = await self._original_checker(parts)
+        if [(o.part_id, o.photo_index) for o in result] != [(p.part_id, p.photo_index) for p in parts]:
+            raise ValueError("original_integrity_failed")
+        return result
+
+    @staticmethod
+    async def _append_review_history(
+        conn: asyncpg.Connection,
+        row: asyncpg.Record,
+        event: str,
+        actor: UUID | None,
+    ) -> None:
+        receipt = ReceiptDB._receipt_row_from_record(row)
+        snapshot = {
+            "receipt": receipt.model_dump(mode="json"),
+            "line_items": [
+                ReceiptDB._line_item_row_from_record(item).model_dump(mode="json")
+                for item in await conn.fetch(LIST_LINE_ITEMS_SQL, receipt.id)
+            ],
+            "taxes": [
+                ReceiptDB._tax_row_from_record(item).model_dump(mode="json")
+                for item in await conn.fetch(LIST_TAXES_SQL, receipt.id)
+            ],
+            "collection_ids": [
+                str(item["collection_id"])
+                for item in await conn.fetch(
+                    "SELECT collection_id FROM receipt_collections WHERE receipt_id=$1 ORDER BY collection_id",
+                    receipt.id,
+                )
+            ],
+        }
+        await conn.execute(
+            """INSERT INTO receipt_review_revisions(receipt_id,operation_revision,review_revision,
+            event_kind,actor_user_id,snapshot) VALUES($1,$2,$3,$4,$5,$6::jsonb)""",
+            receipt.id,
+            receipt.operation_revision,
+            receipt.review_revision,
+            event,
+            actor,
+            json.dumps(snapshot),
+        )
+
+    @staticmethod
+    async def _visible_collection_ids(
+        conn: asyncpg.Connection, receipt_id: UUID, user_id: UUID | None, can_see_all: bool,
+    ) -> list[UUID]:
+        if can_see_all or user_id is None:
+            rows = await conn.fetch(LIST_COLLECTION_IDS_FOR_RECEIPT_SQL, receipt_id)
+        else:
+            rows = await conn.fetch(
+                "SELECT rc.collection_id FROM receipt_collections rc "
+                "JOIN collections c ON c.id=rc.collection_id "
+                "WHERE rc.receipt_id=$1 AND c.user_id=$2",
+                receipt_id,
+                user_id,
+            )
+        return [row["collection_id"] for row in rows]
+
+    @staticmethod
+    async def _set_collections(
+        conn: asyncpg.Connection,
+        receipt_id: UUID,
+        collection_ids: list[UUID],
+        user_id: UUID | None,
+        can_see_all: bool,
+    ) -> None:
+        targets = set(collection_ids)
+        rows = await conn.fetch(
+            "SELECT id FROM collections WHERE id=ANY($1::uuid[]) AND ($3 OR user_id=$2) FOR SHARE",
+            list(targets),
+            user_id,
+            can_see_all,
+        )
+        if {row["id"] for row in rows} != targets:
+            raise ValueError("collection_not_found")
+        if can_see_all or user_id is None:
+            await conn.execute("DELETE FROM receipt_collections WHERE receipt_id=$1", receipt_id)
+        else:
+            await conn.execute(
+                "DELETE FROM receipt_collections rc USING collections c "
+                "WHERE rc.receipt_id=$1 AND rc.collection_id=c.id AND c.user_id=$2",
+                receipt_id,
+                user_id,
+            )
+        for target in sorted(targets):
+            await conn.execute(
+                "INSERT INTO receipt_collections(receipt_id,collection_id) VALUES($1,$2)",
+                receipt_id,
+                target,
+            )
+
     async def update_receipt(
         self,
         receipt_id: UUID,
@@ -509,11 +849,11 @@ class ReceiptDB:
             self._receipt_time_value(receipt),
             receipt.currency,
             receipt.category,
-            float(receipt.subtotal),
-            float(receipt.discount_total),
-            float(receipt.tax_total),
-            float(receipt.tip) if receipt.tip is not None else None,
-            float(receipt.total),
+            receipt.subtotal,
+            receipt.discount_total,
+            receipt.tax_total,
+            receipt.tip,
+            receipt.total,
             receipt.payment_method,
             receipt_id,
         ]
@@ -523,9 +863,43 @@ class ReceiptDB:
             sql = sql.replace("RETURNING *", f"AND user_id = ${len(args)} RETURNING *", 1)
 
         async with self.pool.acquire() as conn, conn.transaction():
-            row = await conn.fetchrow(sql, *args)
-            if row is None:
+            if getattr(receipt, "collection_ids", None) is not None:
+                await conn.execute(MEMBERSHIP_LOCK_SQL)
+            before = await self._lock_review_receipt(conn, receipt_id, user_id, can_see_all)
+            if before is None:
                 return None
+            current = self._receipt_row_from_record(before)
+            document = await self._review_document(conn, before)
+            policy = getattr(receipt, "amount_policy", None) or current.amount_policy
+            sources = getattr(receipt, "field_sources", None)
+            sources = current.field_sources if sources is None else sources
+            overlaps = getattr(receipt, "overlap_decisions", None)
+            overlaps = current.overlap_decisions if overlaps is None else overlaps
+            material = (
+                material_document(document) != material_document(receipt)
+                or policy != current.amount_policy
+                or sources != current.field_sources
+                or overlaps != current.overlap_decisions
+            )
+            expected = getattr(receipt, "expected_operation_revision", None)
+            if (material and expected is None) or (
+                expected is not None and expected != current.operation_revision
+            ):
+                raise ValueError("operation_revision_conflict")
+            evaluation = None
+            if material:
+                await self._validate_review_sources(conn, current.image_id, sources, overlaps)
+                originals = await self._review_originals(conn, current.image_id)
+                evaluation = evaluate_receipt(
+                    receipt,
+                    policy,
+                    sources,
+                    overlaps,
+                    originals,
+                    retained_findings=persistent_findings(current.findings),
+                )
+            row = await conn.fetchrow(sql, *args)
+            assert row is not None
 
             owner_id: UUID | None = dict(row).get("user_id")
             old_rows = [dict(old) for old in await conn.fetch(LIST_LINE_ITEMS_SQL, receipt_id)]
@@ -548,7 +922,11 @@ class ReceiptDB:
                     raise ValueError("Duplicate line item id")
                 if old is not None:
                     used_ids.add(old["id"])
-                original = (old.get("original_description") or old["description"]) if old else item.description
+                original = (
+                    (old.get("original_description") or old["description"])
+                    if old
+                    else item.description
+                )
                 old_category = old.get("spending_category", "unknown") if old else "unknown"
                 old_source = old.get("category_source", "unknown") if old else "unknown"
                 explicit = "spending_category" in item.model_fields_set
@@ -558,15 +936,18 @@ class ReceiptDB:
                 source = "user" if changed or remember else old_source
                 if old is None and explicit and category != "unknown":
                     source = "user"
-                decisions.append(ItemCategoryDecision(
-                    id=old["id"] if old else None,
-                    original_description=original,
-                    category=category,
-                    source=source,
-                ))
+                decisions.append(
+                    ItemCategoryDecision(
+                        id=old["id"] if old else None,
+                        original_description=original,
+                        category=category,
+                        source=source,
+                    )
+                )
                 if remember and owner_id is not None and merchant_key:
                     for description_key in {
-                        normalize_history_key(original), normalize_history_key(item.description)
+                        normalize_history_key(original),
+                        normalize_history_key(item.description),
                     }:
                         if not description_key:
                             continue
@@ -576,39 +957,150 @@ class ReceiptDB:
                             )
                         else:
                             await conn.execute(
-                                UPSERT_CATEGORY_ALIAS_SQL, owner_id, merchant_key,
-                                description_key, category,
+                                UPSERT_CATEGORY_ALIAS_SQL,
+                                owner_id,
+                                merchant_key,
+                                description_key,
+                                category,
                             )
 
             await conn.execute(DELETE_LINE_ITEMS_SQL, receipt_id)
             await conn.execute(DELETE_TAXES_SQL, receipt_id)
             await self._insert_children(conn, receipt_id, receipt, decisions)
+            collections = getattr(receipt, "collection_ids", None)
+            if collections is not None:
+                await self._set_collections(conn, receipt_id, collections, user_id, can_see_all)
+            if material:
+                assert evaluation is not None
+                verified = current.verified and evaluation.can_auto_verify
+                row = await conn.fetchrow(
+                    """UPDATE receipts SET operation_revision=operation_revision+1,
+                    review_revision=review_revision+1,amount_policy=$2::jsonb,field_sources=$3::jsonb,
+                    overlap_decisions=$4::jsonb,findings=$5::jsonb,checks_version=$6,
+                    acknowledgements='[]'::jsonb,verified=$7,status=$8,verification_source=$9
+                    WHERE id=$1 RETURNING *""",
+                    receipt_id,
+                    policy.model_dump_json(),
+                    json.dumps(
+                        {k: [r.model_dump(mode="json") for r in v] for k, v in sources.items()}
+                    ),
+                    json.dumps(overlaps),
+                    json.dumps([f.model_dump(mode="json") for f in evaluation.findings]),
+                    evaluation.checks_version,
+                    verified,
+                    "verified" if verified else "unverified",
+                    current.verification_source if verified else None,
+                )
+            else:
+                row = await conn.fetchrow(
+                    "UPDATE receipts SET operation_revision=operation_revision+1 WHERE id=$1 RETURNING *",
+                    receipt_id,
+                )
+            assert row is not None
+            await self._append_review_history(
+                conn, row, "material_edit" if material else "classification_edit", user_id
+            )
 
         return self._receipt_row_from_record(row)
+
+    async def _evaluate_current_review(
+        self,
+        conn: asyncpg.Connection,
+        row: asyncpg.Record,
+        current: ReceiptRow,
+        *,
+        lock: bool = True,
+    ) -> ReviewEvaluation:
+        document = await self._review_document(conn, row)
+        await self._validate_review_sources(
+            conn, current.image_id, current.field_sources, current.overlap_decisions, lock=lock
+        )
+        originals = await self._review_originals(conn, current.image_id, lock=lock)
+        return evaluate_receipt(
+            document,
+            current.amount_policy,
+            current.field_sources,
+            current.overlap_decisions,
+            originals,
+            retained_findings=persistent_findings(current.findings),
+        )
+
+    async def preview_human_review(
+        self, receipt_id: UUID, *, scope: AccessScope
+    ) -> ReviewPreview | None:
+        """Evaluate current findings on a read-only, owner-scoped snapshot."""
+        async with (
+            self.pool.acquire() as conn,
+            conn.transaction(isolation="repeatable_read", readonly=True),
+        ):
+            row = await self._lock_review_receipt(
+                conn, receipt_id, scope.user_id, scope.can_see_all, lock=False
+            )
+            if row is None:
+                return None
+            current = self._receipt_row_from_record(row)
+            if (current.verified or current.status != "unverified") and not current.can_rereview():
+                raise ValueError("human_rereview_not_available")
+            evaluation = await self._evaluate_current_review(conn, row, current, lock=False)
+            return ReviewPreview(
+                operation_revision=current.operation_revision,
+                review_revision=current.review_revision,
+                findings=evaluation.findings,
+            )
 
     async def verify_receipt(
-        self, receipt_id: UUID, user_id: UUID | None = None, can_see_all: bool = False
+        self,
+        receipt_id: UUID,
+        request: ReviewRequest | None = None,
+        *,
+        scope: AccessScope | None = None,
+        user_id: UUID | None = None,
+        can_see_all: bool = False,
     ) -> ReceiptRow | None:
-        """Mark a receipt as verified.
-
-        The image path no longer lives on the receipt row — it is moved to the
-        permanent location on the ``images`` row by the caller (see
-        ``ImageDB.update_image_path``). Returns None when no receipt with the
-        given id exists (or is not owned by a non-see-all ``user_id``).
-        """
-        logger.info("Verifying receipt %s", receipt_id)
-
-        args: list[Any] = [receipt_id]
-        sql = VERIFY_RECEIPT_SQL
-        if not can_see_all and user_id is not None:
-            args.append(user_id)
-            sql = sql.replace("RETURNING *", f"AND user_id = ${len(args)} RETURNING *", 1)
-
-        async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(sql, *args)
-        if row is None:
-            return None
-        return self._receipt_row_from_record(row)
+        """Lock, re-read evidence, check exact current exceptions, then append history."""
+        request = request or ReviewRequest()
+        if scope is not None:
+            user_id, can_see_all = scope.user_id, scope.can_see_all
+        async with self.pool.acquire() as conn, conn.transaction():
+            row = await self._lock_review_receipt(conn, receipt_id, user_id, can_see_all)
+            if row is None:
+                return None
+            current = self._receipt_row_from_record(row)
+            if (
+                request.expected_operation_revision is not None
+                and request.expected_operation_revision != current.operation_revision
+            ):
+                raise ValueError("operation_revision_conflict")
+            if (
+                request.expected_review_revision is not None
+                and request.expected_review_revision != current.review_revision
+            ):
+                raise ValueError("review_revision_conflict")
+            missing_revision = (
+                request.expected_operation_revision is None
+                or request.expected_review_revision is None
+            )
+            if current.verified or current.status == "verified":
+                if not current.can_rereview() or user_id is None:
+                    raise ValueError("receipt_already_verified")
+                if missing_revision:
+                    raise ValueError("review_revision_required")
+            evaluation = await self._evaluate_current_review(conn, row, current)
+            validate_acknowledgements(evaluation, request.acknowledgements)
+            if evaluation.findings and missing_revision:
+                raise ValueError("review_revision_required")
+            saved = await conn.fetchrow(
+                """UPDATE receipts SET status='verified',verified=TRUE,verification_source='human',
+                operation_revision=operation_revision+1,findings=$2::jsonb,checks_version=$3,
+                acknowledgements=$4::jsonb WHERE id=$1 RETURNING *""",
+                receipt_id,
+                json.dumps([f.model_dump(mode="json") for f in evaluation.findings]),
+                evaluation.checks_version,
+                json.dumps([a.model_dump(mode="json") for a in request.acknowledgements]),
+            )
+            assert saved is not None
+            await self._append_review_history(conn, saved, "verified", user_id)
+            return self._receipt_row_from_record(saved)
 
     async def delete_receipt(
         self, receipt_id: UUID, user_id: UUID | None = None, can_see_all: bool = False
@@ -628,7 +1120,11 @@ class ReceiptDB:
             args.append(user_id)
             sql = sql.replace("RETURNING *", f"AND user_id = ${len(args)} RETURNING *", 1)
 
-        async with self.pool.acquire() as conn:
+        async with self.pool.acquire() as conn, conn.transaction():
+            # DELETE also locks the image via its receipt_id SET NULL action.
+            # Acquire it first, as PUT/verify do, before touching the receipt.
+            if await self._lock_review_receipt(conn, receipt_id, user_id, can_see_all) is None:
+                return None
             row = await conn.fetchrow(sql, *args)
         if row is None:
             return None
@@ -704,7 +1200,7 @@ class ReceiptDB:
             args.append(collection_id)
             where.append(
                 "EXISTS (SELECT 1 FROM receipt_collections rc "
-                f"WHERE rc.receipt_id = receipts.id AND rc.collection_id = ${len(args)})"
+                f"WHERE rc.receipt_id = r.id AND rc.collection_id = ${len(args)})"
             )
 
         sql = LIST_RECEIPTS_BASE_SQL
@@ -849,7 +1345,8 @@ class ReceiptDB:
         )
 
     async def get_receipt_with_details(
-        self, receipt_id: UUID, user_id: UUID | None = None, can_see_all: bool = False
+        self, receipt_id: UUID, user_id: UUID | None = None, can_see_all: bool = False,
+        *, deadline: float | None = None,
     ) -> ReceiptWithDetails | None:
         """Fetch a receipt together with its line items, taxes and image path.
 
@@ -862,18 +1359,20 @@ class ReceiptDB:
         if not can_see_all and user_id is not None:
             args.append(user_id)
             sql += f" AND r.user_id = ${len(args)}"
-        async with self.pool.acquire() as conn:
+        async with connection(self.pool, deadline=deadline) as conn:
             row = await conn.fetchrow(sql, *args)
             if row is None:
                 return None
             li_rows = await conn.fetch(LIST_LINE_ITEMS_SQL, receipt_id)
             tax_rows = await conn.fetch(LIST_TAXES_SQL, receipt_id)
-            coll_rows = await conn.fetch(LIST_COLLECTION_IDS_FOR_RECEIPT_SQL, receipt_id)
+            collection_ids = await self._visible_collection_ids(conn, receipt_id, user_id, can_see_all)
 
         d = dict(row)
         image_path: str | None = d.get("image_path")
         receipt = self._receipt_row_from_record(row)
-        collection_ids = [r["collection_id"] for r in coll_rows]
+        raw_enrichment = d.get("classification_enrichment")
+        if isinstance(raw_enrichment, str):
+            raw_enrichment = json.loads(raw_enrichment)
 
         return ReceiptWithDetails(
             receipt=receipt,
@@ -881,11 +1380,15 @@ class ReceiptDB:
             taxes=[self._tax_row_from_record(r) for r in tax_rows],
             image_path=image_path,
             collection_ids=collection_ids,
+            classification_enrichment=(
+                ClassificationEnrichment.model_validate(raw_enrichment)
+                if raw_enrichment is not None else ClassificationEnrichment()
+            ),
         )
 
-    async def list_tags(self) -> list[str]:
+    async def list_tags(self, *, deadline: float | None = None) -> list[str]:
         """Return the allowed line-item tag vocabulary, ordered by name."""
-        async with self.pool.acquire() as conn:
+        async with connection(self.pool, deadline=deadline) as conn:
             rows = await conn.fetch(LIST_TAGS_SQL)
         return [row["name"] for row in rows]
 

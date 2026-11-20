@@ -12,7 +12,7 @@ from e2e.helpers import Stub, register_user
 
 @pytest.fixture(scope="session")
 def base_url() -> str:
-    return os.environ.get("VB_E2E_BASE_URL", "http://localhost:53625")
+    return os.environ["VB_E2E_BASE_URL"]
 
 
 @pytest.fixture
@@ -53,5 +53,6 @@ def reset_stub_mode(stub: Stub) -> None:
     """
     try:
         stub.set_mode("ok")
+        stub.set_scenario("complete")
     except httpx.ConnectError:
         pass

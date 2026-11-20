@@ -1,0 +1,170 @@
+name: Verified prebuilt distribution
+# This workflow must be adopted on the fork's default branch before GitHub exposes
+# Run workflow. Source preparation alone does not create a runnable public release.
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact 40-character dispatch SHA (must equal github.sha)
+        required: true
+        type: string
+      version:
+        description: Unused exact semantic version for this distribution
+        required: true
+        type: string
+      variant:
+        description: Installation variant; native choices require the actual GPU runner
+        required: true
+        type: choice
+        options: [app, ocr-cuda, ocr-rocm, app-ocr-cuda, app-ocr-rocm]
+      inputs_run_id:
+        description: Successful same-fork same-SHA maintainer run containing private distribution-inputs artifact
+        required: true
+        type: string
+      maintenance_intent:
+        description: Native runner operator attestation for this invocation (app uses not-applicable)
+        required: true
+        default: not-applicable
+        type: choice
+        options: [not-applicable, external-llm-quiesced, separate-ocr-device]
+permissions:
+  contents: read
+concurrency:
+  group: distribution-${{ github.repository }}
+  cancel-in-progress: false
+
+env:
+  DISTRIBUTION_FORK_REPOSITORY: ${{ vars.DISTRIBUTION_FORK_REPOSITORY }}
+  DISTRIBUTION_SOURCE_SHA: ${{ inputs.source_sha }}
+  DISTRIBUTION_VERSION: ${{ inputs.version }}
+  DISTRIBUTION_VARIANT: ${{ inputs.variant }}
+  DISTRIBUTION_MAINTENANCE_INTENT: ${{ inputs.maintenance_intent }}
+
+jobs:
+  guard:
+    if: github.event_name == 'workflow_dispatch' && github.event.repository.fork && github.repository == vars.DISTRIBUTION_FORK_REPOSITORY && inputs.source_sha == github.sha
+    runs-on: ubuntu-latest
+    outputs:
+      inputs_actor: ${{ steps.inputs.outputs.actor }}
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Require configured fork, maintainer and exact source
+        id: inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUTS_RUN_ID: ${{ inputs.inputs_run_id }}
+        run: |
+          set -euo pipefail
+          node --input-type=module -e 'import {releaseRequest} from "./scripts/distribution-release.mjs"; releaseRequest(process.env)'
+          role=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$GITHUB_ACTOR/permission" --jq '.role_name // .permission')
+          test "$role" = admin || test "$role" = maintain
+          [[ "$INPUTS_RUN_ID" =~ ^[0-9]+$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$INPUTS_RUN_ID" > "$RUNNER_TEMP/input-run.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/workflows/distribution-inputs.yml" > "$RUNNER_TEMP/input-workflow.json"
+          producer_actor=$(node --input-type=module -e 'import fs from "node:fs"; const actor=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/input-run.json")).actor?.login; if(!/^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/.test(actor||"")) throw Error("Invalid producer actor"); console.log(actor)')
+          gh api "repos/$GITHUB_REPOSITORY/collaborators/$producer_actor/permission" > "$RUNNER_TEMP/input-permission.json"
+          actor=$(node scripts/distribution-inputs.mjs --check-run "$RUNNER_TEMP/input-run.json" "$RUNNER_TEMP/input-workflow.json" "$RUNNER_TEMP/input-permission.json")
+          printf 'actor=%s\n' "$actor" >> "$GITHUB_OUTPUT"
+
+  verify:
+    needs: guard
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  prepare:
+    needs: [guard, verify]
+    # Dedicated, ephemeral runners must carry the actual selected CUDA/Radeon GPU,
+    # Docker/buildx, skopeo, uv and sufficient build/archive space. No GPU in CI.
+    runs-on: ${{ inputs.variant == 'app' && fromJSON('["ubuntu-latest"]') || inputs.variant == 'ocr-cuda' && fromJSON('["self-hosted","linux","x64","vision-bill-cuda"]') || inputs.variant == 'app-ocr-cuda' && fromJSON('["self-hosted","linux","x64","vision-bill-cuda"]') || fromJSON('["self-hosted","linux","x64","vision-bill-rocm"]') }}
+    timeout-minutes: 1440
+    permissions:
+      contents: read
+      actions: read
+    env:
+      DISTRIBUTION_CI_RESULT: ${{ needs.verify.result }}
+      DISTRIBUTION_INPUTS_ACTOR: ${{ needs.guard.outputs.inputs_actor }}
+      DISTRIBUTION_INPUTS_RUN_ID: ${{ inputs.inputs_run_id }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: astral-sh/setup-uv@v5
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Install CPU transport tools on hosted runner
+        if: inputs.variant == 'app'
+        run: sudo apt-get update && sudo apt-get install -y skopeo
+      - name: Download private reviewed release inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUTS_RUN_ID: ${{ inputs.inputs_run_id }}
+        run: |
+          set -euo pipefail
+          umask 077
+          command -v skopeo
+          mkdir "$RUNNER_TEMP/distribution-inputs"
+          gh run download "$INPUTS_RUN_ID" --repo "$GITHUB_REPOSITORY" --name distribution-inputs --dir "$RUNNER_TEMP/distribution-inputs"
+          node scripts/distribution-inputs.mjs --verify "$RUNNER_TEMP/distribution-inputs"
+      - name: Build exact-source OCI candidates without publication
+        run: node scripts/distribution-release.mjs --phase build --inputs "$RUNNER_TEMP/distribution-inputs" --output "$RUNNER_TEMP/distribution-candidates"
+      - name: Qualify exact native image and validate installation bundle
+        # Runs the complete native initializer/full physical gate, never historical
+        # model benchmarks. App choice performs CPU bundle validation only.
+        run: node scripts/distribution-release.mjs --phase qualify --output "$RUNNER_TEMP/distribution-candidates"
+      - name: Preserve verified immutable candidates for publication
+        uses: actions/upload-artifact@v4
+        with:
+          name: distribution-candidates-${{ github.run_id }}
+          path: ${{ runner.temp }}/distribution-candidates/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  publish:
+    needs: [verify, prepare]
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    environment: distribution-release
+    permissions:
+      contents: write
+      packages: write
+      actions: read
+    env:
+      DISTRIBUTION_CI_RESULT: ${{ needs.verify.result }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Install OCI transport
+        run: sudo apt-get update && sudo apt-get install -y skopeo
+      - uses: actions/download-artifact@v4
+        with:
+          name: distribution-candidates-${{ github.run_id }}
+          path: ${{ runner.temp }}/distribution-candidates/
+      - name: Authenticate only after all build and qualification gates
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GH_TOKEN" | skopeo login --username "$GITHUB_ACTOR" --password-stdin ghcr.io
+      - name: Publish verified images → Verify registry pullability → Publish release assets last
+        # The driver validates transported OCI/config/evidence identities again;
+        # failure at either publication/pull stage prevents release creation.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/distribution-release.mjs --phase publish --output "$RUNNER_TEMP/distribution-candidates"
