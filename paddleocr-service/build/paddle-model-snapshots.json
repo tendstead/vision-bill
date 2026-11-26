@@ -1,0 +1,164 @@
+{
+  "PP-DocLayoutV3": {
+    "files": {
+      "LICENSE": {
+        "sha256": "accc36c817ac5ede473d05732e14afc11cb6e55ef5919bc826b653f631165043",
+        "size_bytes": 11325
+      },
+      "LICENSE-PROVENANCE.txt": {
+        "sha256": "a57facf30f9eb649edbd81b36fe706c168fa5f434e574dc2f958961e6ea00c0a",
+        "size_bytes": 348
+      },
+      "README.md": {
+        "sha256": "08b60d8d7a14ddfbe29bcef9e2c2c75bf012bb0412f4e41a2bdfe5687a741dc7",
+        "size_bytes": 12092
+      },
+      "inference.json": {
+        "sha256": "2b68367c5b312a03de5a6e1642c597c8f95165a7e40cd59c6700cf4a5042f4fd",
+        "size_bytes": 1196890
+      },
+      "inference.pdiparams": {
+        "sha256": "70bd316b0582769ec968829fd1feb1a6a58b7c941b938327e551b6b12b45c137",
+        "size_bytes": 130806572
+      },
+      "inference.yml": {
+        "sha256": "506fcfac13b3b546ae40d7886b44126420f392adb694e3f8bb6a6286a1f90fdc",
+        "size_bytes": 1482
+      }
+    },
+    "license": {
+      "redistribution_allowed": true,
+      "spdx": "Apache-2.0",
+      "text_file": "LICENSE"
+    },
+    "provenance": {
+      "revision": "241f8bdfc77a7c7bee915a5057aaee58c235a8d3",
+      "url": "https://huggingface.co/PaddlePaddle/PP-DocLayoutV3"
+    },
+    "sha256": "7795b8d3a5dbf82a2f9934a953f7b9a48946c43a173a07cc0d9ef87de036113d",
+    "size_bytes": 132034560,
+    "source": "https://huggingface.co/PaddlePaddle/PP-DocLayoutV3/resolve/241f8bdfc77a7c7bee915a5057aaee58c235a8d3",
+    "tree_sha256": "3b7cdbd1786151344ee5be0037bcae44a2dde6e5dba132f70c7d5b321cb0c3ae",
+    "unpacked_bytes": 132028709
+  },
+  "PP-LCNet_x1_0_doc_ori": {
+    "files": {
+      "LICENSE": {
+        "sha256": "accc36c817ac5ede473d05732e14afc11cb6e55ef5919bc826b653f631165043",
+        "size_bytes": 11325
+      },
+      "LICENSE-PROVENANCE.txt": {
+        "sha256": "673419a33752b4ce732be694b6e1d0d0add231e0876ac4686d5bfc2a9a7f1814",
+        "size_bytes": 355
+      },
+      "README.md": {
+        "sha256": "e38ea9c16eba0e14e12216418085e8974481d7c0fc3aed4e7df5cf1869c2c97a",
+        "size_bytes": 6850
+      },
+      "config.json": {
+        "sha256": "e49f6be2fe4034232b05fb80d983a7b9bde4592d4a52812129c9a348057d3147",
+        "size_bytes": 2561
+      },
+      "inference.json": {
+        "sha256": "3580978602f309c3554508dd85d4fe09b73a7e0d80d7f9e63258f5b72c390c69",
+        "size_bytes": 104441
+      },
+      "inference.pdiparams": {
+        "sha256": "e8d6e7c5d264507e40e58a655779059d616b20d7441ea22047d829eb3931989c",
+        "size_bytes": 6754166
+      },
+      "inference.yml": {
+        "sha256": "9e195eb729a8173588cd0e8a852c8b373aa606e79e77b4ac7d8346f5426caf26",
+        "size_bytes": 766
+      }
+    },
+    "license": {
+      "redistribution_allowed": true,
+      "spdx": "Apache-2.0",
+      "text_file": "LICENSE"
+    },
+    "provenance": {
+      "revision": "d3b95a6dff5fe8a94f2748e12b61cb26818a0df8",
+      "url": "https://huggingface.co/PaddlePaddle/PP-LCNet_x1_0_doc_ori"
+    },
+    "sha256": "86316265982aa2274c7133df9679b33a99c4d0c133d6b530c8d9daec3637a160",
+    "size_bytes": 6891520,
+    "source": "https://huggingface.co/PaddlePaddle/PP-LCNet_x1_0_doc_ori/resolve/d3b95a6dff5fe8a94f2748e12b61cb26818a0df8",
+    "tree_sha256": "423859dfe74586d759e5131d7573dd85bca5ee229ec503aab47ee8e19551d9b5",
+    "unpacked_bytes": 6880464
+  },
+  "PaddleOCR-VL-1.6-0.9B": {
+    "files": {
+      "LICENSE": {
+        "sha256": "b8c4d7deccd236af023af1c88c4d4e8f0fc2f41914e0fb23a3ec9678fb5a8456",
+        "size_bytes": 11376
+      },
+      "README.md": {
+        "sha256": "d6c5b77a660577f6e18021defccd835bdc93a8c6538f5a479d597f3e94288abf",
+        "size_bytes": 21424
+      },
+      "added_tokens.json": {
+        "sha256": "f59f889088e0fe21c523e7cf121bb6dca3b0bb148cb7159fbb4572c74dfc5644",
+        "size_bytes": 25381
+      },
+      "chat_template.jinja": {
+        "sha256": "2f27812dab7f333e471884e0c803d807f11953d5453140dfb1aaba234f872bc8",
+        "size_bytes": 1474
+      },
+      "config.json": {
+        "sha256": "ce7f4565f8b1db78532ad5d1b9ebe55c2139d49bd4cb04778b580a08a598f171",
+        "size_bytes": 2059
+      },
+      "generation_config.json": {
+        "sha256": "a6701d78ab3b4d972307cdec3b69d4c13f46e0d5140514f50ab7d84259324b94",
+        "size_bytes": 133
+      },
+      "inference.yml": {
+        "sha256": "1587aece2d6442366efce34161d5f7d5f67f09ebfbf043168e5fade892c2780e",
+        "size_bytes": 43
+      },
+      "model.safetensors": {
+        "sha256": "85a479d506a11e724e7285d395c551be69f41dbc16b6342d3cacfb189aed71db",
+        "size_bytes": 1917255968
+      },
+      "preprocessor_config.json": {
+        "sha256": "111872ab1e8bb7fd040ac5087bfced7ab8f011f02139b088cba294964c3b1d0e",
+        "size_bytes": 641
+      },
+      "processor_config.json": {
+        "sha256": "1568858960a9760c54431dae693a6152e601ff55cdf6d2eab97a4a99958faea0",
+        "size_bytes": 137
+      },
+      "special_tokens_map.json": {
+        "sha256": "d3a125c03103deb2acaf7730791bdbbf196f620e5a2213b664511ff9b4b25bab",
+        "size_bytes": 1151
+      },
+      "tokenizer.json": {
+        "sha256": "c8a215a59183d0d0781adc33bacd3ce6162716f7fd568fb30234a74d69803a7d",
+        "size_bytes": 11189060
+      },
+      "tokenizer.model": {
+        "sha256": "34ef7db83df785924fb83d7b887b6e822a031c56e15cff40aaf9b982988180df",
+        "size_bytes": 1614363
+      },
+      "tokenizer_config.json": {
+        "sha256": "1f979337347cc0cb72a6282d8a23ed183539aa81a87a906f022aee2bab83c7c5",
+        "size_bytes": 186947
+      }
+    },
+    "license": {
+      "redistribution_allowed": true,
+      "spdx": "Apache-2.0",
+      "text_file": "LICENSE"
+    },
+    "provenance": {
+      "revision": "132c45f52c0a26ed5a6b2f6bd8e3985794cc27dd",
+      "url": "https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.6"
+    },
+    "sha256": "f85479c597305c48152b2334ea295fd02833edf5f7350a71d4a4b074229d6626",
+    "size_bytes": 1930332160,
+    "source": "https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.6/resolve/132c45f52c0a26ed5a6b2f6bd8e3985794cc27dd",
+    "tree_sha256": "117f0156b809e45c54cfc1d2ca5845a1cc63adfe55d73a21db4687b683e05cbb",
+    "unpacked_bytes": 1930310157
+  }
+}

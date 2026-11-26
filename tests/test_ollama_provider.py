@@ -12,6 +12,7 @@ def mock_client():
     with patch("vision_bill.provider.llm.ollama.AsyncClient") as mocked_client:
         # Create an AsyncMock instance that will be returned by the constructor
         client = AsyncMock()
+        client._client.base_url = 'http://localhost:11434'
         mocked_client.return_value = client
         yield client
 
@@ -205,3 +206,36 @@ async def test_analyse_receipt_embeds_tag_vocabulary_in_prompt(mock_client):
     assert "Prefer tags from this list: coffee, food" in user_prompt
     # The merchant-name guidance (no guessing from logos) ships with the prompt.
     assert "Do not guess or infer the company name from a logo" in user_prompt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("selection", "expected"),
+    [(None, "native-deployment"), ("none", None), ("bearer", "native-selected"), ("foreign", None)],
+)
+async def test_native_client_authentication_and_redirect_policy(monkeypatch, settings, selection, expected):
+    from pydantic import SecretStr
+
+    from vision_bill.config import LlmAuthentication, LLMProviderEnum
+    from vision_bill.provider.factory import get_llm_provider
+
+    monkeypatch.setenv("OLLAMA_API_KEY", "native-deployment")
+    monkeypatch.setenv("OPENAI_CUSTOM_HEADERS", "X-Private: openai-only")
+    llm = settings.llm
+    llm.host = "https://proxy.example/native"
+    llm.api_key = "openai-only"
+    if selection == "none":
+        llm.authentication = LlmAuthentication(provider=LLMProviderEnum.OLLAMA, mode="none")
+    elif selection:
+        llm.authentication = LlmAuthentication(
+            provider=LLMProviderEnum.OPENAI if selection == "foreign" else LLMProviderEnum.OLLAMA,
+            mode="bearer", api_key=SecretStr("native-selected"), origin="https://proxy.example:443",
+        )
+    provider = get_llm_provider(llm)
+    client = provider._client._client
+    try:
+        assert client.headers.get("authorization") == (f"Bearer {expected}" if expected else None)
+        assert "x-private" not in client.headers
+        assert client.follow_redirects is False
+    finally:
+        await client.aclose()

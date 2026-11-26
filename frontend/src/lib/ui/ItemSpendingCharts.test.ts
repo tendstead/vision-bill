@@ -46,6 +46,7 @@ afterEach(cleanup);
 describe('item spending report', () => {
 	it('shows zero months, unknown spending, partial current month, and selected category history', async () => {
 		render(ItemSpendingCharts, { stats });
+		expect(screen.getByText('Item spending period: 2026-07-01 – 2026-09-27')).not.toBeNull();
 		expect(
 			screen.getAllByText('Share of item spending (excluding deposits; includes unknown)')
 		).toHaveLength(2);

@@ -1,12 +1,37 @@
+import {
+	captureSessionActor,
+	currentSessionGeneration,
+	isCurrentSessionActor,
+	requireCurrentSessionActor,
+	requireSessionGeneration,
+	type SessionActor
+} from '$lib/session-lifetime';
+import type { IndividualResult } from '$lib/benchmark-experiments';
 import type {
 	AnalyzeResponse,
+	BenchmarkCapabilities,
+	BenchmarkCreate,
+	BenchmarkReferenceConfirmation,
+	BenchmarkReferencePreview,
+	BenchmarkRun,
+	BenchmarkStatus,
+	DraftView,
+	DraftPatch,
+	DraftFinalize,
+	DedicatedOcrStatus,
 	CategorySuggestion,
 	Collection,
 	CollectionCreate,
 	CollectionDetail,
 	CollectionSummary,
 	CollectionUpdate,
-	ImageCreated,
+	SubmissionStatus,
+	UploadOptions,
+	RetryRequest,
+	ReviewPreview,
+	ReviewRequest,
+	ModelInfo,
+	LlmConnectionResult,
 	ImageListFilters,
 	ImageRow,
 	ItemSpendingStatistics,
@@ -23,7 +48,7 @@ import type {
 	UiConfig
 } from '$lib/types';
 
-const API_BASE = (import.meta.env.VITE_API_BASE ?? '/api/v1').replace(/\/$/, '');
+export const API_BASE = (import.meta.env.VITE_API_BASE ?? '/api/v1').replace(/\/$/, '');
 
 /**
  * Handler invoked on any 401 from a protected (non-`/auth/`) endpoint. Wired up
@@ -31,9 +56,14 @@ const API_BASE = (import.meta.env.VITE_API_BASE ?? '/api/v1').replace(/\/$/, '')
  * swappable callback so this module never imports the session store (no cycle).
  */
 let unauthorizedHandler: (() => void) | null = null;
+let sessionActorChangedHandler: (() => void) | null = null;
 
 export function onUnauthorized(handler: () => void): void {
 	unauthorizedHandler = handler;
+}
+
+export function onSessionActorChanged(handler: () => void): void {
+	sessionActorChangedHandler = handler;
 }
 
 export class ApiError extends Error {
@@ -44,7 +74,8 @@ export class ApiError extends Error {
 	constructor(
 		status: number,
 		detail: string,
-		public imageId?: string
+		public imageId?: string,
+		public problem?: { code: string; fields: string[] }
 	) {
 		super(detail);
 		this.name = 'ApiError';
@@ -53,24 +84,46 @@ export class ApiError extends Error {
 	}
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export async function request<T>(
+	path: string,
+	init?: RequestInit,
+	actor = captureSessionActor()
+): Promise<T> {
+	const isProtected = !path.startsWith('/auth/') && path !== '/system/ui-config';
+	const generation = actor?.generation ?? currentSessionGeneration();
+	function requireCurrent() {
+		requireSessionGeneration(generation);
+		if (isProtected) requireCurrentSessionActor(actor);
+	}
+	requireCurrent();
+
+	const options: RequestInit = { credentials: 'same-origin', ...init };
+	if (isProtected && actor) {
+		const headers = new Headers(options.headers);
+		headers.set('X-Vision-Bill-Expected-User', actor.userId);
+		options.headers = headers;
+	}
+	if (isProtected || path === '/auth/me') options.cache = 'no-store';
+
 	let response: Response;
 	try {
-		// same-origin so the HttpOnly session cookie is sent automatically.
-		response = await fetch(`${API_BASE}${path}`, { credentials: 'same-origin', ...init });
+		response = await fetch(`${API_BASE}${path}`, options);
 	} catch {
+		requireCurrent();
 		throw new ApiError(0, 'Network error');
 	}
 
+	requireCurrent();
 	if (!response.ok) {
 		// A 401 on a protected endpoint means the session expired: bounce to
 		// login. The /auth/ endpoints 401 for bad credentials, not an expired
 		// session, so they are excluded.
-		if (response.status === 401 && !path.startsWith('/auth/')) {
+		if (response.status === 401 && isProtected) {
 			unauthorizedHandler?.();
 		}
 		let detail = `${response.status} ${response.statusText}`;
 		let imageId: string | undefined;
+		let problem: ApiError['problem'];
 		try {
 			const body: unknown = await response.json();
 			if (
@@ -84,24 +137,49 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 			if (body && typeof body === 'object' && 'detail' in body) {
 				const raw = (body as { detail: unknown }).detail;
 				detail = typeof raw === 'string' ? raw : JSON.stringify(raw);
+				if (raw && typeof raw === 'object' && 'code' in raw && typeof raw.code === 'string') {
+					problem = {
+						code: raw.code,
+						fields:
+							'fields' in raw && Array.isArray(raw.fields)
+								? raw.fields.filter((path): path is string => typeof path === 'string')
+								: []
+					};
+				}
 			}
 		} catch {
 			// Non-JSON error body: keep the status text.
 		}
-		throw new ApiError(response.status, detail, imageId);
+		requireCurrent();
+		if (isProtected && response.status === 409 && detail === 'session_actor_changed') {
+			sessionActorChangedHandler?.();
+			requireCurrent();
+		}
+		throw new ApiError(response.status, detail, imageId, problem);
 	}
 
 	if (response.status === 204) {
 		return undefined as T;
 	}
 
-	return (await response.json()) as T;
+	try {
+		const body = (await response.json()) as T;
+		requireCurrent();
+		return body;
+	} catch {
+		requireCurrent();
+		// A successful status with an unreadable body is still an ambiguous mutation.
+		throw new ApiError(response.status, 'Response body could not be read');
+	}
 }
 
-function toQueryString(params: Record<string, string | number | undefined>): string {
+function toQueryString(
+	params: Record<string, string | number | undefined>,
+	preserveEmpty = false
+): string {
 	const parts: string[] = [];
 	for (const [key, value] of Object.entries(params)) {
-		if (value === undefined || value === '') {
+		if (value === undefined || (value === '' && !preserveEmpty)) {
 			continue;
 		}
 		parts.push(`${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`);
@@ -109,20 +187,124 @@ function toQueryString(params: Record<string, string | number | undefined>): str
 	return parts.length > 0 ? `?${parts.join('&')}` : '';
 }
 
+function privateMediaUrl(path: string, actor: SessionActor | null): string | undefined {
+	if (!isCurrentSessionActor(actor)) return undefined;
+	return `${path}${path.includes('?') ? '&' : '?'}vb_expected_user=${encodeURIComponent(actor.userId)}`;
+}
+
 export const api = {
-	/**
-	 * Upload a receipt image. With `bypassReview` the receipt is persisted
-	 * directly as `verified` (no manual review step).
-	 */
-	async uploadImage(file: File | File[], bypassReview = false): Promise<ImageCreated> {
+	/** Files are appended in capture order; absent options stay absent. */
+	async uploadImages(
+		files: File[],
+		options: UploadOptions,
+		idempotencyKey: string,
+		actor = captureSessionActor()
+	): Promise<SubmissionStatus> {
 		const form = new FormData();
-		for (const image of Array.isArray(file) ? file : [file]) form.append('receipt', image);
-		return request<ImageCreated>(
-			`/images${toQueryString({ bypass_review: String(bypassReview) })}`,
+		for (const image of files) form.append('receipt', image);
+		return request<SubmissionStatus>(
+			`/images${toQueryString(
+				{
+					model_id: options.model_id,
+					allow_ocr_fallback:
+						options.allow_ocr_fallback === undefined
+							? undefined
+							: String(options.allow_ocr_fallback),
+					bypass_review:
+						options.bypass_review === undefined ? undefined : String(options.bypass_review)
+				},
+				true
+			)}`,
+			{ method: 'POST', headers: { 'Idempotency-Key': idempotencyKey }, body: form },
+			actor
+		);
+	},
+
+	retrySubmission(id: string, body: RetryRequest): Promise<SubmissionStatus> {
+		return request<SubmissionStatus>(`/images/${id}/retry`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(body)
+		});
+	},
+
+	listModels(
+		capability: 'vision' | 'text' = 'vision',
+		actor = captureSessionActor()
+	): Promise<ModelInfo[]> {
+		return request<ModelInfo[]>(
+			`/llm/models${capability === 'text' ? '?capability=text' : ''}`,
+			undefined,
+			actor
+		);
+	},
+
+	getBenchmarkCapabilities(actor: SessionActor): Promise<BenchmarkCapabilities> {
+		return request<BenchmarkCapabilities>('/benchmarks/capabilities', undefined, actor);
+	},
+
+	previewBenchmarkReference(id: string, actor: SessionActor): Promise<BenchmarkReferencePreview> {
+		return request<BenchmarkReferencePreview>(
+			`/benchmarks/references/${encodeURIComponent(id)}`,
+			undefined,
+			actor
+		);
+	},
+
+	qualifyBenchmarkReference(
+		id: string,
+		body: BenchmarkReferenceConfirmation,
+		actor: SessionActor
+	): Promise<unknown> {
+		return request(
+			`/benchmarks/references/${encodeURIComponent(id)}`,
 			{
 				method: 'POST',
-				body: form
-			}
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(body)
+			},
+			actor
+		);
+	},
+
+	createBenchmark(body: BenchmarkCreate, actor: SessionActor): Promise<BenchmarkRun> {
+		return request<BenchmarkRun>(
+			'/benchmarks',
+			{
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(body)
+			},
+			actor
+		);
+	},
+
+	listBenchmarks(
+		actor: SessionActor,
+		filters?: { comparison_id?: string; offset?: number }
+	): Promise<BenchmarkRun[]> {
+		return request<BenchmarkRun[]>('/benchmarks' + toQueryString(filters ?? {}), undefined, actor);
+	},
+
+	getBenchmarkStatus(id: string, actor: SessionActor): Promise<BenchmarkStatus> {
+		return request<BenchmarkStatus>(`/benchmarks/${encodeURIComponent(id)}`, undefined, actor);
+	},
+
+	getBenchmarkResults(
+		id: string,
+		offset: number,
+		actor: SessionActor,
+		selection?: { model: string; cases: string[] }
+	): Promise<IndividualResult[]> {
+		const query = new URLSearchParams({ limit: '50', offset: String(offset) });
+		if (selection) {
+			query.set('model_id', selection.model);
+			for (const id of selection.cases) query.append('receipt_id', id);
+		}
+		return request<IndividualResult[]>(
+			`/benchmarks/${encodeURIComponent(id)}/results?${query}`,
+			undefined,
+			actor
 		);
 	},
 
@@ -150,14 +332,63 @@ export const api = {
 		return request<SettingsView>('/system/settings');
 	},
 
+	getDedicatedOcr(actor: SessionActor | null): Promise<DedicatedOcrStatus> {
+		return request<DedicatedOcrStatus>('/system/dedicated-ocr', undefined, actor);
+	},
+
+	setDedicatedOcrGpuTopology(
+		actor: SessionActor | null,
+		sharedGpu: boolean,
+		confirmHandoff: boolean
+	): Promise<DedicatedOcrStatus> {
+		return request<DedicatedOcrStatus>(
+			'/system/dedicated-ocr/gpu-topology',
+			{
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ shared_gpu: sharedGpu, confirm_handoff: confirmHandoff })
+			},
+			actor
+		);
+	},
+
+	requestDedicatedOcr(
+		actor: SessionActor | null,
+		confirmHandoff: boolean,
+		enabled = true
+	): Promise<DedicatedOcrStatus> {
+		return request<DedicatedOcrStatus>(
+			'/system/dedicated-ocr',
+			{
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ enabled, confirm_handoff: confirmHandoff })
+			},
+			actor
+		);
+	},
+
 	updateSettings(body: SettingsUpdate): Promise<SettingsView> {
 		return request<SettingsView>('/system/settings', {
 			method: 'PUT',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({
 				llm: body.llm,
-				allow_registration: body.allow_registration
+				allow_registration: body.allow_registration,
+				changed_paths: body.changed_paths,
+				llm_authentication: body.llm_authentication
 			})
+		});
+	},
+
+	testLlmConnection(
+		host: string,
+		provider: SettingsUpdate['llm']['provider']
+	): Promise<LlmConnectionResult> {
+		return request<LlmConnectionResult>('/system/settings/llm/connection-test', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ host, provider })
 		});
 	},
 
@@ -185,8 +416,11 @@ export const api = {
 	},
 
 	/** POST /auth/logout clears the session cookie. */
-	logout(): Promise<void> {
-		return request<void>('/auth/logout', { method: 'POST' });
+	logout(expectedUserId: string): Promise<void> {
+		return request<void>('/auth/logout', {
+			method: 'POST',
+			headers: { 'X-Vision-Bill-Expected-User': expectedUserId }
+		});
 	},
 
 	listImages(filters: ImageListFilters = {}): Promise<ImageRow[]> {
@@ -199,8 +433,8 @@ export const api = {
 		);
 	},
 
-	getImage(id: string): Promise<ImageRow> {
-		return request<ImageRow>(`/images/${id}`);
+	getImage(id: string): Promise<SubmissionStatus> {
+		return request<SubmissionStatus>(`/images/${id}`);
 	},
 
 	deleteImage(id: string): Promise<void> {
@@ -211,17 +445,23 @@ export const api = {
 		return request<AnalyzeResponse>('/images/analyze', { method: 'POST' });
 	},
 
-	/** URL for <img> tags / opening in a new tab (not used via fetch). */
-	imageFileUrl(id: string, part = 0): string {
-		return `${API_BASE}/images/${id}/file${part ? `?part=${part}` : ''}`;
+	/** Private URLs for image tags and direct navigation. */
+	imageFileUrl(id: string, part = 0, actor = captureSessionActor()): string | undefined {
+		return privateMediaUrl(`${API_BASE}/images/${id}/file${part ? `?part=${part}` : ''}`, actor);
 	},
 
-	/** URL for the small WebP thumbnail (not used via fetch). */
-	imageThumbUrl(id: string): string {
-		return `${API_BASE}/images/${id}/thumb`;
+	imageThumbUrl(id: string, actor = captureSessionActor()): string | undefined {
+		return privateMediaUrl(`${API_BASE}/images/${id}/thumb`, actor);
 	},
 
-	listReceipts(filters: ReceiptListFilters = {}): Promise<ReceiptRow[]> {
+	sourceViewUrl(url: string, actor = captureSessionActor()): string | undefined {
+		return privateMediaUrl(url, actor);
+	},
+
+	listReceipts(
+		filters: ReceiptListFilters = {},
+		actor = captureSessionActor()
+	): Promise<ReceiptRow[]> {
 		return request<ReceiptRow[]>(
 			`/receipts${toQueryString({
 				limit: filters.limit,
@@ -231,7 +471,9 @@ export const api = {
 				date_to: filters.date_to,
 				search: filters.search,
 				collection_id: filters.collection_id
-			})}`
+			})}`,
+			undefined,
+			actor
 		);
 	},
 
@@ -240,6 +482,24 @@ export const api = {
 	},
 
 	/** PUT /receipts/{id} returns the updated receipt row (without line items). */
+	getDraft(id: string): Promise<DraftView> {
+		return request<DraftView>(`/images/${id}/draft`);
+	},
+	patchDraft(id: string, body: DraftPatch): Promise<DraftView> {
+		return request<DraftView>(`/images/${id}/draft`, {
+			method: 'PATCH',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(body)
+		});
+	},
+	finalizeDraft(id: string, body: DraftFinalize): Promise<ReceiptRow> {
+		return request<ReceiptRow>(`/images/${id}/draft/finalize`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(body)
+		});
+	},
+
 	updateReceipt(id: string, body: ReceiptWrite): Promise<ReceiptRow> {
 		return request<ReceiptRow>(`/receipts/${id}`, {
 			method: 'PUT',
@@ -248,14 +508,44 @@ export const api = {
 		});
 	},
 
-	/** POST /receipts/{id}/verify returns the verified receipt row (409 if already verified). */
-	verifyReceipt(id: string): Promise<ReceiptRow> {
-		return request<ReceiptRow>(`/receipts/${id}/verify`, { method: 'POST' });
+	previewHumanReview(id: string): Promise<ReviewPreview> {
+		return request<ReviewPreview>(`/receipts/${id}/verify`);
+	},
+
+	/** Verify the receipt or record a human review of an automatically or historically verified receipt. */
+	verifyReceipt(id: string, body?: ReviewRequest): Promise<ReceiptRow> {
+		return request<ReceiptRow>(`/receipts/${id}/verify`, {
+			method: 'POST',
+			...(body
+				? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+				: {})
+		});
 	},
 
 	/** DELETE /receipts/{id} removes the receipt (and its image). 409 if a benchmark references it. */
 	deleteReceipt(id: string): Promise<void> {
 		return request<void>(`/receipts/${id}`, { method: 'DELETE' });
+	},
+
+	listMerchants(
+		params: {
+			merchant_name?: string;
+			merchant_address?: string;
+			q?: string;
+			receipt_id?: string;
+			image_id?: string;
+		},
+		actor = captureSessionActor()
+	) {
+		return request<{ suggestion: string | null; merchants: string[] }>(
+			'/merchants/suggestions',
+			{
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(params)
+			},
+			actor
+		);
 	},
 
 	/** GET /tags returns the line-item tag vocabulary (the select source). */
@@ -267,10 +557,18 @@ export const api = {
 		return request<SpendingCategory[]>('/tags/categories');
 	},
 
-	getCategorySuggestion(merchantName: string, description: string): Promise<CategorySuggestion> {
-		return request<CategorySuggestion>(
-			`/tags/category-suggestion${toQueryString({ merchant_name: merchantName, description })}`
-		);
+	getCategorySuggestion(params: {
+		merchant_name: string;
+		merchant_address?: string;
+		merchant_display_name?: string;
+		receipt_id: string;
+		description: string;
+	}): Promise<CategorySuggestion> {
+		return request<CategorySuggestion>('/tags/category-suggestion', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(params)
+		});
 	},
 
 	/**

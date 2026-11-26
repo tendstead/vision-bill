@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import { registerUser } from '../helpers/auth';
 import { loadFixture } from '../helpers/fixtures';
 import { setStubMode, stubGuard } from '../helpers/stub';
+import { awaitSubmission } from '../helpers/api';
 import { confirmDialog } from '../helpers/ui';
 
 test.describe('persistently broken model', () => {
@@ -20,9 +21,11 @@ test.describe('persistently broken model', () => {
 			buffer: fixture.bytes
 		});
 		await page.getByRole('button', { name: 'Upload' }).click();
-		// The provider IS reachable but returns invalid JSON: self-correction
-		// exhausts its retries, the image is marked failed, the API 500s.
-		await expect(page.getByText('Upload failed')).toBeVisible({ timeout: 30_000 });
+		await expect(page).toHaveURL(/\/upload\?job=[a-f0-9-]+/);
+		const id = new URL(page.url()).searchParams.get('job')!;
+		const job = await awaitSubmission(context, id, 120_000);
+		expect(job.status).toBe('failed');
+		expect(job.attempt_count).toBe(3);
 
 		await page.goto('/queue');
 		await expect(page.getByText('a.png')).toBeVisible();

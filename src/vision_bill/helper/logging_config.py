@@ -1,62 +1,35 @@
+"""Operator logs with per-submission correlation across async service calls."""
+
 import logging
-import logging.config
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from uuid import UUID
 
-LOGGING_CONFIG = {
-    "version": 1,
-    "disable_existing_loggers": False,
-    "formatters": {
-        "default": {
-            "format": "%(asctime)s | %(levelname)-8s | %(message)s",
-            "datefmt": "%Y-%m-%d %H:%M:%S",
-        },
-        "access": {
-            "format": "%(asctime)s | ACCESS | %(client_addr)s | %(request_line)s | %(status_code)s",
-            "datefmt": "%Y-%m-%d %H:%M:%S",
-        },
-    },
-    "handlers": {
-        "console": {
-            "class": "logging.StreamHandler",
-            "formatter": "default",
-            "stream": "ext://sys.stdout",
-        },
-    },
-    "loggers": {
-        # Your app's root namespace
-        "app": {
-            "handlers": ["console"],
-            "level": "DEBUG",
-            "propagate": False,
-        },
-        "routers": {
-            "handlers": ["console"],
-            "level": "DEBUG",
-            "propagate": False,
-        },
-        # Take over Uvicorn's loggers
-        "uvicorn": {
-            "handlers": ["console"],
-            "level": "INFO",
-            "propagate": False,
-        },
-        "uvicorn.error": {
-            "handlers": ["console"],
-            "level": "INFO",
-            "propagate": False,
-        },
-        "uvicorn.access": {
-            "handlers": ["console"],
-            "level": "INFO",
-            "propagate": False,
-        },
-    },
-    # Catch-all for anything not explicitly configured above
-    "root": {
-        "handlers": ["console"],
-        "level": "WARNING",
-    },
-}
+from ocr_contract.diagnostic_logging import configure_namespaces, diagnostic_level
+
+_submission_id: ContextVar[UUID | None] = ContextVar("log_submission_id", default=None)
 
 
-def setup_logging() -> None:
-    logging.config.dictConfig(LOGGING_CONFIG)
+@contextmanager
+def submission_logs(submission_id: UUID) -> Iterator[None]:
+    token = _submission_id.set(submission_id)
+    try:
+        yield
+    finally:
+        _submission_id.reset(token)
+
+
+class _SubmissionFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        message = super().format(record)
+        submission_id = _submission_id.get()
+        return f"{message} submission_id={submission_id}" if submission_id is not None else message
+
+
+def setup_logging(level: str = "INFO") -> None:
+    # The source and installed entry points import the application under these names.
+    configure_namespaces(
+        ("vision_bill", "src.vision_bill"), diagnostic_level(level),
+        _SubmissionFormatter("%(asctime)s %(levelname)s %(name)s %(message)s"),
+    )

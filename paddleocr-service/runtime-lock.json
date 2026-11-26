@@ -1,0 +1,69 @@
+{
+  "apt_ca_image": "python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b",
+  "base_image": "ubuntu:24.04@sha256:2198e4c65076e9cb0b3d695219df667c0e3b0072da64ca3c2648aca17dcecaf5",
+  "cuda_lock_status": "unresolved-official-host-connect-403",
+  "dockerfile_frontend": "docker/dockerfile:1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e",
+  "flash_attention": false,
+  "hipblaslt_empty_target_fallback": "selected HIP targets for host API helpers; tuned device libraries and clients disabled",
+  "input_sha256": {
+    "Dockerfile.rocm": "811884ad8357e207feba2978d931f54337d661c90dc8b5385508d06f7d38b1dd",
+    "build/build_rocm.sh": "4841b0de3351f6e3d9654abe14cd1ff6eaef55b3ec4cc9a272de382e5d6b197f",
+    "build/build_therock.sh": "2e8c252cbbd1cb72f9a03129de3eccca9bc9ee8d62b96998ac523ca45d2fa96a",
+    "build/checkpoint_therock.sh": "8b2cf480c37a045bf788192e649f4c31ad850d4918101375f6626917e64eac52",
+    "build/finish_therock.sh": "19efe5563e307b4a469e732185c0fb57acd41868fa88c433bbf688f3f88140b6",
+    "build/hip-device-info.cpp": "9a7afcb81666d1515d0f4da6a85f6251c0f2c08fd3991c16cee10841ceae978a",
+    "build/hip-rdna2-v1.patch": "017f955eb5a9d2adec5e416ab0dc17b58a9fd128e4665da28af2e730eba6306a",
+    "build/prepare_therock.sh": "033660360424546d342eb31ee008b603adaa7c86bf7ec6a7cb790d1956e16412",
+    "build/miopen-sqlite-transient.patch": "feaf274380a46d78657274dd850537a27e0ca4b7e6a7d1341aaa5665ca38a872",
+    "build/rocm-libraries-hipblaslt-rdna2.patch": "ff20ca08444f3063ff083ed134209367dbd94f7932c48a2b9fb77a2dff90b9fc",
+    "build/therock-hipblaslt-rdna2.patch": "b7fb65034d64dac97df91964efd520f8feea522322377c5559e1c8b4b0a1979c",
+    "build/therock-rccl-translate.patch": "1130c0841a16cb3354b7a8acb6216a6fd4397eb747de289c39368756cfe15f8b",
+    "build/therock-sqlite-headers.patch": "2735b19a47728beff23bdbbf16f88b6d3aa136c6e8285a42986b2b1006d7ef6e",
+    "build/verify_rccl_targets.py": "fd967192336861c71fad8620dffdb097e2f9e8ec22a1221000067e91a23e6875",
+    "build/verify_therock_targets.py": "b1ed7728cf81aa4efed1cf59323612ad80c5ee3e9775326500ce5d1a7a055d84",
+    "ocr_contract/__init__.py": "d6c8a07a17e325de2f7a5741fec132146501cbd4a1bfab810a3b2c1e752fee16",
+    "ocr_contract/activation.py": "e3bbc6b0fc47c244402834db5d84e8bafa8cc49de0e011046c49fe79a2fa24c2",
+    "ocr_contract/document_image.py": "7af9acad1c00b5d99ca3c1d83e4cce938ba7374e8f5709112d9cb7e2d86e1deb",
+    "ocr_contract/limits.py": "e8a3516793c6ddd3f8af037f96edbdde458377f0ab648cf3a0e0a5cacaa2ffa4",
+    "ocr_contract/wire_json.py": "d68762507779fbae4a528c47f6d2587cb37cb5fe4ec583da2f72fc1f34431882",
+    "requirements.bootstrap.lock": "ea0463cbcbd31b0f368bd61ecca40ab60afe376dbfc6f6af4734eab20aa134f3",
+    "requirements.build.lock": "69689dc39bd5e96aff805a1fc556fab5d786b3de7330d1ab3b21cd954833872d",
+    "requirements.cuda-build.lock": "026a4838a8ede5fcbbf8fadac1d4e3cf34bfa793001d6ced8bfe758434c743e6",
+    "requirements.runtime.lock": "c6d6471af279f271daac0e46017aea566af881493d0e43404d1ab0c9a6b15b88"
+  },
+  "platform": "linux-x86_64-cp312",
+  "qualification_status": "unexecuted-hardware-release-gate",
+  "rdna2_targets": [
+    "gfx1030",
+    "gfx1031",
+    "gfx1032",
+    "gfx1034"
+  ],
+  "rust": {
+    "sha256": "2e0338f18ecbaa4a0f631b9e80e8b8e26bb6fe77dd5454fba8a70cf96c1e84a1",
+    "target": "x86_64-unknown-linux-gnu",
+    "url": "https://static.rust-lang.org/dist/2026-04-16/rust-1.95.0-x86_64-unknown-linux-gnu.tar.xz",
+    "version": "1.95.0"
+  },
+  "schema": 1,
+  "sdk_components": "THEROCK_ENABLE_ALL=ON; THEROCK_ENABLE_MIRAGE=OFF; THEROCK_ENABLE_HIPDNN_SAMPLES=OFF",
+  "sources": {
+    "paddle": "7688495538f4d6c1893f084dd238a402e8f68ab6",
+    "paddleocr": "b03f46425e8ff4442b268ce449e3eef758146cd4",
+    "paddlex": "ffb64904d23708863ff5b8da312a5cbd52a7f462",
+    "therock": "b324869fb3116353ac7eec5e6926aa3d452ac987",
+    "therock_rocm_libraries_gitlink": "39d8d60365d2272a5366f76ccb3bfba24b219eaf",
+    "therock_rocm_systems_gitlink": "7da43026e4f2ef7600433c38c820732f7a205d22",
+    "win32metadata": "a40ed3186943620f304649a077b78f8271034736"
+  },
+  "ubuntu_snapshot": "20261101T000000Z",
+  "upstream_optional_target_exclusions": [
+    "hipBLASLt",
+    "hipSPARSELt",
+    "CK",
+    "rocWMMA",
+    "hipTensor",
+    "rocprofiler-compute"
+  ],
+  "wkmi_dvc_md5": "53126f6263d5ca1381b84e8a637e6a1e"
+}

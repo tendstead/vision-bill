@@ -11,7 +11,13 @@ import httpx
 import pytest
 
 from e2e.discovery import FixtureCase, load_fixture_cases
-from e2e.helpers import API, register_user, wait_until
+from e2e.helpers import (
+    API,
+    await_submission,
+    register_user,
+    verify_receipt,
+    wait_until,
+)
 
 pytestmark = pytest.mark.e2e
 
@@ -24,14 +30,13 @@ def _upload(client: httpx.Client, image_path: Path) -> httpx.Response:
             f"{API}/images",
             files={"receipt": (image_path.name, fh, "application/octet-stream")},
         )
-    assert response.status_code in (201, 202), response.text
+    assert response.status_code == 202, response.text
     return response
 
 
 def _wait_analyzed(client: httpx.Client, image_id: str) -> dict:
     def check():
         # Drive one analysis cycle, then read the image row back.
-        client.post(f"{API}/images/analyze")
         row = client.get(f"{API}/images/{image_id}").json()
         return row if row["status"] == "analyzed" else None
 
@@ -42,7 +47,7 @@ def _wait_analyzed(client: httpx.Client, image_id: str) -> dict:
 def test_pipeline_per_fixture(http_factory, case: FixtureCase) -> None:
     client, _ = register_user(http_factory, "pipe")
     response = _upload(client, case.image_path)
-    image_id = response.json()["image_id"]
+    image_id = response.json()["id"]
     row = _wait_analyzed(client, image_id)
     assert row["receipt_id"] is not None
 
@@ -56,7 +61,7 @@ def test_pipeline_per_fixture(http_factory, case: FixtureCase) -> None:
     got_items = {
         (
             item["description"],
-            item["quantity"],
+            Decimal(item["quantity"]) if item["quantity"] is not None else None,
             Decimal(item["unit_price"]),
             Decimal(item["total_price"]),
         )
@@ -69,7 +74,7 @@ def test_pipeline_per_fixture(http_factory, case: FixtureCase) -> None:
     assert got_items == want_items
 
     # Verify marks the receipt and moves the image to permanent storage.
-    verify = client.post(f"{API}/receipts/{row['receipt_id']}/verify")
+    verify = verify_receipt(client, row["receipt_id"])
     assert verify.status_code == 200
     assert verify.json()["status"] == "verified"
     assert client.post(f"{API}/receipts/{row['receipt_id']}/verify").status_code == 409
@@ -89,8 +94,8 @@ def test_bypass_review_verifies_immediately(http_factory, case: FixtureCase) -> 
             f"{API}/images?bypass_review=true",
             files={"receipt": (case.image_path.name, fh, "application/octet-stream")},
         )
-    assert response.status_code == 201, response.text
-    receipt_id = response.json()["receipt_id"]
+    assert response.status_code == 202, response.text
+    receipt_id = await_submission(client, response.json()["id"])["receipt_id"]
 
     detail = client.get(f"{API}/receipts/{receipt_id}").json()
     assert detail["receipt"]["status"] == "verified"

@@ -1,0 +1,110 @@
+# syntax=docker/dockerfile:1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS apt-ca
+# Validate before the signed APT snapshot or Rust toolchain downloads. Only the
+# CA bundle leaves this stage, so the shared prerequisites stay cacheable.
+ARG AMDGPU_TARGETS
+RUN test -n "$AMDGPU_TARGETS" || { echo "Use make ocr-build-rocm or pass an explicit AMDGPU_TARGETS build argument." >&2; exit 1; }
+FROM ubuntu:24.04@sha256:2198e4c65076e9cb0b3d695219df667c0e3b0072da64ca3c2648aca17dcecaf5 AS native-builder
+# Bootstrap HTTPS until Ubuntu's own ca-certificates package is installed.
+COPY --from=apt-ca /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+RUN rm -f /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources \
+ && echo 'deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] https://snapshot.ubuntu.com/ubuntu/20261101T000000Z noble main universe' > /etc/apt/sources.list \
+ && echo 'deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] https://snapshot.ubuntu.com/ubuntu/20261101T000000Z noble-updates main universe' >> /etc/apt/sources.list \
+ && echo 'deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] https://snapshot.ubuntu.com/ubuntu/20261101T000000Z noble-security main universe' >> /etc/apt/sources.list \
+ && apt-get update --error-on=any \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    ca-certificates python3 python3.12 python3.12-venv python3.12-dev libgl1 libglib2.0-0 libgomp1 \
+    git curl build-essential gfortran ninja-build cmake pkg-config xxd automake libtool \
+    libegl1-mesa-dev texinfo bison flex xz-utils libssl-dev libnuma-dev zlib1g-dev tcl \
+ && test -x /usr/bin/python3 && command -v tclsh >/dev/null \
+ && mkdir -p /opt/ocr/build-evidence \
+ && dpkg-query -W > /opt/ocr/build-evidence/os-packages.txt \
+ && rm -rf /var/lib/apt/lists/*
+RUN python3.12 -m venv /opt/build-venv
+ENV PATH="/opt/build-venv/bin:$PATH" \
+    SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PADDLEX=3.7.2 \
+    SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PADDLEOCR=3.7.0
+COPY requirements.build.lock requirements.bootstrap.lock /opt/locks/
+RUN --mount=type=cache,target=/root/.cache/pip python -m pip install --require-hashes --no-deps --only-binary=:all: -r /opt/locks/requirements.bootstrap.lock \
+ && python -m pip install --require-hashes --no-deps --no-build-isolation -r /opt/locks/requirements.build.lock
+# Rust archive identity comes from the official 1.95.0 distribution manifest.
+RUN curl --fail --location https://static.rust-lang.org/dist/2026-04-16/rust-1.95.0-x86_64-unknown-linux-gnu.tar.xz -o /tmp/rust.tar.xz \
+ && echo '2e0338f18ecbaa4a0f631b9e80e8b8e26bb6fe77dd5454fba8a70cf96c1e84a1  /tmp/rust.tar.xz' | sha256sum -c - \
+ && tar -xJf /tmp/rust.tar.xz -C /tmp \
+ && /tmp/rust-1.95.0-x86_64-unknown-linux-gnu/install.sh --prefix=/usr/local --without=rust-docs \
+ && rm -rf /tmp/rust.tar.xz /tmp/rust-1.95.0-x86_64-unknown-linux-gnu
+COPY build/build_jobs.py build/build_therock.sh build/prepare_therock.sh build/source_inventory.py \
+     build/verify_therock_targets.py build/therock-sqlite-headers.patch \
+     build/therock-hipblaslt-rdna2.patch build/rocm-libraries-hipblaslt-rdna2.patch \
+     build/therock-rccl-translate.patch /opt/ocr/build/
+COPY ocr_service/targets.py /opt/ocr/ocr_service/targets.py
+ARG AMDGPU_TARGETS
+ARG BUILD_JOBS=auto
+ARG OCR_ROCM_TRANSPORT=dual
+# Upstream verifies every content-addressed cache hit against its pinned DVC pointer.
+RUN --mount=type=cache,id=vision-bill-therock-dvc,target=/root/.cache/therock-dvc,sharing=locked \
+    bash /opt/ocr/build/build_therock.sh prepare
+# Keep the staged compiler and TheRock stamps in the builder's layer cache.
+RUN bash /opt/ocr/build/build_therock.sh llvm
+COPY build/checkpoint_therock.sh build/verify_rccl_targets.py /opt/ocr/build/
+RUN bash /opt/ocr/build/checkpoint_therock.sh rccl
+RUN bash /opt/ocr/build/checkpoint_therock.sh miopen-configure
+COPY build/miopen-sqlite-transient.patch /opt/ocr/build/
+RUN bash /opt/ocr/build/checkpoint_therock.sh miopen
+COPY build/finish_therock.sh /opt/ocr/build/
+RUN bash /opt/ocr/build/build_therock.sh finish \
+ && rm -rf /opt/native-src/TheRock /opt/native-src/therock-build /opt/native-src/win32metadata
+COPY build/build_rocm.sh build/hip-rdna2-v1.patch build/hip-device-info.cpp /opt/ocr/build/
+RUN BUILD_JOBS="$BUILD_JOBS" AMDGPU_TARGETS="$AMDGPU_TARGETS" bash /opt/ocr/build/build_rocm.sh --paddle-only \
+ && rm -rf /opt/native-src/Paddle
+COPY requirements.runtime.lock /opt/locks/requirements.runtime.lock
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip wheel --require-hashes --no-deps --no-build-isolation \
+      --wheel-dir /tmp/runtime-wheels -r /opt/locks/requirements.runtime.lock \
+ && cd / && sha256sum -c /opt/ocr/build-evidence/native-wheels.sha256 \
+ && python3.12 -m venv /opt/venv \
+ && python -m pip --python /opt/venv install --no-index --no-deps /tmp/runtime-wheels/*.whl /opt/wheels/*.whl \
+ && python -m pip --python /opt/venv check \
+ && rm -rf /tmp/runtime-wheels
+ENV LD_LIBRARY_PATH=/opt/rocm/lib:/opt/rocm/lib/llvm/lib:/opt/rocm/lib/rocm_sysdeps/lib
+COPY build/inspect_kernels.py /opt/ocr/build/inspect_kernels.py
+RUN python /opt/ocr/build/inspect_kernels.py --sdk /opt/rocm \
+    --paddle /opt/venv/lib/python3.12/site-packages/paddle \
+    --output /opt/ocr/build-evidence/kernels.json \
+    --target-profile /opt/ocr/build-evidence/targets.json \
+    --transport-file /opt/ocr/build-evidence/rocm-transport.txt \
+    --compile-log /opt/ocr/build-evidence/paddle-build.log \
+ && gzip -n /opt/ocr/build-evidence/paddle-build.log \
+ && if [ -f /opt/ocr/build-evidence/paddle-compile-commands.json ]; then gzip -n /opt/ocr/build-evidence/paddle-compile-commands.json; fi
+# Candidate native source/build caches stay out of the final artifact.
+FROM ubuntu:24.04@sha256:2198e4c65076e9cb0b3d695219df667c0e3b0072da64ca3c2648aca17dcecaf5
+COPY --from=apt-ca /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+RUN rm -f /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources \
+ && echo 'deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] https://snapshot.ubuntu.com/ubuntu/20261101T000000Z noble main universe' > /etc/apt/sources.list \
+ && echo 'deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] https://snapshot.ubuntu.com/ubuntu/20261101T000000Z noble-updates main universe' >> /etc/apt/sources.list \
+ && echo 'deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] https://snapshot.ubuntu.com/ubuntu/20261101T000000Z noble-security main universe' >> /etc/apt/sources.list \
+ && apt-get update --error-on=any \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    python3.12 ca-certificates libgl1 libglib2.0-0 libgomp1 libnuma1 libstdc++6 \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=native-builder /opt/venv /opt/venv
+COPY --from=native-builder /opt/rocm /opt/rocm
+COPY --from=native-builder /opt/ocr/bin /opt/ocr/bin
+COPY --from=native-builder /opt/ocr/build-evidence /opt/ocr/build-evidence
+ENV PATH="/opt/venv/bin:$PATH" \
+    LD_LIBRARY_PATH=/opt/rocm/lib:/opt/rocm/lib/llvm/lib:/opt/rocm/lib/rocm_sysdeps/lib
+WORKDIR /app
+COPY ocr_service/ /app/ocr_service/
+COPY ocr_contract/ /app/ocr_contract/
+COPY profile.json server.py /app/
+COPY runtime-lock.json /opt/ocr/runtime-lock.json
+ENV OMP_NUM_THREADS=4 OCR_PORT=8082 \
+    PADDLE_PDX_DISABLE_DEVICE_FALLBACK=1 \
+    PADDLE_PDX_CACHE_HOME=/var/cache/paddlex \
+    OCR_STATE_DIR=/var/lib/ocr \
+    OCR_SOURCE_LOCK_PATH=/opt/ocr/runtime-lock.json \
+    OCR_INSTALLATION_LOCK_PATH=/coord/installation.lock \
+    OCR_STARTUP_TIMEOUT_SECONDS=600
+HEALTHCHECK --interval=30s --timeout=10s --start-period=600s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8082/health')"
+CMD ["python", "-m", "ocr_service.entrypoint"]

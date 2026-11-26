@@ -25,9 +25,10 @@ GET_IMAGE_SQL = "SELECT * FROM images WHERE id = $1"
 # (failed), or whose previous worker lease expired. Oldest first so the
 # backlog drains FIFO.
 LIST_PENDING_IMAGES_SQL = (
-    "SELECT * FROM images WHERE status IN ('pending', 'failed') "
+    "SELECT * FROM images WHERE request_fingerprint IS NULL AND claim_token IS NULL "
+    "AND attempt_count = 0 AND (status IN ('pending', 'failed') "
     "OR (status = 'processing' AND (processing_at IS NULL OR "
-    "processing_at < CURRENT_TIMESTAMP - INTERVAL '15 minutes')) "
+    "processing_at < CURRENT_TIMESTAMP - INTERVAL '15 minutes'))) "
     "ORDER BY created_at ASC, id ASC"
 )
 
@@ -35,6 +36,7 @@ CLAIM_IMAGE_SQL = """
     UPDATE images
     SET status = 'processing', processing_at = CURRENT_TIMESTAMP, error = NULL
     WHERE id = $1
+      AND request_fingerprint IS NULL AND claim_token IS NULL AND attempt_count = 0
       AND (
           status IN ('pending', 'failed')
           OR (status = 'processing' AND (processing_at IS NULL OR
@@ -47,11 +49,13 @@ LIST_IMAGES_BASE_SQL = "SELECT * FROM images"
 
 MARK_ANALYZED_SQL = (
     "UPDATE images SET status = 'analyzed', receipt_id = $2, error = NULL, "
-    "analyzed_at = CURRENT_TIMESTAMP, processing_at = NULL WHERE id = $1"
+    "analyzed_at = CURRENT_TIMESTAMP, processing_at = NULL WHERE id = $1 "
+    "AND request_fingerprint IS NULL AND claim_token IS NULL AND attempt_count = 0"
 )
 
 MARK_FAILED_SQL = (
-    "UPDATE images SET status = 'failed', error = $2, processing_at = NULL WHERE id = $1"
+    "UPDATE images SET status = 'failed', error = $2, processing_at = NULL WHERE id = $1 "
+    "AND request_fingerprint IS NULL AND claim_token IS NULL AND attempt_count = 0"
 )
 
 UPDATE_IMAGE_PATH_SQL = "UPDATE images SET image_path = $2 WHERE id = $1"
@@ -84,7 +88,7 @@ class ImageDB:
             return
 
         dsn = self._settings.pg_dsn
-        logger.info("Creating asyncpg image connection pool (dsn=%s…)", dsn[:30])
+        logger.info("Creating asyncpg image connection pool")
         self._pool = await asyncpg.create_pool(dsn=dsn)
 
         async with self._pool.acquire() as conn:
@@ -136,7 +140,7 @@ class ImageDB:
         model_id: str | None = None,
     ) -> ImageRow:
         """Insert a new images row (default status ``pending``) and return it."""
-        logger.info("Storing image row for %s (status=%s)", image_path, status)
+        logger.info("Storing image row (status=%s)", status)
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 INSERT_IMAGE_SQL,
@@ -219,7 +223,7 @@ class ImageDB:
 
     async def mark_failed(self, image_id: UUID, error: str) -> None:
         """Mark an image failed, recording the error for the next retry."""
-        logger.warning("Marking image %s failed: %s", image_id, error)
+        logger.warning("Marking image %s failed", image_id)
         async with self.pool.acquire() as conn:
             await conn.execute(MARK_FAILED_SQL, image_id, error)
 
@@ -227,22 +231,6 @@ class ImageDB:
         """Update the on-disk path of an image (e.g. tmp -> permanent on verify)."""
         async with self.pool.acquire() as conn:
             await conn.execute(UPDATE_IMAGE_PATH_SQL, image_id, image_path)
-
-    async def mark_terminal(self, image_id: UUID, status: str, error: str) -> None:
-        if status not in ("timed_out", "unreadable"):
-            raise ValueError("Unsupported terminal analysis status")
-        async with self.pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE images SET status = $2, error = $3, processing_at = NULL WHERE id = $1",
-                image_id, status, error,
-            )
-
-    async def update_additional_images(self, image_id: UUID, parts: list[ImagePart]) -> None:
-        async with self.pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE images SET additional_images = $2::jsonb WHERE id = $1",
-                image_id, json.dumps([part.model_dump() for part in parts]),
-            )
 
     async def update_image_thumbnail_path(self, image_id: UUID, thumbnail_path: str) -> None:
         """Update the stored thumbnail path for an image row."""

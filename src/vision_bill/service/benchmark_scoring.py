@@ -1,5 +1,6 @@
 """Pure benchmark scoring helpers; no extraction data is persisted here."""
 
+import json
 from decimal import ROUND_HALF_UP, Decimal
 from hashlib import sha256
 from typing import Any
@@ -9,8 +10,8 @@ from ..model.receipt import Receipt
 MONEY_TOLERANCE = Decimal("0.01")
 # Bumped to 2: scoring output includes a separate spending-category component.
 SCORING_VERSION = "2"
-# Bumped to 4: line-item spending categories use the fixed vocabulary.
-PROMPT_VERSION = "4"
+# Version 7 captures per-position VAT and completeness evidence for amount derivation.
+PROMPT_VERSION = "7"
 COMPONENT_WEIGHTS = {"header": 0.20, "totals": 0.35, "line_items": 0.30, "taxes": 0.15}
 
 
@@ -82,7 +83,14 @@ def score_receipts(expected: Receipt, actual: Receipt) -> dict[str, float]:
     return components
 
 
+def validation_schema_sha256() -> str:
+    """Hash the receipt fields a benchmark model can produce and validate."""
+    schema = Receipt.model_json_schema()
+    schema["properties"].pop("merchant_display_name")
+    return sha256(json.dumps(schema, sort_keys=True).encode()).hexdigest()
+
+
 def dataset_fingerprint(receipts: list[Receipt]) -> str:
     """Stable fingerprint of the expected, selected data set."""
-    rows = [r.model_dump_json(exclude={"confidence"}) for r in receipts]
+    rows = [r.model_dump_json(exclude={"confidence", "merchant_display_name"}) for r in receipts]
     return sha256("\n".join(sorted(rows)).encode()).hexdigest()

@@ -3,6 +3,8 @@
  * Kept free of Svelte so it can be unit-tested directly.
  */
 
+import { productTagLabel, productTagValue } from '$lib/i18n/product-tag-label';
+
 export type TagRow =
 	| { kind: 'tag'; tag: string; selected: boolean; optionIndex: number }
 	| { kind: 'create'; tag: string; optionIndex: number }
@@ -14,13 +16,44 @@ export function normalizeTag(input: string): string {
 	return input.trim().split(/\s+/).join(' ').toLowerCase();
 }
 
-/** Case-insensitive substring filter; an empty query returns all options in order. */
-export function filterTags(options: string[], query: string): string[] {
-	const q = normalizeTag(query);
-	if (q === '') {
-		return [...options];
-	}
-	return options.filter((option) => option.toLowerCase().includes(q));
+/** Only search aliases participate here. Stored tags always keep their own identity. */
+const germanSearchTerms = new Map([
+	['carrots', ['Möhre', 'Möhren']],
+	['rolls', ['Semmel', 'Semmeln', 'Schrippe', 'Schrippen']],
+	['cream', ['Rahm']],
+	['sauces', ['Remoulade']]
+]);
+
+function searchText(text: string, locale?: string | null): string {
+	const normalized = normalizeTag(text);
+	return locale === 'de'
+		? normalized
+				.replaceAll('ä', 'ae')
+				.replaceAll('ö', 'oe')
+				.replaceAll('ü', 'ue')
+				.replaceAll('ß', 'ss')
+		: normalized;
+}
+
+/** Exact labels come first, followed by other matches in the displayed language's order. */
+export function filterTags(options: string[], query: string, locale?: string | null): string[] {
+	const q = searchText(query, locale);
+	const collator = new Intl.Collator(locale === 'de' ? 'de' : 'en');
+	const matches = options.map((tag) => {
+		const label = productTagLabel(tag, locale);
+		const aliases = locale === 'de' ? (germanSearchTerms.get(tag.toLowerCase()) ?? []) : [];
+		const terms = [label, tag, ...aliases].map((term) => searchText(term, locale));
+		return {
+			tag,
+			label,
+			exact: terms[0] === q || terms[1] === q,
+			matches: terms.some((term) => term.includes(q))
+		};
+	});
+	return matches
+		.filter((entry) => entry.matches)
+		.sort((a, b) => Number(b.exact) - Number(a.exact) || collator.compare(a.label, b.label))
+		.map((entry) => entry.tag);
 }
 
 /**
@@ -32,13 +65,18 @@ export function filterTags(options: string[], query: string): string[] {
  *                                     create row (the only case where you can
  *                                     create a new tag)
  */
-export function buildTagRows(options: string[], query: string, selected: string[]): TagRow[] {
-	if (options.length === 0) {
+export function buildTagRows(
+	options: string[],
+	query: string,
+	selected: string[],
+	locale?: string | null
+): TagRow[] {
+	if (options.length === 0 && normalizeTag(query) === '') {
 		return [{ kind: 'empty' }];
 	}
 
 	const selectedSet = new Set(selected.map((tag) => tag.toLowerCase()));
-	const filtered = filterTags(options, query);
+	const filtered = filterTags(options, query, locale);
 	const rows: TagRow[] = filtered.map((tag, index) => ({
 		kind: 'tag',
 		tag,
@@ -49,7 +87,7 @@ export function buildTagRows(options: string[], query: string, selected: string[
 	const q = normalizeTag(query);
 	if (q !== '' && filtered.length === 0) {
 		rows.push({ kind: 'nomatch', query: q });
-		rows.push({ kind: 'create', tag: q, optionIndex: 0 });
+		rows.push({ kind: 'create', tag: productTagValue(q, locale), optionIndex: 0 });
 	}
 
 	return rows;

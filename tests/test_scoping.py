@@ -26,6 +26,7 @@ from fastapi.testclient import TestClient
 
 import vision_bill.main as main_module
 from vision_bill.api import images as images_api_module
+from vision_bill.api.receipts import ReceiptUpdate
 from vision_bill.api.system import main as system_api_module
 from vision_bill.config import Settings
 from vision_bill.model.receipt import LineItem, Receipt
@@ -37,13 +38,11 @@ from vision_bill.provider.db.image_db import (
     ImageDB,
 )
 from vision_bill.provider.db.receipt_db import (
-    DELETE_RECEIPT_SQL,
     GET_RECEIPT_SQL,
     GET_RECEIPT_WITH_IMAGE_SQL,
     LIST_RECEIPTS_BASE_SQL,
     SEARCH_PRODUCTS_BASE_SQL,
     UPDATE_RECEIPT_SQL,
-    VERIFY_RECEIPT_SQL,
     ReceiptDB,
 )
 from vision_bill.provider.llm.base import ModelInfo
@@ -227,7 +226,7 @@ async def test_list_receipts_scoped_to_owner(receipt_db: ReceiptDB) -> None:
     sql = call.args[0]
     assert sql.startswith(LIST_RECEIPTS_BASE_SQL)
     assert "user_id = $1" in sql
-    assert "ORDER BY date DESC LIMIT $2 OFFSET $3" in sql
+    assert "ORDER BY r.date DESC, r.id LIMIT $2 OFFSET $3" in sql
     assert call.args[1] == USER_A
     assert call.args[2:] == (50, 0)  # default limit / offset
 
@@ -243,7 +242,7 @@ async def test_list_receipts_see_all_unscoped(receipt_db: ReceiptDB) -> None:
 
     call = conn.fetch.call_args
     assert "user_id" not in call.args[0]
-    assert call.args[0] == LIST_RECEIPTS_BASE_SQL + " ORDER BY date DESC LIMIT $1 OFFSET $2"
+    assert call.args[0] == LIST_RECEIPTS_BASE_SQL + " ORDER BY r.date DESC, r.id LIMIT $1 OFFSET $2"
 
 
 @pytest.mark.asyncio
@@ -273,10 +272,11 @@ async def test_update_receipt_scoped_to_owner(receipt_db: ReceiptDB) -> None:
     conn.fetchrow = AsyncMock(return_value=_receipt_row())
     conn.execute = AsyncMock()
 
-    await receipt_db.update_receipt(RESOURCE_ID, _make_receipt(), user_id=USER_A, can_see_all=False)
+    await receipt_db.update_receipt(RESOURCE_ID, ReceiptUpdate.model_validate(dict(_make_receipt().model_dump(), expected_operation_revision=1)), user_id=USER_A, can_see_all=False)
 
-    call = conn.fetchrow.call_args
-    assert "AND user_id = $16 RETURNING *" in call.args[0]
+    call = next(c for c in conn.fetchrow.call_args_list if "confidence      = $1" in c.args[0])
+    owner_parameter = len(call.args) - 1  # asyncpg parameters start after the SQL string
+    assert f"AND user_id = ${owner_parameter} RETURNING *" in call.args[0]
     assert call.args[-1] == USER_A
 
 
@@ -288,9 +288,9 @@ async def test_update_receipt_see_all_unscoped(receipt_db: ReceiptDB) -> None:
     conn.fetchrow = AsyncMock(return_value=_receipt_row())
     conn.execute = AsyncMock()
 
-    await receipt_db.update_receipt(RESOURCE_ID, _make_receipt(), can_see_all=True)
+    await receipt_db.update_receipt(RESOURCE_ID, ReceiptUpdate.model_validate(dict(_make_receipt().model_dump(), expected_operation_revision=1)), can_see_all=True)
 
-    call = conn.fetchrow.call_args
+    call = next(c for c in conn.fetchrow.call_args_list if "confidence      = $1" in c.args[0])
     assert call.args[0] == UPDATE_RECEIPT_SQL
     assert "user_id" not in call.args[0]
 
@@ -305,7 +305,8 @@ async def test_verify_receipt_scoped_to_owner(receipt_db: ReceiptDB) -> None:
     await receipt_db.verify_receipt(RESOURCE_ID, user_id=USER_A, can_see_all=False)
 
     call = conn.fetchrow.call_args
-    assert call.args[0] == VERIFY_RECEIPT_SQL.replace("RETURNING *", "AND user_id = $2 RETURNING *")
+    assert "user_id=$2" in call.args[0]
+    assert call.args[3] is False
     assert call.args[1] == RESOURCE_ID
     assert call.args[2] == USER_A
 
@@ -320,9 +321,11 @@ async def test_delete_receipt_scoped_to_owner(receipt_db: ReceiptDB) -> None:
     await receipt_db.delete_receipt(RESOURCE_ID, user_id=USER_A, can_see_all=False)
 
     call = conn.fetchrow.call_args
-    assert call.args[0] == DELETE_RECEIPT_SQL.replace("RETURNING *", "AND user_id = $2 RETURNING *")
+    assert "user_id=$2" in call.args[0]
     assert call.args[1] == RESOURCE_ID
     assert call.args[2] == USER_A
+    assert call.args[3] is False
+    assert conn.fetchrow.await_count == 1  # Invisible rows are not locked or deleted.
 
 
 # ── ImageDB scoping ──────────────────────────────────────────────────

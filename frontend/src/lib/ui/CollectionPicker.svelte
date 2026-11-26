@@ -11,7 +11,8 @@
 		allowCreate = false,
 		onchange,
 		oncreate,
-		placeholder = ''
+		placeholder = '',
+		disabled = false
 	}: {
 		options: CollectionSummary[];
 		mode: 'single' | 'multi';
@@ -20,6 +21,7 @@
 		onchange: (v: string | string[]) => void;
 		oncreate?: (name: string) => void;
 		placeholder?: string;
+		disabled?: boolean;
 	} = $props();
 
 	let open = $state(false);
@@ -67,12 +69,14 @@
 	}
 
 	function pickSingle(id: string): void {
+		if (disabled) return;
 		onchange(id);
 		open = false;
 		query = '';
 	}
 
 	function toggleMulti(id: string): void {
+		if (disabled) return;
 		const next = selectedIds.includes(id)
 			? selectedIds.filter((x) => x !== id)
 			: [...selectedIds, id];
@@ -80,11 +84,12 @@
 	}
 
 	function removeMulti(id: string): void {
+		if (disabled) return;
 		onchange(selectedIds.filter((x) => x !== id));
 	}
 
 	function create(): void {
-		if (!allowCreate || !query.trim()) return;
+		if (disabled || !allowCreate || !query.trim()) return;
 		oncreate?.(query.trim());
 		query = '';
 	}
@@ -103,6 +108,7 @@
 	}
 
 	function onKeydown(e: KeyboardEvent): void {
+		if (disabled) return;
 		if (e.key === 'ArrowDown') {
 			active = (active + 1) % Math.max(totalRows, 1);
 			e.preventDefault();
@@ -162,9 +168,10 @@
 			{/each}
 		{/if}
 		<input
-			type="checkbox"
+			type="text"
 			id={listId + '-input'}
 			role="combobox"
+			{disabled}
 			aria-expanded={open}
 			aria-controls={open ? listId : undefined}
 			aria-activedescendant={activeOptionId}
@@ -190,6 +197,7 @@
 			{#if mode === 'single'}
 				<li
 					role="option"
+					aria-disabled={disabled}
 					id={listId + '-all'}
 					tabindex="-1"
 					aria-selected={singleId === ''}
@@ -206,6 +214,7 @@
 			{#each rows as c, i (c.id)}
 				<li
 					role="option"
+					aria-disabled={disabled}
 					id={optionId(c.id)}
 					tabindex="-1"
 					aria-selected={mode === 'single' ? singleId === c.id : selectedIds.includes(c.id)}
@@ -223,6 +232,7 @@
 			{#if allowCreate && query.trim() && rows.length === 0}
 				<li
 					role="option"
+					aria-disabled={disabled}
 					id={listId + '-create'}
 					tabindex="-1"
 					aria-selected="false"

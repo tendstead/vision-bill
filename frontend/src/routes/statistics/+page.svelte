@@ -59,7 +59,7 @@
 	</div>
 	<div class="mt-6">
 		<label class="block text-sm text-on-surface-variant" for="spending-months"
-			>{$t('statistics.months')}</label
+			>{$t('statistics.itemMonths')}</label
 		>
 		<select
 			id="spending-months"

@@ -31,3 +31,31 @@ def test_get_llm_provider_failure():
 
     with pytest.raises(ValueError, match="Unsupported LLM provider"):
         get_llm_provider(mock_settings)
+
+
+def test_unsupported_existing_provider_has_actionable_diagnostic():
+    from pydantic import ValidationError
+
+    from vision_bill.config import LLMSettings
+
+    with pytest.raises(ValidationError, match="(?i)unsupported.*ollama.*openai"):
+        LLMSettings(
+            provider="anthropic",
+            host="http://external",
+            api_key="private-key",
+            model_name="selected",
+            temperature=0,
+        )
+
+
+@pytest.mark.parametrize("field", ["host", "model_name"])
+@pytest.mark.parametrize("value", ["", " "])
+def test_provider_configuration_requires_explicit_nonblank_identity(field, value):
+    from pydantic import ValidationError
+
+    from vision_bill.config import LLMSettings
+
+    values = {"host": "http://external", "api_key": "", "model_name": "chosen", "temperature": 0}
+    values[field] = value
+    with pytest.raises(ValidationError, match=field):
+        LLMSettings(**values)

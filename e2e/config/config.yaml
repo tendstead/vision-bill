@@ -6,8 +6,8 @@
 # test_settings_sources_and_env_conflict asserts that temperature is NOT
 # environment-controlled while provider/host/model_name are.
 #
-# Note: PUT /api/v1/system/settings rewrites this file (the settings e2e test
-# changes the temperature), so restore it with `git checkout -- e2e/config`
-# after a run if you care about a clean tree.
+# e2e/run.py makes a private copy for the Compose initializer to read. The
+# app and settings tests use the initialized config in their stack's named
+# volume, which the runner removes during stack cleanup.
 llm:
   temperature: 0.0

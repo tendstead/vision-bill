@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { verifyReceiptViaApi } from '../helpers/api';
 import { registerUser } from '../helpers/auth';
 import { loadFixture } from '../helpers/fixtures';
 import { setStubMode, stubGuard } from '../helpers/stub';
@@ -39,8 +40,7 @@ test.describe('multiple photos of one receipt', () => {
 		await page.getByRole('link', { name: 'Open and review receipt' }).click();
 		await page.getByRole('button', { name: 'Photo 2', exact: true }).click();
 		await expect(page.locator('img[src*="part=1"]')).toBeVisible();
-		const verified = await context.request.post(`/api/v1/receipts/${job.receipt_id}/verify`);
-		expect(verified.ok()).toBeTruthy();
+		await verifyReceiptViaApi(context, job.receipt_id);
 		expect((await context.request.get(`/api/v1/images/${imageId}/file?part=1`)).ok()).toBeTruthy();
 		await page.goto(jobUrl);
 		await expect(page.getByRole('link', { name: 'Open and review receipt' })).toBeVisible();
@@ -61,6 +61,21 @@ test.describe('multiple photos of one receipt', () => {
 		await expect(
 			page.getByText('The receipt could not be read reliably', { exact: true })
 		).toBeVisible();
-		await expect(page.getByText('Photo is too blurry', { exact: true })).toBeVisible();
+		await expect(
+			page.getByText(
+				'Analysis result: The receipt could not be read reliably. Check the file or try clearer photos. (unreadable)',
+				{ exact: true }
+			)
+		).toBeVisible();
+		const id = new URL(page.url()).searchParams.get('job');
+		const persisted = await (await context.request.get(`/api/v1/images/${id}`)).json();
+		expect(persisted).toMatchObject({
+			status: 'unreadable',
+			terminal: true,
+			attempt_count: 1,
+			result_code: 'unreadable',
+			receipt_id: null
+		});
+		await expect(page.getByText('Photo is too blurry', { exact: true })).toHaveCount(0);
 	});
 });

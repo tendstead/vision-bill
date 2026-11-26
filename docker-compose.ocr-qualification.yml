@@ -1,0 +1,16 @@
+# The operator qualifies the selected local candidate. Missing images fail.
+services:
+  vision_bill:
+    environment:
+      VISION_BILL_OCR_ACTIVATION: "false"
+  paddleocr-service:
+    build: !reset null
+    pull_policy: never
+    command: ["python", "-m", "ocr_service.entrypoint"]
+    environment:
+      OCR_RUNTIME_SETTINGS_PATH: /var/lib/ocr/qualification.runtime.json
+      OCR_QUALIFICATION_IMAGE_PATH: /var/lib/ocr/fixtures/upright.png
+    volumes: !override
+      - ./server_data/ocr-cache:/var/cache/paddlex
+      - ./server_data/ocr-runtime:/var/lib/ocr:ro
+      - ./server_data/ocr-runtime/coord:/coord

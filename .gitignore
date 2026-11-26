@@ -2,6 +2,8 @@ server_data/logs/*
 server_data/uploads/*
 server_data/uploads_tmp/*
 server_data/config/*
+server_data/ocr-harness/
+server_data/split-experiment/
 tests/data
 docs/
 deploy/
@@ -246,3 +248,42 @@ frontend/.svelte-kit/
 # Built SPA installed into the package via `make fe-build`
 src/vision_bill/static/*
 !src/vision_bill/static/.gitkeep
+
+# Local isolated development and agent execution records
+.worktrees/
+.superpowers/
+
+# Native OCR caches, source builds, private corpus and qualification outputs.
+server_data/ocr-cache/
+server_data/ocr-models/
+server_data/ocr-runtime/
+server_data/ocr-source/
+paddleocr-service/.native-build/
+paddleocr-service/.qualification/
+paddleocr-service/.wheelhouse/
+# These are versioned native build recipes, not generated build output.
+!paddleocr-service/build/
+paddleocr-service/build/*
+!paddleocr-service/build/build_jobs.py
+!paddleocr-service/build/build_rocm.sh
+!paddleocr-service/build/build_therock.sh
+!paddleocr-service/build/finish_therock.sh
+!paddleocr-service/build/checkpoint_therock.sh
+!paddleocr-service/build/verify_therock_targets.py
+!paddleocr-service/build/verify_rccl_targets.py
+!paddleocr-service/build/prepare_therock.sh
+!paddleocr-service/build/therock-sqlite-headers.patch
+!paddleocr-service/build/miopen-sqlite-transient.patch
+!paddleocr-service/build/therock-rccl-translate.patch
+!paddleocr-service/build/therock-hipblaslt-rdna2.patch
+!paddleocr-service/build/rocm-libraries-hipblaslt-rdna2.patch
+!paddleocr-service/build/hip-rdna2-v1.patch
+!paddleocr-service/build/hip-device-info.cpp
+!paddleocr-service/build/source_inventory.py
+!paddleocr-service/build/inspect_kernels.py
+!paddleocr-service/build/resolve_cuda.py
+!paddleocr-service/build/prepare_paddle_models.py
+!paddleocr-service/build/paddle-model-snapshots.json
+!paddleocr-service/build/prepare_ocr_inputs.py
+!paddleocr-service/build/runtime.in
+!paddleocr-service/build/native-build.in

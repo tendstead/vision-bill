@@ -1,0 +1,84 @@
+diff --git a/math-libs/BLAS/CMakeLists.txt b/math-libs/BLAS/CMakeLists.txt
+index 294dd13..e7f308a 100644
+--- a/math-libs/BLAS/CMakeLists.txt
++++ b/math-libs/BLAS/CMakeLists.txt
+@@ -141,8 +141,20 @@ if(NOT WIN32)
+   endif()
+ endif()
+
+-set(hipBLASLt_rocRoller_deps)
+-if(_enable_rocRoller)
++therock_filter_amdgpu_targets(_hipblaslt_device_targets hipBLASLt ${THEROCK_AMDGPU_TARGETS})
++set(_hipblaslt_tests ${THEROCK_BUILD_TESTING})
++set(_hipblaslt_rocroller ${_enable_rocRoller})
++set(_hipblaslt_host_args)
++if(NOT _hipblaslt_device_targets)
++  # rocBLAS links the real host API; its embedded HIP helpers still need the
++  # selected GPU targets, even when no tuned Lt device library supports them.
++  set(_hipblaslt_tests OFF)
++  set(_hipblaslt_rocroller OFF)
++  list(APPEND _hipblaslt_host_args
++    -DHIPBLASLT_ENABLE_DEVICE=OFF -DHIPBLASLT_ENABLE_CLIENT=OFF
++    -DHIPBLASLT_BUNDLE_PYTHON_DEPS=OFF -DBUILD_TESTING=OFF)
++endif()
++if(_hipblaslt_rocroller)
+   list(APPEND hipBLASLt_rocRoller_build_deps
+     mxDataGenerator
+     therock-fmt
+@@ -160,18 +172,19 @@ therock_cmake_subproject_declare(hipBLASLt
+   BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/hipBLASLt"
+   BACKGROUND_BUILD
+   DEFAULT_GPU_TARGETS
+-    gfx1100  # TODO: Fix hipblaslt to accept an empty target list.
++    ${THEROCK_AMDGPU_TARGETS}
+   CMAKE_ARGS
+     -DHIP_PLATFORM=amd
+     -DHIPBLASLT_ENABLE_BLIS=OFF  # TODO: Evaluate
+     # TensileLite's C++ gtest suite (tests/) is Linux-only for now (unvalidated
+     # on Windows); mirrors the TENSILELITE_ENABLE_CLIENT guard below.
+-    -DTENSILELITE_BUILD_TESTING=$<IF:$<BOOL:${WIN32}>,OFF,${THEROCK_BUILD_TESTING}>
+-    -DTENSILELITE_ENABLE_CLIENT=$<IF:$<BOOL:${WIN32}>,OFF,${THEROCK_BUILD_TESTING}>
+-    -DHIPBLASLT_BUILD_TESTING=${THEROCK_BUILD_TESTING}
+-    -DHIPBLASLT_INSTALL_TENSILELITE_TEST_ARTIFACTS=${THEROCK_BUILD_TESTING}
++    -DTENSILELITE_BUILD_TESTING=$<IF:$<BOOL:${WIN32}>,OFF,${_hipblaslt_tests}>
++    -DTENSILELITE_ENABLE_CLIENT=$<IF:$<BOOL:${WIN32}>,OFF,${_hipblaslt_tests}>
++    -DHIPBLASLT_BUILD_TESTING=${_hipblaslt_tests}
++    -DHIPBLASLT_INSTALL_TENSILELITE_TEST_ARTIFACTS=${_hipblaslt_tests}
+     -DROCISA_USE_STABLE_ABI=ON
+-    -DHIPBLASLT_ENABLE_ROCROLLER=${_enable_rocRoller}
++    -DHIPBLASLT_ENABLE_ROCROLLER=${_hipblaslt_rocroller}
++    ${_hipblaslt_host_args}
+     -DHIPBLASLT_ENABLE_FETCH=OFF
+     -DHIPBLASLT_ENABLE_THEROCK=ON
+   CMAKE_INCLUDES
+@@ -363,14 +376,28 @@ if(THEROCK_ENABLE_SPARSE)
+       list(APPEND hipSPARSELt_runtime_deps rocm_smi_lib)
+     endif()
+
++    therock_filter_amdgpu_targets(_hipsparselt_device_targets hipSPARSELt ${THEROCK_AMDGPU_TARGETS})
++    set(_hipsparselt_tests ${THEROCK_BUILD_TESTING})
++    set(_hipsparselt_host_args)
++    if(NOT _hipsparselt_device_targets)
++      # This library embeds TensileLite and links hip::device. An empty list
++      # lets HIP select the build machine's GPU or the compiler default.
++      set(_hipsparselt_tests OFF)
++      list(APPEND _hipsparselt_host_args
++        -DHIPSPARSELT_ENABLE_DEVICE=OFF -DHIPSPARSELT_ENABLE_CLIENT=OFF
++        -DHIPBLASLT_ENABLE_THEROCK=ON  # Use the declared origami dependency.
++        -DHIPBLASLT_BUNDLE_PYTHON_DEPS=OFF -DBUILD_TESTING=OFF)
++    endif()
+     therock_cmake_subproject_declare(hipSPARSELt
+       EXTERNAL_SOURCE_DIR "${THEROCK_ROCM_LIBRARIES_SOURCE_DIR}/projects/hipsparselt"
+       BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/hipSPARSELt"
+       BACKGROUND_BUILD
++      DEFAULT_GPU_TARGETS ${THEROCK_AMDGPU_TARGETS}
+       CMAKE_ARGS
+         -DHIP_PLATFORM=amd
+-        -DHIPSPARSELT_BUILD_TESTING=${THEROCK_BUILD_TESTING}
+-        -DHIPSPARSELT_ENABLE_BENCHMARKS=${THEROCK_BUILD_TESTING}
++        -DHIPSPARSELT_BUILD_TESTING=${_hipsparselt_tests}
++        -DHIPSPARSELT_ENABLE_BENCHMARKS=${_hipsparselt_tests}
++        ${_hipsparselt_host_args}
+         -DHIPSPARSELT_ENABLE_SAMPLES=OFF
+         -DHIPSPARSELT_ENABLE_FETCH=OFF
+         -DHIPSPARSELT_ENABLE_THEROCK=ON

@@ -1,18 +1,24 @@
+import asyncio
+import hashlib
 import logging
-import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from time import perf_counter
+from time import monotonic, perf_counter
 from typing import Any
 
 import httpx
 
-from ...helper.logging_config import setup_logging
-
-setup_logging()
-
 from ...model.receipt import Receipt
-from ...provider.llm.base import AnalysisResult, LLMProvider, ModelInfo
+from ...provider.llm.base import (
+    TEXT_CAPABILITIES,
+    AnalysisResult,
+    LLMProvider,
+    ModelDiscoveryError,
+    ModelInfo,
+    inference_endpoint_identity,
+)
+from ...service.activation_admission import direct_inference_call, inference_admission
+from . import DEFAULT_FORMATTER_MAX_OUTPUT_TOKENS, contains_catalog_credential, valid_model_id
 from .experiment import chat_telemetry
 
 try:
@@ -33,12 +39,71 @@ RETRY_LIMIT = 3
 
 class OllamaProvider(LLMProvider):
     def __init__(
-        self, host: str, temperature: float = 0.0, analysis_timeout_seconds: float = 600
+        self,
+        host: str,
+        temperature: float = 0.0,
+        analysis_timeout_seconds: float = 600,
+        max_output_tokens: int = DEFAULT_FORMATTER_MAX_OUTPUT_TOKENS,
+        api_key: str | None = None,
     ):
         self.analysis_timeout_seconds = analysis_timeout_seconds
-        self._client = AsyncClient(host=host, timeout=httpx.Timeout(analysis_timeout_seconds, connect=5))
+        self.max_output_tokens = max_output_tokens
+        self._client = AsyncClient(
+            host=host, timeout=httpx.Timeout(analysis_timeout_seconds, connect=5), trust_env=False,
+            follow_redirects=False, headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
+        )
+        if api_key is None and "authorization" in self._client._client.headers:
+            # The SDK imports OLLAMA_API_KEY even when trust_env is disabled.
+            del self._client._client.headers["authorization"]
+        self._catalog_credentials = {api_key} if api_key else set()
         self._temperature = temperature
         self.supports_thinking_control = True
+        self.supports_model_release = True
+        self.lifecycle_identity = "ollama:" + hashlib.sha256(host.rstrip("/").encode()).hexdigest()
+        # The SDK resolves a bare hostname to port 11434, while an explicit
+        # http:// base without a port reaches the standard HTTP port.
+        self.inference_identity = inference_endpoint_identity("ollama", str(self._client._client.base_url))
+        from ...service.gpu_handoff import configure_handoff
+        configure_handoff(self)
+
+    async def release_model(self, model_id: str) -> None:
+        """Unload precisely the requested ID and verify absence, preserving others."""
+        from ...service.gpu_handoff import current_owner
+        owner = current_owner()
+        if owner is not None:
+            if owner.resources.llm != self.lifecycle_identity:
+                raise ValueError("model_handoff_identity_changed")
+            owner.require_release(model_id)
+        call = self._release_model(model_id, owner.deadline if owner else monotonic() + 30)
+        if owner is not None:
+            await owner.model_call(call)
+        else:
+            await call
+
+    async def _release_model(self, model_id: str, deadline: float) -> None:
+        await self._client.generate(model=model_id, keep_alive=0)
+        running = await self.resident_model_ids(deadline=deadline)
+        if not running.isdisjoint(self.residency_ids_for(model_id)):
+            raise RuntimeError("model_release_unconfirmed")
+
+    def residency_ids_for(self, model_id: str) -> tuple[str, ...]:
+        """Ollama reports untagged requests with the implicit latest tag."""
+        if ":" in model_id.rsplit("/", 1)[-1]:
+            return (model_id,)
+        return (model_id, model_id + ":latest")
+
+    async def resident_model_ids(self, *, deadline: float) -> frozenset[str]:
+        async with asyncio.timeout(max(0, deadline - monotonic())):
+            running = await self._client.ps()
+        if "models" not in running.model_fields_set:
+            raise RuntimeError("model_residency_unknown")
+        models: list[str] = []
+        for item in running.models:
+            model = item.model
+            if not isinstance(model, str) or not model.strip() or model != model.strip() or model in models:
+                raise RuntimeError("model_residency_unknown")
+            models.append(model)
+        return frozenset(models)
 
     def update_runtime_settings(self, *, temperature: float) -> None:
         self._temperature = temperature
@@ -51,20 +116,27 @@ class OllamaProvider(LLMProvider):
             # The SDK raises ConnectionError when Ollama is unreachable,
             # ResponseError on HTTP error responses, and raw httpx errors
             # (e.g. timeouts) otherwise.
-            logger.warning("Ollama connection check failed: %s", e)
+            logger.warning("Ollama connection check failed: %s", type(e).__name__)
             return False
 
-    async def get_available_models(self) -> list[ModelInfo]:
+    async def get_available_models(self, *, capability: str = "vision") -> list[ModelInfo]:
         models: ListResponse = await self._client.list()
         result = []
         for model in models.models:
             # model.model is the name of the model, e.g., "gemma4:e4b", we need this for all further calls.
-            if not model.model:
-                continue
+            if not valid_model_id(model.model) or contains_catalog_credential(model.model, self._catalog_credentials):
+                raise ModelDiscoveryError("Invalid formatter model list")
 
             details = await self._client.show(model.model)
             # If the model does not support vision, we skip it.
-            if not details.capabilities or VISION_CAPABILITY_FIELD not in details.capabilities:
+            if capability == "vision" and (
+                not details.capabilities or VISION_CAPABILITY_FIELD not in details.capabilities
+            ):
+                continue
+
+            if capability == "text" and not any(
+                c in (details.capabilities or []) for c in TEXT_CAPABILITIES
+            ):
                 continue
 
             mi = ModelInfo(id=model.model)
@@ -73,7 +145,15 @@ class OllamaProvider(LLMProvider):
                 mi.parameter_size = model.details.parameter_size
 
             mi.capabilities = details.capabilities
+            info = details.modelinfo if isinstance(details.modelinfo, dict) else {}
+            capacities = [
+                value
+                for key, value in info.items()
+                if key.endswith("context_length") and type(value) is int and value > 0
+            ]
+            mi.context_window_tokens = min(capacities) if capacities else None
 
+            mi.validate_catalog_metadata(self._catalog_credentials)
             result.append(mi)
 
         return result
@@ -83,70 +163,61 @@ class OllamaProvider(LLMProvider):
     ) -> Receipt:
         return (await self.analyse_receipt_with_metadata(model_id, image, tags=tags)).receipt
 
+    async def analyse_receipt_from_ocr_text(
+        self, model_id: str, ocr_result: dict[str, Any], tags: Sequence[str] | None = None
+    ) -> Receipt:
+        """Explicit legacy/replay adapter for historical untyped OCR transcripts."""
+        from ..ocr.base import compact_ocr_text
+
+        messages = [
+            {"role": "user", "content": self.build_ocr_prompt(compact_ocr_text(ocr_result), tags)}
+        ]
+        return (await self._legacy_analysis(model_id, messages, tags=tags)).receipt
+
     async def analyse_receipt_with_metadata(
         self, model_id: str, image: Path | Sequence[Path], tags: Sequence[str] | None = None
     ) -> AnalysisResult:
-        from time import perf_counter
-
-        started = perf_counter()
-        messages = self._build_image_messages(image, tags)
-
-        last_error: Exception | None = None
-        for attempt in range(1, RETRY_LIMIT + 1):
-            content = await self.send_message(model_id, messages)
-
-            if not content:
-                logger.warning("Attempt %d/%d: model returned no content", attempt, RETRY_LIMIT)
-                last_error = ValueError("Empty response from model")
-                continue
-
-            logger.warning(f"Attempt {attempt}/{RETRY_LIMIT}: model returned content: {content}")
-
-            if not content.lstrip().startswith(("{", "```")) and re.search(
-                r"provide.*image", content, re.IGNORECASE | re.DOTALL
-            ):
-                raise ValueError(
-                    f"Model '{model_id}' returned a message indicating it cannot process images. "
-                    "Please ensure the model supports vision capabilities."
-                )
-
-            try:
-                return AnalysisResult(
-                    receipt=self.parse_llm_response(
-                        content, image_count=1 if isinstance(image, Path) else len(image)
-                    ),
-                    attempts=attempt,
-                    elapsed_ms=(perf_counter() - started) * 1000,
-                )
-            except ValueError as e:
-                logger.warning(
-                    "Attempt %d/%d: failed to parse LLM response: %s",
-                    attempt,
-                    RETRY_LIMIT,
-                    e,
-                )
-                last_error = e
-                # Feed the parse error back so the retry has a chance to self-correct
-                messages = self._append_repair_message(messages, content, e)
-
-        raise ValueError(
-            f"Failed to get a valid response from model '{model_id}' after {RETRY_LIMIT} attempts"
-        ) from last_error
+        return await self._legacy_analysis(
+            model_id,
+            self._build_image_messages(image, tags),
+            tags=tags,
+            image_count=1 if isinstance(image, Path) else len(image),
+        )
 
     async def send_message(self, model_id: str, messages: Sequence[Mapping[str, Any]]) -> str:
+        from ...service.gpu_handoff import current_owner
+        with inference_admission(self):
+            owner = current_owner()
+            if owner is not None:
+                if owner.coordinator.shared_gpu and owner.resources.llm != self.lifecycle_identity:
+                    raise ValueError("model_handoff_identity_changed")
+                await owner.llm_phase(model_id)
+            elif self.handoff is not None:
+                async with self.handoff.session(monotonic() + self.analysis_timeout_seconds, model_id=model_id) as owner:
+                    await owner.llm_phase(model_id)
+                    return await self._send_message(model_id, messages)
+            return await self._send_message(model_id, messages)
+
+    async def _send_message(self, model_id: str, messages: Sequence[Mapping[str, Any]]) -> str:
+        from ...service.gpu_handoff import current_llm_owner
         started = perf_counter()
         extra: dict[str, Any] = {}
         if self.experiment_options and self.experiment_options.think is not None:
             extra["think"] = self.experiment_options.think
-        response = await self._client.chat(
-            model=model_id,
-            # format=Receipt.model_json_schema(),
-            messages=messages,
-            options={"temperature": self._temperature},
-            **extra,
-        )
+        owner = current_llm_owner()
+        with direct_inference_call(coordinated=owner is not None):
+            call = self._client.chat(
+                model=model_id,
+                # format=Receipt.model_json_schema(),
+                messages=messages,
+                options={"temperature": self._temperature, "num_predict": self.max_output_tokens},
+                **extra,
+            )
+            response = await owner.model_call(call) if owner is not None else await call
         if self.experiment_trace is not None:
-            self.experiment_trace.append(chat_telemetry(response, messages, (perf_counter() - started) * 1000))
+            self.experiment_trace.append(
+                chat_telemetry(response, messages, (perf_counter() - started) * 1000)
+            )
         return response.message.content or ""
 
     def _build_image_messages(
@@ -162,23 +233,4 @@ class OllamaProvider(LLMProvider):
                 "content": self.build_prompt(tags, image_count=len(images)),
                 "images": images,
             }
-        ]
-
-    def _append_repair_message(
-        self,
-        messages: list[dict[str, Any]],
-        bad_output: str,
-        error: ValueError,
-    ) -> list[dict[str, Any]]:
-        """Append the failed output + error so the model can self-correct on retry."""
-        return [
-            *messages,
-            {"role": "assistant", "content": bad_output},
-            {
-                "role": "user",
-                "content": (
-                    "That response was not valid JSON matching the required schema. "
-                    f"Error: {error}\n\nPlease respond again with ONLY corrected JSON."
-                ),
-            },
         ]

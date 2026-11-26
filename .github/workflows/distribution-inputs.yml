@@ -1,0 +1,63 @@
+name: Prepare approved distribution inputs
+# Maintainers stage reviewed inputs under the fixed runner-owned tree:
+# /var/lib/vision-bill/distribution-inputs/<source SHA>/<version>/<variant>/
+# This workflow never accepts a host directory, downloads assets or publishes.
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact dispatch SHA containing the approved producer code
+        required: true
+        type: string
+      version:
+        description: Exact semantic version matching staged release-inputs.json
+        required: true
+        type: string
+      variant:
+        description: Exact prepared input set to validate and upload
+        required: true
+        type: choice
+        options: [app, ocr-cuda, ocr-rocm, app-ocr-cuda, app-ocr-rocm]
+permissions:
+  contents: read
+concurrency:
+  group: distribution-inputs-${{ github.repository }}
+  cancel-in-progress: false
+jobs:
+  stage:
+    if: github.event_name == 'workflow_dispatch' && github.event.repository.fork && github.repository == vars.DISTRIBUTION_FORK_REPOSITORY && inputs.source_sha == github.sha
+    runs-on: [self-hosted, linux, x64, vision-bill-release-inputs]
+    environment: distribution-inputs
+    timeout-minutes: 120
+    env:
+      DISTRIBUTION_FORK_REPOSITORY: ${{ vars.DISTRIBUTION_FORK_REPOSITORY }}
+      DISTRIBUTION_SOURCE_SHA: ${{ inputs.source_sha }}
+      DISTRIBUTION_VERSION: ${{ inputs.version }}
+      DISTRIBUTION_VARIANT: ${{ inputs.variant }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Require maintainer and exact source selection
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          role=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$GITHUB_ACTOR/permission" --jq '.role_name // .permission')
+          test "$role" = admin || test "$role" = maintain
+          printf 'DISTRIBUTION_MAINTAINER_ROLE=%s\n' "$role" >> "$GITHUB_ENV"
+          node --input-type=module -e 'import {releaseRequest} from "./scripts/distribution-release.mjs"; releaseRequest(process.env)'
+      - name: Validate and stage only approved versioned input files
+        run: node scripts/distribution-inputs.mjs --stage
+      - name: Upload approved inputs and bound producer receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: distribution-inputs
+          path: ${{ runner.temp }}/distribution-inputs/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0

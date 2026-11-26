@@ -1,0 +1,12 @@
+diff --git a/third-party/sysdeps/common/sqlite3/CMakeLists.txt b/third-party/sysdeps/common/sqlite3/CMakeLists.txt
+--- a/third-party/sysdeps/common/sqlite3/CMakeLists.txt
++++ b/third-party/sysdeps/common/sqlite3/CMakeLists.txt
+@@ -37,6 +37,8 @@
+         "-DSQLITE3_VERSION=${SQLITE3_VERSION}"
+       INSTALL_DESTINATION
+         lib/rocm_sysdeps
++      INTERFACE_INCLUDE_DIRS
++        lib/rocm_sysdeps/include
+       INTERFACE_LINK_DIRS
+         lib/rocm_sysdeps/lib
+       INTERFACE_PKG_CONFIG_DIRS

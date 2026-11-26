@@ -11,6 +11,7 @@ export const PRESET_COLORS: string[] = [
 	'#64748B' // slate
 ];
 
-export function colorToStyle(color: string | null): string {
-	return `background: ${color ?? 'var(--color-neutral, #64748B)'};`;
+export function colorToStyle(color: string | null, editing = false): string {
+	const value = color ?? 'var(--color-neutral, #64748B)';
+	return `background: ${editing ? value : `var(--vb-collection-marker, ${value})`};`;
 }

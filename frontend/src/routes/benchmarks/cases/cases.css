@@ -1,0 +1,33 @@
+@reference "../../../app.css";
+.benchmark-cases .case-panel {
+	@apply rounded-xl border border-outline-variant bg-surface-container-low p-4;
+}
+.benchmark-cases .case-secondary {
+	@apply rounded-lg border border-outline-variant px-3 py-2 text-sm font-medium disabled:opacity-45;
+}
+.benchmark-cases .case-secondary[aria-pressed='true'] {
+	@apply bg-primary-container text-on-primary-container;
+}
+.benchmark-cases .case-primary {
+	@apply rounded-lg bg-primary px-4 py-2 font-semibold text-on-primary disabled:opacity-45;
+}
+.benchmark-cases .field-grid {
+	@apply grid gap-3 sm:grid-cols-2;
+}
+.benchmark-cases legend {
+	@apply px-1 font-semibold;
+}
+.benchmark-cases label {
+	@apply block text-sm;
+}
+.benchmark-cases input:not([type='checkbox']),
+.benchmark-cases textarea,
+.benchmark-cases select {
+	@apply mt-1 block w-full rounded-lg border border-outline-variant bg-surface p-2 text-on-surface;
+}
+.benchmark-cases label.case-check {
+	@apply flex items-start gap-2;
+}
+.benchmark-cases input[type='checkbox'] {
+	@apply mt-1;
+}

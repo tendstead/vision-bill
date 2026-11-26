@@ -1,6 +1,7 @@
+import asyncio
 import logging
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 import asyncpg
@@ -8,9 +9,12 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 
 from .api.auth import router as auth_router
+from .api.benchmark_cases import router as benchmark_case_router
 from .api.benchmarks import router as benchmark_router
 from .api.collections import router as collections_router
+from .api.drafts import router as draft_router
 from .api.images import router as image_router
+from .api.merchants import router as merchants_router
 from .api.receipts import router as receipt_router
 from .api.search import router as search_router
 from .api.statistics import router as statistics_router
@@ -19,17 +23,21 @@ from .api.system.main import router as system_router
 from .api.tags import router as tags_router
 from .config import Settings, mark_startup_settings, settings
 from .helper.logging_config import setup_logging
+from .provider.db.benchmark_cases import BenchmarkCaseDB
 from .provider.db.collection_db import CollectionDB
 from .provider.db.user_db import UserDB
-from .provider.factory import get_llm_provider
+from .provider.factory import get_llm_provider, get_ocr_provider
 from .security.password import hash_password
+from .service.activation_admission import activation_enabled
 from .service.analysis_scheduler import AnalysisScheduler
 from .service.benchmark_service import BenchmarkService
 from .service.collection_service import CollectionService
+from .service.dedicated_ocr import DedicatedOcrActivation
 from .service.image_service import ImageService
 from .service.receipt_service import ReceiptService
+from .service.submission_service import SubmissionService
 
-setup_logging()
+setup_logging(settings.api.log_level)
 
 logger = logging.getLogger(__name__)
 
@@ -53,10 +61,10 @@ async def bootstrap_admin(user_db: UserDB, settings: Settings) -> None:
             username, hash_password(password, settings.auth), is_admin=True
         )
     except asyncpg.UniqueViolationError:
-        logger.info("Bootstrap user '%s' already exists - skipping", username)
+        logger.info("Bootstrap user already exists")
         return
     await user_db.set_owner_of_orphan_rows(admin.id)
-    logger.info("Bootstrapped first admin user '%s' (id=%s)", username, admin.id)
+    logger.info("Bootstrapped first admin id=%s", admin.id)
 
 
 # ── Startup / shutdown handlers ──────────────────────────────────────
@@ -66,65 +74,101 @@ async def bootstrap_admin(user_db: UserDB, settings: Settings) -> None:
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     mark_startup_settings(settings)
     provider = get_llm_provider(settings.llm)
-    receipt_service = ReceiptService(settings.images, settings.pg, provider)
+
+    # Create OCR provider if configured
+    ocr_provider = None
+    try:
+        ocr_provider = get_ocr_provider(settings.ocr)
+        logger.info("OCR provider configured: %s", ocr_provider is not None)
+    except ValueError as exc:
+        logger.warning("OCR initialization failed: %s", type(exc).__name__)
+
+    receipt_service = ReceiptService(
+        settings.images,
+        settings.pg,
+        provider,
+        ocr_provider=ocr_provider,
+        ocr_settings=settings.ocr,
+        worker_settings=settings.worker,
+    )
     try:
         await receipt_service.init_db()
-    except Exception:
-        logger.exception("Failed to initialise database - continuing without it")
+    except Exception as exc:  # noqa: BLE001 - keep credentials and SQL out of diagnostics
+        logger.error("Database initialization failed error_type=%s", type(exc).__name__)
 
     if receipt_service.db_ready:
         try:
             await bootstrap_admin(receipt_service.user_db, settings)
-        except Exception:
-            logger.exception("Failed to run authentication bootstrap")
+        except Exception as exc:  # noqa: BLE001 - keep credentials and SQL out of diagnostics
+            logger.error("Authentication bootstrap failed error_type=%s", type(exc).__name__)
 
     image_service = ImageService(settings.images)
+    submission_service = SubmissionService(settings, receipt_service, image_service)
     scheduler = AnalysisScheduler(
         settings=settings,
         provider=provider,
         receipt_service=receipt_service,
         image_db=receipt_service.image_db,
         image_service=image_service,
+        submission_service=submission_service,
     )
     benchmark_service = (
-        BenchmarkService(provider, receipt_service) if receipt_service.db_ready else None
+        BenchmarkService(provider, receipt_service, worker=settings.worker) if receipt_service.db_ready else None
     )
     collection_service = CollectionService(receipt_service) if receipt_service.db_ready else None
     if collection_service is not None:
         receipt_service.set_collection_db(CollectionDB(receipt_service.pool))
 
+    app.state.submission_service = submission_service
     app.state.receipt_service = receipt_service
     app.state.image_service = image_service
     app.state.llm_provider = provider
     app.state.user_db = receipt_service.user_db
     app.state.analysis_scheduler = scheduler
+    app.state.benchmark_cases = BenchmarkCaseDB(receipt_service.pool) if receipt_service.db_ready else None
     app.state.benchmark_service = benchmark_service
     app.state.collection_service = collection_service
+    activation = None
+    activation_task = None
+    if activation_enabled():
+        activation = DedicatedOcrActivation(
+            settings, provider, receipt_service.set_ocr_route, scheduler.trigger,
+        )
+        await activation.reconcile()
+        activation_task = asyncio.create_task(activation.run(), name="dedicated-ocr-activation")
+    app.state.dedicated_ocr = activation
 
     await scheduler.start()
     if benchmark_service is not None:
         await benchmark_service.start()
 
-    yield
-
-    await scheduler.stop()
-    if benchmark_service is not None:
-        await benchmark_service.stop()
-
     try:
-        await app.state.receipt_service.destroy_db()
-    except Exception:
-        logger.exception("Error while closing database pool")
+        yield
+    finally:
+        if activation_task is not None:
+            activation_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await activation_task
+        await scheduler.stop()
+        if benchmark_service is not None:
+            await benchmark_service.stop()
+        try:
+            await app.state.receipt_service.destroy_db()
+        except Exception as exc:  # noqa: BLE001 - keep credentials and SQL out of diagnostics
+            logger.error("Closing database pool failed error_type=%s", type(exc).__name__)
 
 
 app = FastAPI(title="Receipt Tracker API", lifespan=lifespan)
 
 # JSON API routes
 app.include_router(auth_router, prefix="/api/v1/auth", tags=["Auth"])
+app.include_router(merchants_router, prefix="/api/v1/merchants", tags=["Merchants"])
 app.include_router(receipt_router, prefix="/api/v1/receipts", tags=["Receipts"])
+app.include_router(draft_router, prefix="/api/v1/images", tags=["Drafts"])
 app.include_router(image_router, prefix="/api/v1/images", tags=["Images"])
 app.include_router(search_router, prefix="/api/v1/search", tags=["Search"])
 app.include_router(statistics_router, prefix="/api/v1/statistics", tags=["Statistics"])
+app.include_router(benchmark_case_router, prefix="/api/v1/benchmarks/cases", tags=["Benchmarks"])
 app.include_router(benchmark_router, prefix="/api/v1/benchmarks", tags=["Benchmarks"])
 app.include_router(tags_router, prefix="/api/v1/tags", tags=["Tags"])
 app.include_router(collections_router, prefix="/api/v1/collections", tags=["Collections"])

@@ -29,9 +29,28 @@ test.describe('receipt editor', () => {
 		// confirmed by the assertion below.
 		// Fixture 'a' has multiple line items all tagged 'food'; use .first()
 		// to avoid Playwright strict-mode violation.
-		await page.getByText('Optional tags').first().click();
-		await expect(page.getByText('food').first()).toBeVisible();
+		await expect(page.getByText('Food').first()).toBeVisible();
 		await expect(page.getByRole('button', { name: 'Verify' })).toBeVisible();
+	});
+
+	test('keeps the printed merchant when a German display name is selected, saved and reopened', async ({
+		page,
+		context
+	}) => {
+		test.setTimeout(120_000);
+		await uploadFixture(page, context, await loadFixture('a'), { verify: false });
+		await page.locator('#locale-select').selectOption('de');
+		await page.locator('#re-merchant').fill('HIT 061 Bonn');
+		await page.getByRole('button', { name: '„HIT Handelsgruppe“ übernehmen' }).click();
+		await expect(page.getByLabel('Anzeigename des Händlers')).toHaveValue('HIT Handelsgruppe');
+		await page.getByRole('button', { name: 'Speichern', exact: true }).click();
+		await expect(
+			page.getByRole('heading', { name: 'HIT Handelsgruppe', exact: true })
+		).toBeVisible();
+		await page.reload();
+		await expect(page.locator('#re-merchant')).toHaveValue('HIT 061 Bonn');
+		await page.locator('#locale-select').selectOption('en');
+		await expect(page.getByLabel('Merchant display name')).toHaveValue('HIT Handelsgruppe');
 	});
 
 	test('verify dialog cancel keeps the receipt unverified', async ({ page, context }) => {
@@ -71,6 +90,56 @@ test.describe('receipt editor', () => {
 		await page.reload();
 		await expect(page.locator('#re-merchant')).toHaveValue('Aldi Edited');
 		await expect(page.getByRole('button', { name: 'Verify' })).toBeVisible();
+	});
+
+	test('six-digit local time is visible, editable and survives Save and Save & verify', async ({
+		page,
+		context
+	}) => {
+		test.setTimeout(120_000);
+		const id = await uploadFixture(page, context, await loadFixture('a'), { verify: false });
+		const path = `/api/v1/receipts/${id}`;
+		const before = await (await context.request.get(path)).json();
+		const prepared = await context.request.put(path, {
+			data: {
+				...before.receipt,
+				expected_operation_revision: before.receipt.operation_revision,
+				time: '14:30:00.000001',
+				line_items: before.line_items,
+				taxes: before.taxes
+			}
+		});
+		expect(prepared.status()).toBe(200);
+		expect((await prepared.json()).findings).toEqual([]);
+		await page.reload();
+		await expect(page.locator('#re-time')).toBeVisible();
+		await expect(page.locator('#re-time')).toHaveAttribute('type', 'text');
+		await expect(page.locator('#re-time')).toHaveValue('14:30:00.000001');
+		for (const [action, time, merchant] of [
+			['Save', '14:30:00.000001', 'Precise save'],
+			['Save & verify', '14:30:15.123456', 'Precise verified']
+		]) {
+			if (action === 'Save & verify') await page.locator('#re-time').fill(time);
+			await page.locator('#re-merchant').fill(merchant);
+			const outgoing = page.waitForRequest(
+				(request) => request.method() === 'PUT' && new URL(request.url()).pathname === path
+			);
+			await page.getByRole('button', { name: action, exact: true }).click();
+			expect((await outgoing).postDataJSON().time).toBe(time);
+			await expect(
+				page.getByText(action === 'Save' ? 'Changes saved' : 'Receipt verified')
+			).toBeVisible({ timeout: 15_000 });
+			const after = await (await context.request.get(path)).json();
+			expect(after.receipt.time).toBe(time);
+			expect(after.receipt.verified).toBe(action !== 'Save');
+			expect(after.receipt.total).toBe(before.receipt.total);
+			expect(after.line_items.map((line: { id: string }) => line.id)).toEqual(
+				before.line_items.map((line: { id: string }) => line.id)
+			);
+			await page.reload();
+			await expect(page.locator('#re-time')).toHaveValue(time);
+			await expect(page.locator('#re-merchant')).toHaveValue(merchant);
+		}
 	});
 
 	test('empty merchant shows the required error and disables save', async ({ page, context }) => {
@@ -119,9 +188,10 @@ test.describe('receipt editor', () => {
 		await page.getByRole('button', { name: 'Save', exact: true }).click();
 		await expect(page.getByText('Changes saved')).toBeVisible({ timeout: 15_000 });
 		await page.reload();
-		// Line items are NOT order-preserved across save (persisted with
-		// random UUIDs, listed `ORDER BY id`), so locate the deposit item by
-		// its description rather than assuming a fixed index.
+		// Persisted positions and retained IDs preserve line order across save.
+		await expect(page.locator('input[placeholder="Description"]').nth(1)).toHaveValue(
+			'Bottle deposit refund'
+		);
 		const totalInputs = page.locator('input[id^="li-"][id$="-total"]');
 		const descInputs = page.locator('input[placeholder="Description"]');
 		// Wait for both line items (Milk + deposit) to render after reload.
@@ -159,15 +229,31 @@ test.describe('receipt editor', () => {
 		await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
 	});
 
-	test('total mismatch warns but still saves', async ({ page, context }) => {
+	test('saved total mismatch appears as a server review finding', async ({ page, context }) => {
 		test.setTimeout(120_000);
 		await uploadFixture(page, context, await loadFixture('a'), { verify: false });
-		// Expected total would be 3.50 - 0 + 0.36 + 0 = 3.86.
+		// Explicit server amount policy determines reconciliation after save.
+		await page
+			.getByRole('combobox', { name: 'Tax basis of line prices', exact: true })
+			.selectOption('net');
+		await page
+			.getByRole('combobox', { name: 'Discount treatment', exact: true })
+			.selectOption('included_in_lines');
+		await page.getByRole('combobox', { name: 'Tip treatment', exact: true }).selectOption('none');
+		await page
+			.getByRole('combobox', { name: 'Subtotal origin', exact: true })
+			.selectOption('printed');
+		await page
+			.getByRole('combobox', { name: 'Tax information', exact: true })
+			.selectOption('present');
 		await page.locator('#re-total').fill('9.00');
-		await expect(page.getByText(/Does not match the entered total by/)).toBeVisible();
+		await expect(page.getByText(/Does not match the entered total by/)).toHaveCount(0);
 		await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeEnabled();
 		await page.getByRole('button', { name: 'Save', exact: true }).click();
 		await expect(page.getByText('Changes saved')).toBeVisible({ timeout: 15_000 });
+		await expect(
+			page.getByText(/Review required: The total differs from the subtotal/)
+		).toBeVisible();
 	});
 
 	test('line items can be added, filled and removed', async ({ page, context }) => {
@@ -182,9 +268,10 @@ test.describe('receipt editor', () => {
 		await page.locator('#li-1-unit').fill('1.20');
 		await page.locator('#li-1-total').fill('1.20');
 
-		// Remove the ORIGINAL row (line-item removes precede tax removes in
-		// DOM order; this fixture has 1 line + 1 tax before the add).
-		await page.getByRole('button', { name: 'Remove' }).nth(0).click();
+		await page
+			.getByRole('group', { name: 'Line item 1', exact: true })
+			.getByRole('button', { name: 'Remove', exact: true })
+			.click();
 		await expect(page.getByPlaceholder('Description')).toHaveCount(1);
 
 		await page.getByRole('button', { name: 'Save', exact: true }).click();
@@ -197,33 +284,45 @@ test.describe('receipt editor', () => {
 	test('no line items state', async ({ page, context }) => {
 		test.setTimeout(120_000);
 		await uploadFixture(page, context, await loadFixture('b'), { verify: false });
-		await page.getByRole('button', { name: 'Remove' }).nth(0).click();
+		await page
+			.getByRole('group', { name: 'Line item 1', exact: true })
+			.getByRole('button', { name: 'Remove', exact: true })
+			.click();
 		await expect(page.getByText('No line items yet.')).toBeVisible();
 		await expect(page.getByRole('button', { name: 'Add item' })).toBeVisible();
 	});
 
-	test('tags: create, keep, persists after save', async ({ page, context }) => {
+	test('tags: add vocabulary tag and preserve existing tags after save', async ({
+		page,
+		context
+	}) => {
 		test.setTimeout(120_000);
 		await uploadFixture(page, context, await loadFixture('b'), { verify: false });
 
-		// FIX: The TagEditor create-option interaction is unreliable with
-		// Playwright (Svelte combobox event delegation / dropdown timing).
-		// Use a known vocabulary tag "food" to test the tag add → save →
-		// persist flow.  The brief's "create + keep" flow tests the same
-		// end-to-end behaviour (tag appears, persists after save) but via
-		// the create-option path which is flaky in Playwright.
-		await page.getByText('Optional tags').first().click();
+		// Classification already selected food. Add a different vocabulary tag
+		// and check selected pills, not matching text in the open options list.
+		await expect(page.getByRole('button', { name: 'Remove “Food”', exact: true })).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Remove “Beverages”', exact: true })).toHaveCount(
+			0
+		);
 		await page.getByRole('button', { name: 'Tags' }).click();
-		await page.getByRole('option', { name: 'food' }).click();
-		await expect(page.getByText('food').first()).toBeVisible();
+		await page.getByRole('option', { name: 'Beverages', exact: true }).click();
+		await page.getByRole('heading', { name: 'Billa Test', exact: true }).click();
+		await expect(page.getByRole('listbox')).toBeHidden();
+		await expect(
+			page.getByRole('button', { name: 'Remove “Beverages”', exact: true })
+		).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Remove “Food”', exact: true })).toBeVisible();
 
 		// Save and verify persistence.
 		await page.getByRole('button', { name: 'Save', exact: true }).click();
 		await expect(page.getByText('Changes saved')).toBeVisible({ timeout: 15_000 });
 
 		await page.reload();
-		await page.getByText('Optional tags').first().click();
-		await expect(page.getByText('food')).toBeVisible();
+		await expect(
+			page.getByRole('button', { name: 'Remove “Beverages”', exact: true })
+		).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Remove “Food”', exact: true })).toBeVisible();
 	});
 
 	test('taxes can be added and removed', async ({ page, context }) => {
@@ -241,12 +340,13 @@ test.describe('receipt editor', () => {
 		await page.locator('#tax-1-rate').fill('0.10');
 		await page.locator('#tax-1-amount').fill('0.10');
 
-		// FIX #2: Fixture b has 1 line item + 1 pre-existing tax (VAT).
-		// After "Add tax" the Remove buttons in DOM order are:
-		//   [li-0 Remove, tax-0(VAT) Remove, tax-1(Service) Remove]
-		// nth(1) targets VAT (tax-0); nth(2) targets the new tax (tax-1).
-		await page.getByRole('button', { name: 'Remove' }).nth(2).click();
-		await expect(page.locator('#tax-1-name')).toHaveCount(0);
+		const vat = page.getByRole('group', { name: 'Tax row 1', exact: true });
+		const service = page.getByRole('group', { name: 'Tax row 2', exact: true });
+		await expect(vat.getByLabel('Name', { exact: true })).toHaveValue('VAT');
+		await expect(service.getByLabel('Name', { exact: true })).toHaveValue('Service');
+		await service.getByRole('button', { name: 'Remove', exact: true }).click();
+		await expect(service).toHaveCount(0);
+		await expect(vat.getByLabel('Name', { exact: true })).toHaveValue('VAT');
 
 		await page.getByRole('button', { name: 'Save', exact: true }).click();
 		await expect(page.getByText('Changes saved')).toBeVisible({ timeout: 15_000 });

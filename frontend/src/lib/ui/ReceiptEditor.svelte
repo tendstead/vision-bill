@@ -1,44 +1,31 @@
 <script lang="ts">
+	import { CATEGORIES, PAYMENT_METHODS } from '$lib/types';
+	import { untrack } from 'svelte';
 	import { SvelteSet } from 'svelte/reactivity';
 	import { createQuery } from '@tanstack/svelte-query';
+	import { sessionViewGuard } from '$lib/session-view';
 	import { t, translate } from '$lib/i18n';
 	import { api } from '$lib/api/client';
 	import { queryClient } from '$lib/query/client';
 	import { queryKeys } from '$lib/query/keys';
-	import { formatMoney, isPlainDecimal, isSignedDecimal } from '$lib/ui/money';
+	import { isPlainDecimal, isSignedDecimal, validReviewDecimal } from '$lib/ui/money';
 	import { snackbar } from '$lib/ui/snackbar.svelte';
 	import Icon from '$lib/ui/Icon.svelte';
+	import MerchantNameInput from './MerchantNameInput.svelte';
 	import TagEditor from '$lib/ui/TagEditor.svelte';
 	import CollectionPicker from '$lib/ui/CollectionPicker.svelte';
+	import AmountPolicyEditor from './AmountPolicyEditor.svelte';
+	import { hasOverlapRows, unknownOverlap } from './overlap-decisions';
 	import type {
 		Category,
+		AmountPolicy,
+		SourceRef,
 		LineItemRow,
 		PaymentMethod,
 		ReceiptRow,
 		ReceiptWrite,
 		TaxLineRow
 	} from '$lib/types';
-
-	const CATEGORIES: Category[] = [
-		'grocery',
-		'electronics',
-		'clothing',
-		'restaurant',
-		'fuel',
-		'pharmacy',
-		'entertainment',
-		'other'
-	];
-
-	const PAYMENT_METHODS: PaymentMethod[] = [
-		'cash',
-		'credit_card',
-		'debit_card',
-		'mobile_payment',
-		'check',
-		'other',
-		'unknown'
-	];
 
 	const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -66,8 +53,13 @@
 	}
 
 	interface EditorForm {
+		expected_operation_revision: number;
+		amount_policy: AmountPolicy;
+		field_sources: Record<string, SourceRef[]>;
+		overlap_decisions: Record<string, unknown>[];
 		confidence: string;
 		merchant_name: string;
+		merchant_display_name?: string;
 		merchant_address: string;
 		receipt_number: string;
 		date: string;
@@ -92,26 +84,31 @@
 		collectionIds: string[]
 	): EditorForm {
 		return {
+			expected_operation_revision: receipt.operation_revision,
+			amount_policy: structuredClone($state.snapshot(receipt.amount_policy)),
+			field_sources: structuredClone($state.snapshot(receipt.field_sources)),
+			overlap_decisions: structuredClone($state.snapshot(receipt.overlap_decisions)),
 			confidence: String(receipt.confidence),
 			merchant_name: receipt.merchant_name,
+			merchant_display_name: receipt.merchant_display_name ?? '',
 			merchant_address: receipt.merchant_address ?? '',
 			receipt_number: receipt.receipt_number ?? '',
 			date: receipt.date,
-			time: receipt.time ?? '',
-			currency: receipt.currency || 'USD',
+			time: receipt.time?.replace(/^(\d{2}:\d{2}):00(?:\.0+)?$/, '$1') ?? '',
+			currency: receipt.currency,
 			category: receipt.category,
 			payment_method: receipt.payment_method,
 			subtotal: String(receipt.subtotal),
-			discount_total: String(receipt.discount_total),
-			tax_total: String(receipt.tax_total),
+			discount_total: String(receipt.discount_total ?? ''),
+			tax_total: String(receipt.tax_total ?? ''),
 			tip: receipt.tip === null ? '' : String(receipt.tip),
 			total: String(receipt.total),
 			lines: lineItems.map((line) => ({
 				id: line.id,
 				description: line.description,
 				original_description: line.original_description ?? line.description,
-				quantity: String(line.quantity),
-				unit_price: String(line.unit_price),
+				quantity: String(line.quantity ?? ''),
+				unit_price: String(line.unit_price ?? ''),
 				total_price: String(line.total_price),
 				spending_category: line.spending_category ?? 'unknown',
 				category_source: line.category_source ?? 'unknown',
@@ -140,7 +137,10 @@
 		busy = false,
 		onSave,
 		onSaveAndVerify,
-		onDirtyChange
+		onDirtyChange,
+		onSnapshotChange,
+		onSource,
+		onPendingChange
 	}: {
 		receipt: ReceiptRow;
 		lineItems: LineItemRow[];
@@ -159,7 +159,15 @@
 		onSaveAndVerify?: (write: ReceiptWrite) => void;
 		/** Notified with the current dirty state after (re)initialisation. */
 		onDirtyChange?: (dirty: boolean) => void;
+		/** Revisions of the server data currently shown in this editor. */
+		onSnapshotChange?: (
+			snapshot: Pick<ReceiptRow, 'id' | 'operation_revision' | 'review_revision'>
+		) => void;
+		onSource?: (sources: SourceRef[]) => void;
+		onPendingChange?: (pending: boolean) => void;
 	} = $props();
+
+	const isCurrentView = sessionViewGuard();
 
 	function initialForm(): EditorForm {
 		return buildForm(receipt, lineItems, taxes, collectionIds);
@@ -169,8 +177,21 @@
 	let snapshot = $state<EditorForm>(initialForm());
 	let initializedReceiptId: string | undefined;
 	let initializedRevision = -1;
+	let rendered = $state<Pick<ReceiptRow, 'id' | 'operation_revision' | 'review_revision'> | null>(
+		null
+	);
 	let initializedSavedRevision = 0;
 	let merchantVersion = 0;
+	const pendingTags = new SvelteSet<EditorLine>();
+	const pendingCollections = new SvelteSet<object>();
+	let childPending = $derived(pendingTags.size > 0 || pendingCollections.size > 0);
+	$effect(() => {
+		onPendingChange?.(childPending);
+	});
+	function tagPending(line: EditorLine, pending: boolean) {
+		if (pending) pendingTags.add(line);
+		else pendingTags.delete(line);
+	}
 
 	function dirtyForm(value: EditorForm): string {
 		return JSON.stringify(value, (key, item: unknown) =>
@@ -202,14 +223,33 @@
 	);
 
 	$effect(() => {
-		if (receipt.id !== initializedReceiptId || revision !== initializedRevision) {
+		const receiptId = receipt.id;
+		const operationRevision = receipt.operation_revision;
+		const reviewRevision = receipt.review_revision;
+		const reload = receiptId !== initializedReceiptId || revision !== initializedRevision;
+		const incomingRevision = revision;
+		untrack(() => {
+			const changed =
+				operationRevision !== rendered?.operation_revision ||
+				reviewRevision !== rendered?.review_revision;
+			if (!reload && (!changed || dirty || childPending)) return;
+			pendingTags.clear();
+			pendingCollections.clear();
 			merchantVersion++;
-			initializedReceiptId = receipt.id;
-			initializedRevision = revision;
+			initializedReceiptId = receiptId;
+			initializedRevision = incomingRevision;
 			const fresh = initialForm();
 			form = fresh;
 			snapshot = fresh;
-		}
+			rendered = {
+				id: receiptId,
+				operation_revision: operationRevision,
+				review_revision: reviewRevision
+			};
+		});
+	});
+	$effect(() => {
+		if (rendered) onSnapshotChange?.(rendered);
 	});
 	$effect(() => {
 		if (savedRevision !== initializedSavedRevision) {
@@ -224,7 +264,6 @@
 	});
 
 	const REQUIRED_AMOUNTS = ['subtotal', 'total'] as const;
-	const OPTIONAL_AMOUNTS = ['discount_total', 'tax_total', 'tip'] as const;
 
 	let errors = $derived.by(() => {
 		const set = new SvelteSet<string>();
@@ -239,11 +278,12 @@
 				set.add('editor.invalidNumber');
 			}
 		}
-		for (const key of OPTIONAL_AMOUNTS) {
-			if (form[key].trim() !== '' && !isPlainDecimal(form[key])) {
-				set.add('editor.invalidAmount');
-			}
+		if (!/^[a-z]{3}$/i.test(form.currency.trim())) {
+			set.add('editor.invalidCurrency');
 		}
+		if (!isPlainDecimal(form.tax_total)) set.add('editor.invalidAmount');
+		for (const amount of [form.discount_total, form.tip])
+			if (amount.trim() !== '' && !isPlainDecimal(amount)) set.add('editor.invalidAmount');
 		const confidence = Number(form.confidence);
 		if (
 			form.confidence.trim() === '' ||
@@ -254,11 +294,14 @@
 			set.add('editor.invalidConfidence');
 		}
 		for (const line of form.lines) {
-			const quantity = Number(line.quantity);
-			if (line.quantity.trim() === '' || !Number.isFinite(quantity) || quantity <= 0) {
+			if (!line.description.trim()) set.add('editor.descriptionRequired');
+			if (line.quantity.trim() && !validReviewDecimal(line.quantity, 'positive')) {
 				set.add('editor.invalidQuantity');
 			}
-			if (!isSignedDecimal(line.unit_price) || !isSignedDecimal(line.total_price)) {
+			if (
+				(line.unit_price.trim() !== '' && !isSignedDecimal(line.unit_price)) ||
+				!isSignedDecimal(line.total_price)
+			) {
 				set.add('editor.invalidNumber');
 			}
 		}
@@ -267,8 +310,7 @@
 				set.add('editor.invalidAmount');
 			}
 			if (tax.rate.trim() !== '') {
-				const rate = Number(tax.rate);
-				if (!Number.isFinite(rate) || rate < 0 || rate > 1) {
+				if (!validReviewDecimal(tax.rate, 'rate')) {
 					set.add('editor.invalidRate');
 				}
 			}
@@ -277,50 +319,33 @@
 	});
 	let valid = $derived(errors.length === 0);
 
-	/** Subtotal − discount + tax + tip, computed with exact decimal math. */
-	let expectedTotal = $derived.by((): number | null => {
-		const subtotal = form.subtotal.trim();
-		if (!isSignedDecimal(subtotal)) {
-			return null;
-		}
-		const discount = form.discount_total.trim() || '0';
-		const taxTotal = form.tax_total.trim() || '0';
-		const tip = form.tip.trim() || '0';
-		if (!isPlainDecimal(discount) || !isPlainDecimal(taxTotal) || !isPlainDecimal(tip)) {
-			return null;
-		}
-		return parseFloat(subtotal) - parseFloat(discount) + parseFloat(taxTotal) + parseFloat(tip);
-	});
-
-	let totalMismatch = $derived.by((): number | null => {
-		if (expectedTotal === null) {
-			return null;
-		}
-		const entered = Number(form.total.trim());
-		if (!Number.isFinite(entered)) {
-			return null;
-		}
-		const diff = Math.abs(expectedTotal - entered);
-		return diff > 0.05 ? diff : null;
-	});
-
 	let hasActions = $derived(Boolean(onSave) || Boolean(onSaveAndVerify));
 
 	function buildWrite(): ReceiptWrite {
 		return {
+			expected_operation_revision: form.expected_operation_revision,
+			amount_policy: form.amount_policy,
+			field_sources: form.field_sources,
+			overlap_decisions: form.overlap_decisions,
 			confidence: Number(form.confidence),
 			merchant_name: form.merchant_name.trim(),
+			...(form.merchant_display_name !== undefined &&
+			(form.merchant_display_name.trim() !== (receipt.merchant_display_name ?? '') ||
+				form.merchant_name.trim() !== receipt.merchant_name ||
+				form.merchant_address.trim() !== (receipt.merchant_address ?? ''))
+				? { merchant_display_name: form.merchant_display_name.trim() || null }
+				: {}),
 			merchant_address: form.merchant_address.trim() || null,
 			receipt_number: form.receipt_number.trim() || null,
 			date: form.date,
 			time: form.time.trim() || null,
-			currency: form.currency.trim().toUpperCase() || 'USD',
+			currency: form.currency.trim().toUpperCase(),
 			category: form.category as Category,
 			line_items: form.lines.map((line) => ({
 				...(line.id ? { id: line.id } : {}),
 				description: line.description.trim(),
-				quantity: Number(line.quantity),
-				unit_price: line.unit_price.trim(),
+				quantity: line.quantity.trim() || null,
+				unit_price: line.unit_price.trim() || null,
 				total_price: line.total_price.trim(),
 				spending_category: line.spending_category,
 				...(line.remember_category ? { remember_category: true } : {}),
@@ -328,12 +353,12 @@
 			})),
 			taxes: form.taxLines.map((tax) => ({
 				name: tax.name.trim(),
-				rate: tax.rate.trim() === '' ? null : Number(tax.rate),
+				rate: tax.rate.trim() || null,
 				amount: tax.amount.trim()
 			})),
 			subtotal: form.subtotal.trim(),
-			discount_total: form.discount_total.trim() || '0',
-			tax_total: form.tax_total.trim() || '0',
+			discount_total: form.discount_total.trim() || null,
+			tax_total: form.tax_total.trim(),
 			tip: form.tip.trim() === '' ? null : form.tip.trim(),
 			total: form.total.trim(),
 			payment_method: form.payment_method as PaymentMethod,
@@ -345,7 +370,7 @@
 		form.lines.push({
 			description: '',
 			original_description: '',
-			quantity: '1',
+			quantity: '',
 			unit_price: '',
 			total_price: '',
 			spending_category: 'unknown',
@@ -373,9 +398,19 @@
 		line.description = description;
 	}
 
-	function changeMerchant(merchant: string) {
+	function changeMerchant(
+		field: 'merchant_name' | 'merchant_display_name' | 'merchant_address',
+		value: string
+	) {
+		if (form[field] === value) return;
 		merchantVersion++;
-		form.merchant_name = merchant;
+		form[field] = value;
+		if (field !== 'merchant_display_name')
+			form.merchant_display_name =
+				form.merchant_name.trim() === receipt.merchant_name &&
+				form.merchant_address.trim() === (receipt.merchant_address ?? '')
+					? (receipt.merchant_display_name ?? '')
+					: undefined;
 		for (const line of form.lines) {
 			clearHistoryCategory(line);
 			line.remember_category = false;
@@ -390,8 +425,15 @@
 		const currentMerchantVersion = merchantVersion;
 		const currentReceiptId = receipt.id;
 		try {
-			const result = await api.getCategorySuggestion(merchant, description);
+			const result = await api.getCategorySuggestion({
+				merchant_name: merchant,
+				merchant_display_name: form.merchant_display_name?.trim() || undefined,
+				merchant_address: form.merchant_address.trim() || undefined,
+				description,
+				receipt_id: currentReceiptId
+			});
 			if (
+				!isCurrentView() ||
 				line.lookupVersion !== version ||
 				merchantVersion !== currentMerchantVersion ||
 				receipt.id !== currentReceiptId ||
@@ -421,7 +463,20 @@
 		line.suggestion = null;
 	}
 
+	function removeLineSources() {
+		form.overlap_decisions = form.overlap_decisions.map(unknownOverlap);
+		form.field_sources = Object.fromEntries(
+			Object.entries(form.field_sources).filter(([path]) => !/^line_items(?:\.|\[|$)/.test(path))
+		);
+	}
+	function moveLine(index: number, direction: number) {
+		const other = index + direction;
+		if (other < 0 || other >= form.lines.length) return;
+		[form.lines[index], form.lines[other]] = [form.lines[other], form.lines[index]];
+		removeLineSources();
+	}
 	function removeLine(index: number) {
+		removeLineSources();
 		form.lines.splice(index, 1);
 	}
 
@@ -430,6 +485,9 @@
 	}
 
 	function removeTax(index: number) {
+		form.field_sources = Object.fromEntries(
+			Object.entries(form.field_sources).filter(([path]) => !/^taxes(?:\.|\[|$)/.test(path))
+		);
 		form.taxLines.splice(index, 1);
 	}
 
@@ -438,7 +496,7 @@
 		'w-full rounded-lg border border-outline-variant bg-surface-container-lowest px-3 py-2.5 text-sm';
 </script>
 
-<section class="space-y-6">
+<fieldset disabled={busy} class="space-y-6">
 	<!-- Details -->
 	<div class="rounded-xl border border-outline-variant bg-surface-container-low p-4">
 		<h2 class="mb-3 text-sm font-semibold uppercase tracking-wide text-on-surface-variant">
@@ -452,10 +510,25 @@
 				<label class={labelClass} for="re-merchant">{$t('editor.merchant')}</label>
 				<input
 					id="re-merchant"
+					aria-describedby="re-printed-hint"
 					class={inputClass}
 					value={form.merchant_name}
-					oninput={(e) => changeMerchant((e.currentTarget as HTMLInputElement).value)}
+					oninput={(e) => changeMerchant('merchant_name', e.currentTarget.value)}
 					onblur={() => form.lines.forEach((line) => void lookupCategory(line))}
+				/>
+				<p id="re-printed-hint" class="text-xs text-on-surface-variant">
+					{$t('editor.printedMerchantHint')}
+				</p>
+			</div>
+			<div class="sm:col-span-2">
+				<MerchantNameInput
+					id="re-merchant-display"
+					value={form.merchant_display_name}
+					printed={form.merchant_name}
+					address={form.merchant_address}
+					receiptId={receipt.id}
+					onChange={(name) => changeMerchant('merchant_display_name', name)}
+					onCommit={() => form.lines.forEach((line) => void lookupCategory(line))}
 				/>
 			</div>
 			<div class="sm:col-span-2">
@@ -464,7 +537,8 @@
 					id="re-address"
 					class={inputClass}
 					value={form.merchant_address}
-					oninput={(e) => (form.merchant_address = (e.currentTarget as HTMLInputElement).value)}
+					oninput={(e) => changeMerchant('merchant_address', e.currentTarget.value)}
+					onblur={() => form.lines.forEach((line) => void lookupCategory(line))}
 				/>
 			</div>
 			<div>
@@ -488,9 +562,13 @@
 			</div>
 			<div>
 				<label class={labelClass} for="re-time">{$t('editor.time')}</label>
+				<!-- Native time inputs can sanitize microseconds; retain a text control
+				     throughout editing when the saved value has sub-minute precision. -->
 				<input
 					id="re-time"
-					type="time"
+					type={receipt.time && !/^\d{2}:\d{2}(?::00(?:\.0+)?)?$/.test(receipt.time)
+						? 'text'
+						: 'time'}
 					class={inputClass}
 					value={form.time}
 					oninput={(e) => (form.time = (e.currentTarget as HTMLInputElement).value)}
@@ -535,6 +613,7 @@
 			<div class="sm:col-span-2">
 				<span class={labelClass}>{$t('editor.collections')}</span>
 				<CollectionPicker
+					disabled={busy}
 					options={collections.data ?? []}
 					mode="multi"
 					value={form.collection_ids}
@@ -542,12 +621,22 @@
 					placeholder={$t('collections.searchPlaceholder')}
 					onchange={(v) => (form.collection_ids = v as string[])}
 					oncreate={async (name) => {
+						if (!isCurrentView()) return;
+						const mutation = {};
+						const target = form;
+						const receiptId = receipt.id;
+						const isCurrentForm = () =>
+							isCurrentView() && form === target && receipt.id === receiptId;
+						pendingCollections.add(mutation);
 						try {
 							const created = await api.createCollection({ name });
+							if (!isCurrentForm()) return;
 							form.collection_ids = [...form.collection_ids, created.id];
 							await queryClient.invalidateQueries({ queryKey: queryKeys.collections() });
 						} catch {
-							snackbar.notify('error', translate('collections.createFailed'));
+							if (isCurrentForm()) snackbar.notify('error', translate('collections.createFailed'));
+						} finally {
+							if (isCurrentView()) pendingCollections.delete(mutation);
 						}
 					}}
 				/>
@@ -578,21 +667,54 @@
 				</div>
 			{/each}
 		</div>
-		{#if expectedTotal !== null}
-			<p class="mt-3 text-sm text-on-surface-variant">
-				{$t('editor.expectedTotal')}:
-				<span class="font-medium">{expectedTotal} {form.currency}</span>
-				{#if totalMismatch !== null}
-					<span class="ml-2 font-medium text-error">
-						{$t('editor.totalMismatch', {
-							values: { diff: formatMoney(totalMismatch, form.currency) }
-						})}
-					</span>
-				{/if}
-			</p>
-		{/if}
 	</div>
 
+	<AmountPolicyEditor
+		value={form.amount_policy}
+		disabled={busy}
+		onChange={(value) => (form.amount_policy = value)}
+	/>
+	<details class="rounded-xl border border-outline-variant p-4">
+		<summary>{$t('review.sourceDecisions')}</summary>
+		{#each Object.keys(form.field_sources) as path (path)}<p>
+				{path}
+				{#if onSource}<button type="button" onclick={() => onSource?.(form.field_sources[path])}
+						>{$t('review.showSource')}</button
+					>{/if}
+				<button
+					type="button"
+					onclick={() => (form.field_sources = { ...form.field_sources, [path]: [] })}
+					>{$t('review.markUnknown')}</button
+				>
+			</p>{/each}
+	</details>
+	{#each form.overlap_decisions as decision, index (index)}
+		<div class="rounded-xl border border-outline-variant p-4">
+			<p>{$t('review.overlapNumber', { values: { number: index + 1 } })}</p>
+			{#if hasOverlapRows(decision, form.lines.length, form.overlap_decisions)}
+				<p>
+					{$t('review.overlapRows', {
+						values: {
+							first: (decision.first_index as number) + 1,
+							second: (decision.second_index as number) + 1
+						}
+					})}
+				</p>
+			{:else}<p>{$t('review.overlapUnknown')}</p>{/if}
+			<label
+				><input
+					type="checkbox"
+					disabled={!hasOverlapRows(decision, form.lines.length, form.overlap_decisions)}
+					checked={decision.verified === true}
+					onchange={(e) => {
+						if (hasOverlapRows(decision, form.lines.length, form.overlap_decisions))
+							form.overlap_decisions[index] = { ...decision, verified: e.currentTarget.checked };
+					}}
+				/>
+				{$t('review.reviewedOverlap')}</label
+			>
+		</div>
+	{/each}
 	<!-- Line items -->
 	<div class="rounded-xl border border-outline-variant bg-surface-container-low p-4">
 		<div class="mb-3 flex items-center justify-between">
@@ -613,10 +735,15 @@
 		{:else}
 			<div class="space-y-3">
 				{#each form.lines as line, index (line)}
-					<div class="rounded-lg border border-outline-variant bg-surface-container-lowest p-3">
+					<div
+						role="group"
+						aria-label={$t('editor.lineItemRow', { values: { number: index + 1 } })}
+						class="rounded-lg border border-outline-variant bg-surface-container-lowest p-3"
+					>
 						<div class="flex items-start gap-2">
 							<input
 								class="{inputClass} flex-1"
+								id={`li-${index}-description`}
 								aria-label={$t('editor.description')}
 								placeholder={$t('editor.description')}
 								value={line.description}
@@ -632,6 +759,18 @@
 							>
 								<Icon icon="trash" />
 							</button>
+							<button
+								type="button"
+								aria-label={$t('editor.moveItemUp')}
+								disabled={index === 0 || busy}
+								onclick={() => moveLine(index, -1)}>↑</button
+							>
+							<button
+								type="button"
+								aria-label={$t('editor.moveItemDown')}
+								disabled={index === form.lines.length - 1 || busy}
+								onclick={() => moveLine(index, 1)}>↓</button
+							>
 						</div>
 						{#if line.original_description && line.original_description !== line.description}
 							<p class="mt-1 text-xs text-on-surface-variant">
@@ -714,12 +853,18 @@
 								{/if}
 							</div>
 							<div class="col-span-2 sm:col-span-4">
-								<details>
+								<details open={line.tags.length > 0}>
 									<summary class="cursor-pointer text-xs text-on-surface-variant"
 										>{$t('editor.optionalTags')}</summary
 									>
 									<div class="mt-2">
-										<TagEditor value={line.tags} {tagOptions} id={`li-${index}`} />
+										<TagEditor
+											disabled={busy}
+											value={line.tags}
+											{tagOptions}
+											id={`li-${index}`}
+											onPendingChange={(pending) => tagPending(line, pending)}
+										/>
 									</div>
 								</details>
 							</div>
@@ -748,9 +893,16 @@
 		{#if form.taxLines.length === 0}
 			<p class="text-sm text-on-surface-variant">{$t('editor.noTaxes')}</p>
 		{:else}
+			<p id="receipt-tax-rate-hint" class="mb-2 text-sm text-on-surface-variant">
+				{$t('editor.taxRateHint')}
+			</p>
 			<div class="space-y-2">
 				{#each form.taxLines as tax, index (index)}
-					<div class="grid grid-cols-2 items-end gap-2 sm:grid-cols-[1fr_8rem_10rem_2.5rem]">
+					<div
+						role="group"
+						aria-label={$t('editor.taxRow', { values: { number: index + 1 } })}
+						class="grid grid-cols-2 items-end gap-2 sm:grid-cols-[1fr_8rem_10rem_2.5rem]"
+					>
 						<div>
 							<label class={labelClass} for="tax-{index}-name">{$t('editor.taxName')}</label>
 							<input
@@ -764,6 +916,7 @@
 							<label class={labelClass} for="tax-{index}-rate">{$t('editor.taxRate')}</label>
 							<input
 								id="tax-{index}-rate"
+								aria-describedby="receipt-tax-rate-hint"
 								inputmode="decimal"
 								class={inputClass}
 								value={tax.rate}
@@ -814,8 +967,10 @@
 					<button
 						type="button"
 						class="rounded-lg border border-outline-variant px-4 py-2.5 text-sm font-medium text-on-surface hover:bg-surface-container-high disabled:opacity-50"
-						disabled={busy || !valid}
-						onclick={() => onSave(buildWrite())}
+						disabled={busy || childPending || !valid}
+						onclick={() => {
+							if (!busy && !childPending && valid) onSave(buildWrite());
+						}}
 					>
 						{$t('common.save')}
 					</button>
@@ -823,9 +978,11 @@
 				{#if onSaveAndVerify !== undefined}
 					<button
 						type="button"
-						class="flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-on-primary hover:opacity-90 disabled:opacity-50"
-						disabled={busy || !valid}
-						onclick={() => onSaveAndVerify(buildWrite())}
+						class="flex items-center justify-center gap-2 rounded-lg bg-action px-4 py-2.5 text-sm font-medium text-on-primary hover:opacity-90 disabled:opacity-50"
+						disabled={busy || childPending || !valid}
+						onclick={() => {
+							if (!busy && !childPending && valid) onSaveAndVerify(buildWrite());
+						}}
 					>
 						<Icon icon="check" />
 						{$t('editor.saveAndVerify')}
@@ -834,4 +991,4 @@
 			</div>
 		</div>
 	{/if}
-</section>
+</fieldset>

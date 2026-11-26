@@ -1,13 +1,14 @@
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
 import { registerUser } from '../helpers/auth';
 import { loadFixture } from '../helpers/fixtures';
-import { setStubMode, stubGuard } from '../helpers/stub';
+import { setStubMode, setStubScenario, stubGuard } from '../helpers/stub';
+import { awaitSubmission, uploadViaApi } from '../helpers/api';
 import { confirmDialog } from '../helpers/ui';
 
 /** Upload one image while the stub is in `mode`; land on the queue page. */
 async function queueAnImage(
 	page: Page,
-	_context: BrowserContext,
+	context: BrowserContext,
 	mode: 'down' | 'broken'
 ): Promise<void> {
 	const fixture = await loadFixture('a');
@@ -19,11 +20,18 @@ async function queueAnImage(
 		buffer: fixture.bytes
 	});
 	await page.getByRole('button', { name: 'Upload' }).click();
+	await expect(page).toHaveURL(/\/upload\?job=[a-f0-9-]+/);
+	const id = new URL(page.url()).searchParams.get('job')!;
 	if (mode === 'down') {
-		await expect(page.locator('p:has-text("Added to the analysis queue")')).toBeVisible();
+		const job = await (await context.request.get(`/api/v1/images/${id}`)).json();
+		expect(job.status).toBe('pending');
+		expect(job.attempt_count).toBe(0);
 	} else {
-		await expect(page.getByText('Upload failed')).toBeVisible({ timeout: 30_000 });
+		const job = await awaitSubmission(context, id, 120_000);
+		expect(job.status).toBe('failed');
+		expect(job.attempt_count).toBe(3);
 	}
+
 	await page.goto('/queue');
 }
 
@@ -76,5 +84,28 @@ test.describe('queue page', () => {
 		await confirmDialog(page, 'Delete image?', 'Delete');
 		await expect(page.getByText('Image deleted')).toBeVisible({ timeout: 15_000 });
 		await expect(page.getByText('The queue is empty')).toBeVisible();
+	});
+
+	test('an unfinalized receipt draft can be discarded from the queue', async ({
+		page,
+		context
+	}) => {
+		await registerUser(context, 'e2e-queue-draft');
+		await setStubScenario('partial');
+		const fixture = await loadFixture('a');
+		const upload = await uploadViaApi(context, fixture.name, fixture.bytes, fixture.mimeType);
+		expect(upload.status).toBe(202);
+		const id = upload.body.id as string;
+		expect((await awaitSubmission(context, id)).status).toBe('needs_review');
+
+		await page.goto('/queue');
+		await expect(page.getByRole('link', { name: 'Open receipt draft' })).toHaveAttribute(
+			'href',
+			`/upload?job=${id}&draft=1`
+		);
+		await page.getByRole('button', { name: 'Remove', exact: true }).click();
+		await confirmDialog(page, 'Delete image?', 'Delete');
+		await expect(page.getByText('The queue is empty')).toBeVisible();
+		expect((await context.request.get(`/api/v1/images/${id}/draft`)).status()).toBe(404);
 	});
 });

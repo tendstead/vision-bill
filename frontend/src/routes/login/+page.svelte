@@ -2,7 +2,7 @@
 	import { createQuery } from '@tanstack/svelte-query';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
-	import { api } from '$lib/api/client';
+	import { api, ApiError } from '$lib/api/client';
 	import { signIn, signUp } from '$lib/auth';
 	import { t, translate } from '$lib/i18n';
 	import { queryClient } from '$lib/query/client';
@@ -15,6 +15,8 @@
 	let password = $state('');
 	let busy = $state(false);
 	let error = $state<string | null>(null);
+	let usernameInvalid = $state(false);
+	let passwordInvalid = $state(false);
 
 	const uiConfig = createQuery(
 		() => ({ queryKey: queryKeys.uiConfig(), queryFn: () => api.getUiConfig() }),
@@ -26,12 +28,16 @@
 	function switchMode(next: Mode) {
 		mode = next;
 		error = null;
+		usernameInvalid = false;
+		passwordInvalid = false;
 	}
 
 	async function submit() {
 		if (busy) return;
 		busy = true;
 		error = null;
+		usernameInvalid = false;
+		passwordInvalid = false;
 		try {
 			if (mode === 'login') {
 				await signIn(username, password);
@@ -41,6 +47,11 @@
 			void goto(resolve('/'));
 		} catch (err) {
 			error = err instanceof Error ? err.message : translate('login.error');
+			if (err instanceof ApiError) {
+				usernameInvalid =
+					(mode === 'login' && err.status === 401) || (mode === 'register' && err.status === 409);
+				passwordInvalid = mode === 'login' && err.status === 401;
+			}
 		} finally {
 			busy = false;
 		}
@@ -48,17 +59,20 @@
 </script>
 
 <svelte:head>
-	<title>{$t('login.title')} – {$t('app.name')}</title>
+	<title>{$t(mode === 'login' ? 'login.title' : 'login.createAccount')} – {$t('app.name')}</title>
 </svelte:head>
 
 <section
 	class="w-full max-w-md rounded-2xl border border-outline-variant bg-surface-container-low p-8 shadow-elevation-1"
 >
-	<h1 class="text-2xl font-semibold">{$t('login.title')}</h1>
+	<h1 class="text-2xl font-semibold">
+		{$t(mode === 'login' ? 'login.title' : 'login.createAccount')}
+	</h1>
 	<p class="mt-1 text-sm text-on-surface-variant">{$t('app.name')}</p>
 
 	<form
 		class="mt-6 flex flex-col gap-4"
+		aria-busy={busy}
 		onsubmit={(event) => {
 			event.preventDefault();
 			void submit();
@@ -68,6 +82,8 @@
 			<label for="username" class="text-sm font-medium">{$t('login.username')}</label>
 			<input
 				id="username"
+				aria-describedby={usernameInvalid ? 'login-error' : undefined}
+				aria-invalid={usernameInvalid ? true : undefined}
 				type="text"
 				autocomplete="username"
 				bind:value={username}
@@ -79,6 +95,8 @@
 			<label for="password" class="text-sm font-medium">{$t('login.password')}</label>
 			<input
 				id="password"
+				aria-describedby={passwordInvalid ? 'login-error' : undefined}
+				aria-invalid={passwordInvalid ? true : undefined}
 				type="password"
 				autocomplete={mode === 'login' ? 'current-password' : 'new-password'}
 				bind:value={password}
@@ -89,6 +107,7 @@
 
 		{#if error}
 			<p
+				id="login-error"
 				role="alert"
 				class="rounded-lg bg-error-container px-3 py-2 text-sm text-on-error-container"
 			>
@@ -99,7 +118,7 @@
 		<button
 			type="submit"
 			disabled={busy}
-			class="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-on-primary disabled:opacity-60"
+			class="rounded-lg bg-action px-4 py-2 text-sm font-medium text-on-primary disabled:opacity-60"
 		>
 			{#if busy}
 				{$t(mode === 'login' ? 'login.signingIn' : 'login.creating')}

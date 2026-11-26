@@ -1,0 +1,16 @@
+{
+  "pipeline_version": "v1.6",
+  "model_name": "PaddleOCR-VL-1.6-0.9B",
+  "layout_model": "PP-DocLayoutV3",
+  "backend": "native",
+  "precision": "native-selective-v1",
+  "batch_size": 1,
+  "use_queues": false,
+  "use_doc_orientation_classify": true,
+  "use_doc_unwarping": false,
+  "use_chart_recognition": false,
+  "use_seal_recognition": false,
+  "min_pixels": 112896,
+  "max_pixels": 2000000,
+  "max_new_tokens": 4096
+}

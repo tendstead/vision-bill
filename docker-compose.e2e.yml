@@ -1,14 +1,3 @@
-# vision-bill e2e test stack.
-#
-# Self-contained: builds the real app image, boots Postgres and a
-# deterministic OpenAI-compatible LLM stub. Fresh database per run:
-#   make e2e-up     # build + start
-#   make e2e-down   # stop + delete the database volume
-#
-# Fixed host ports (fail loudly if taken):
-#   app  53625   (matches the Playwright default base URL)
-#   pg   5433
-#   stub 9123
 services:
   pg:
     image: postgres:18
@@ -21,7 +10,7 @@ services:
       # (matches the main docker-compose.yml db service).
       PGDATA: /var/lib/postgresql/data/pgdata
     ports:
-      - "5433:5432"
+      - "127.0.0.1::5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U vision_bill -d vision_bill"]
       interval: 2s
@@ -32,27 +21,81 @@ services:
 
   llm-stub:
     image: python:3.12-slim
-    working_dir: /stub
+    working_dir: /stub/llm_stub
     command: ["python", "server.py"]
+    environment:
+      PYTHONPATH: /stub
+      VB_E2E_REPLIES_DIR: /replies
+      VB_E2E_ALIASES: /aliases.json
     volumes:
-      - ./e2e/llm_stub:/stub:ro
-      - ./tests/e2e/data:/data:ro
-      - ./e2e/llm_stub/fixtures:/fixtures:ro
+      - ./e2e:/stub:ro
+      - ${VB_E2E_FIXTURE_ROOT:?owned fixtures required}/fixtures:/fixtures:ro
+      - ${VB_E2E_FIXTURE_ROOT}/replies:/replies:ro
+      - ${VB_E2E_FIXTURE_ROOT}/aliases.json:/aliases.json:ro
     ports:
-      - "9123:9123"
+      - "127.0.0.1::9123"
+
+  ocr-stub:
+    image: python:3.12-slim
+    working_dir: /stub/ocr_stub
+    command: ["python", "server.py"]
+    environment:
+      PYTHONPATH: /stub
+      VB_E2E_OWNED_UPLOADS: /test-owned-uploads
+    volumes:
+      - ./e2e:/stub:ro
+      - e2e_uploads:/test-owned-uploads
+    ports:
+      - "127.0.0.1::9124"
+
+  config-seed:
+    image: python:3.12-slim
+    user: "0:0"
+    network_mode: none
+    command:
+      - python
+      - -c
+      - |
+        import os
+        from pathlib import Path
+        from tempfile import NamedTemporaryFile
+
+        directory = Path("/owned-config")
+        directory.chmod(0o700)
+        config = directory / "config.yaml"
+        if not config.exists():
+            with NamedTemporaryFile(dir=directory) as seed:
+                seed.write(Path("/seed/config.yaml").read_bytes())
+                seed.flush()
+                os.fsync(seed.fileno())
+                try:
+                    os.link(seed.name, config)
+                except FileExistsError:
+                    pass
+    volumes:
+      - type: bind
+        source: ${VB_E2E_CONFIG_DIR:?owned runner config required}/config.yaml
+        target: /seed/config.yaml
+        read_only: true
+        bind:
+          create_host_path: false
+      - e2e_config:/owned-config
 
   app:
+    image: ${VB_E2E_APP_IMAGE:?owned app image required}
     build: .
     depends_on:
       pg:
         condition: service_healthy
       llm-stub:
         condition: service_started
+      config-seed:
+        condition: service_completed_successfully
     environment:
       AUTH__SECRET_KEY: e2e-secret-do-not-use
       AUTH__BOOTSTRAP_USERNAME: admin
       AUTH__BOOTSTRAP_PASSWORD: admin-e2e-pass
-      AUTH__ADMIN_CAN_SEE_ALL: "true"
+      AUTH__ADMIN_CAN_SEE_ALL: ${VB_E2E_ADMIN_CAN_SEE_ALL:-true}
       LLM__PROVIDER: openai
       LLM__HOST: http://llm-stub:9123/v1
       LLM__API_KEY: e2e-test-key
@@ -62,17 +105,25 @@ services:
       PG__DB: vision_bill
       PG__USER: vision_bill
       PG__PASSWORD: vision_bill
+      OCR__ENABLED: ${VB_E2E_OCR_ENABLED:-false}
+      OCR__REQUIRED: ${VB_E2E_OCR_REQUIRED:-false}
+      OCR__ALLOW_VISION_FALLBACK: ${VB_E2E_OCR_FALLBACK:-false}
+      OCR__SERVICE_URL: ${VB_E2E_OCR_SERVICE_URL-}
+      OCR__TIMEOUT_SECONDS: "2"
+      # These HTTP stubs are CPU-only and have no resident native/LLM models.
+      OCR__MANAGE_MODEL_LIFECYCLE: "false"
       IMAGES__SAVE_DIR: /app/uploads
       IMAGES__TMP_DIR: /app/uploads_tmp
     volumes:
       - e2e_uploads:/app/uploads
       - e2e_uploads_tmp:/app/uploads_tmp
-      # Pre-seeded config (llm.temperature); see e2e/config/config.yaml.
-      - ./e2e/config:/app/config
+      # Keep the private config owned by the app container's user.
+      - e2e_config:/app/config
     ports:
-      - "53625:8080"
+      - "127.0.0.1::8080"
 
 volumes:
   e2e_pgdata:
   e2e_uploads:
   e2e_uploads_tmp:
+  e2e_config:

@@ -39,9 +39,10 @@ def test_settings_sources_and_env_conflict(http_factory) -> None:
     view = client.get(f"{API}/system/settings").json()
     assert view["llm"]["provider"] == "openai"
     assert view["sources"]["llm.provider"] == "environment"
+    assert view["sources"]["llm.model_name"] == "environment"
     assert view["sources"]["llm.temperature"] != "environment"
 
-    # Changing an env-controlled key is rejected.
+    # Legacy full PUT keeps environment-controlled keys locked.
     conflict = client.put(
         f"{API}/system/settings",
         json={
@@ -57,19 +58,40 @@ def test_settings_sources_and_env_conflict(http_factory) -> None:
     assert conflict.status_code == 409
     assert "llm.provider" in conflict.json()["detail"]
 
-    # A non-env key applies immediately.
-    new_temp = round(view["llm"]["temperature"] + 0.1, 2)
-    ok = client.put(
-        f"{API}/system/settings",
-        json={
-            "llm": {
-                "provider": view["llm"]["provider"],
-                "host": view["llm"]["host"],
-                "model_name": view["llm"]["model_name"],
-                "temperature": new_temp,
+    baseline = {"llm": dict(view["llm"]), "allow_registration": view["allow_registration"]}
+    new_temp = 0.1 if view["llm"]["temperature"] != 0.1 else 0.2
+    new_model = view["llm"]["model_name"] + "-explicit-settings-adoption"
+    try:
+        # Legacy full PUT still supports ordinary config-backed fields.
+        ok = client.put(
+            f"{API}/system/settings",
+            json={**baseline, "llm": {**view["llm"], "temperature": new_temp}},
+        )
+        assert ok.status_code == 200
+        assert ok.json()["llm"]["temperature"] == new_temp
+
+        # Browser-style explicit adoption can change an environment default.
+        # Its stale temperature is deliberately outside the dirty field mask.
+        adopted = client.put(
+            f"{API}/system/settings",
+            json={
+                **baseline,
+                "llm": {**view["llm"], "model_name": new_model},
+                "changed_paths": ["llm.model_name"],
             },
-            "allow_registration": view["allow_registration"],
-        },
-    )
-    assert ok.status_code == 200
-    assert ok.json()["llm"]["temperature"] == new_temp
+        )
+        assert adopted.status_code == 200
+        assert adopted.json()["llm"]["model_name"] == new_model
+        assert adopted.json()["llm"]["temperature"] == new_temp
+        assert adopted.json()["sources"]["llm.model_name"] == "config"
+        assert adopted.json()["sources"]["llm.provider"] == "environment"
+        persisted = client.get(f"{API}/system/settings").json()
+        assert persisted["llm"]["model_name"] == new_model
+        assert persisted["llm"]["temperature"] == new_temp
+    finally:
+        restored = client.put(
+            f"{API}/system/settings",
+            json={**baseline, "changed_paths": ["llm.model_name", "llm.temperature"]},
+        )
+        assert restored.status_code == 200
+        assert restored.json()["llm"] == view["llm"]

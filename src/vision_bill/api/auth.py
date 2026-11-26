@@ -7,15 +7,15 @@ Public by design — these are the only non-protected routes (plus
 import logging
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from ..config import settings
 from ..provider.db.user_db import UserDB
-from ..security.dependencies import get_current_user
+from ..security.dependencies import get_current_user, validate_expected_actor
 from ..security.models import User
 from ..security.password import hash_password
-from ..security.session import create_token
+from ..security.session import create_token, decode_token
 from .helper.helper import get_user_db
 
 logger = logging.getLogger(__name__)
@@ -66,7 +66,7 @@ async def register(
         raise HTTPException(status_code=409, detail="Username is already taken")
     hashed = hash_password(body.password, settings.auth)
     user = await user_db.create_user(body.username, hashed, is_admin=False)
-    logger.info("Registered new user '%s' (id=%s)", user.username, user.id)
+    logger.info("Registered user id=%s", user.id)
     _set_session_cookie(response, user.id)
     return user
 
@@ -91,8 +91,11 @@ async def login(
 
 
 @router.post("/logout")
-async def logout(response: Response) -> dict[str, bool]:
-    """Clear the session cookie. Idempotent and unauthenticated (just clears)."""
+async def logout(request: Request, response: Response) -> dict[str, bool]:
+    """Clear the cookie unless the browser expects another signed-in actor."""
+    token = request.cookies.get(settings.auth.session_cookie_name)
+    actor = decode_token(token, settings.auth.secret_key) if token else None
+    validate_expected_actor(request, actor)
     response.delete_cookie(settings.auth.session_cookie_name)
     return {"ok": True}
 

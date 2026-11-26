@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from vision_bill.provider.llm.base import ModelDiscoveryError
 from vision_bill.provider.llm.openai import OpenAIProvider
 
 
@@ -203,15 +204,14 @@ async def test_get_available_models_falls_back_to_data_entries(mock_client):
 
 
 @pytest.mark.asyncio
-async def test_get_available_models_skips_empty_ids(mock_client):
+async def test_get_available_models_rejects_empty_ids(mock_client):
     entry = _ollama_entry("", ["completion", "multimodal"])
     body = _hybrid_body([entry], [_openai_entry("", 1000000)])
     mock_client.models.with_raw_response.list.return_value = _raw_response(body)
 
     provider = OpenAIProvider(host="http://localhost:8642/v1", api_key="none")
-    models = await provider.get_available_models()
-
-    assert models == []
+    with pytest.raises(ModelDiscoveryError, match="Invalid formatter model list"):
+        await provider.get_available_models()
 
 
 def _chat_response(content: str | None):
@@ -245,7 +245,7 @@ async def test_send_message_empty_content(mock_client):
 
 
 @pytest.mark.asyncio
-async def test_send_message_sends_temperature_and_reasoning_effort(mock_client):
+async def test_send_message_sends_temperature_without_optional_reasoning_extension(mock_client):
     mock_client.chat.completions.create.return_value = _chat_response("ok")
 
     provider = OpenAIProvider(host="http://localhost:8642/v1", api_key="none", temperature=0.3)
@@ -254,7 +254,7 @@ async def test_send_message_sends_temperature_and_reasoning_effort(mock_client):
     kwargs = mock_client.chat.completions.create.call_args.kwargs
     assert kwargs["model"] == "model-x"
     assert kwargs["temperature"] == 0.3
-    assert kwargs["reasoning_effort"] == "low"
+    assert "reasoning_effort" not in kwargs
 
 
 @pytest.mark.asyncio
@@ -442,3 +442,67 @@ def _flatten_message_contents(messages):
                 if isinstance(item, dict) and item.get("type") == "text":
                     parts.append(item.get("text", ""))
     return parts
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hybrid", [False, True])
+async def test_discovery_distinguishes_image_input_from_unrelated_modalities(mock_client, hybrid):
+    entries = [
+        {"id": "output-only", "input_modalities": ["text"], "meta": {"output_modalities": ["image"]}},
+        {"id": "explicit-text", "meta": {"input_modalities": ["text"]}, "capabilities": ["vision"]},
+        {"id": "architecture-input", "architecture": {"input_modalities": ["image", "text"]}},
+        {"id": "meta-input", "meta": {"input_modalities": ["image", "text"]}},
+        {"id": "top-input", "input_modalities": ["image", "text"]},
+        {"id": "declared", "meta": {"output_modalities": ["image"]}},
+        {"id": "vision-name-without-input-evidence", "meta": {"other": ["image"]}},
+        {"id": "text-capabilities", "capabilities": ["completion"]},
+    ]
+    hybrid_entries = [
+        _ollama_entry(model["id"], model.get("capabilities", [])) for model in entries
+    ] if hybrid else []
+    mock_client.models.with_raw_response.list.return_value = _raw_response(
+        _json.dumps({"models": hybrid_entries, "data": entries}).encode()
+    )
+    provider = OpenAIProvider(
+        host="http://localhost:8642/v1",
+        api_key="none",
+        vision_model_ids=["output-only", "explicit-text", "declared", "text-capabilities"],
+    )
+
+    expected = {"architecture-input", "meta-input", "top-input", "declared"}
+    assert {model.id for model in await provider.get_available_models()} == expected
+    all_models = await provider.get_available_models(capability="all")
+    assert {model.id for model in all_models} == {entry["id"] for entry in entries}
+    assert {
+        model.id for model in all_models if {"vision", "multimodal"}.intersection(model.capabilities)
+    } == expected
+
+
+@pytest.mark.asyncio
+async def test_hybrid_model_list_keeps_data_only_ids_without_assuming_vision(mock_client):
+    body = _hybrid_body(
+        [{}, _ollama_entry("native", ["vision"])],
+        [{"id": "native"}, {"id": "chat"}, {"id": "extra", "input_modalities": ["image", "text"]}],
+    )
+    mock_client.models.with_raw_response.list.return_value = _raw_response(body)
+    provider = OpenAIProvider(host="http://localhost:8642/v1", api_key="none")
+    assert [model.id for model in await provider.get_available_models()] == ["native", "extra"]
+    assert [model.id for model in await provider.get_available_models(capability="text")] == ["native", "chat", "extra"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hybrid", [False, True])
+async def test_text_discovery_requires_compatible_advertised_modalities(mock_client, hybrid):
+    entries = [
+        {"id": "opaque"},
+        {"id": "formatter", "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]}},
+        {"id": "audio", "meta": {"input_modalities": ["audio"]}},
+        {"id": "embedding", "input_modalities": ["text"], "output_modalities": ["embedding"]},
+        {"id": "image-input", "input_modalities": ["image"], "capabilities": ["completion"]},
+        {"id": "mixed", "input_modalities": ["text", "image"], "output_modalities": ["audio", "text"]},
+    ]
+    native = [_ollama_entry("audio", ["completion"]), _ollama_entry("embedding", ["chat"])] if hybrid else []
+    mock_client.models.with_raw_response.list.return_value = _raw_response(_hybrid_body(native, entries))
+    provider = OpenAIProvider(host="http://localhost:8642/v1", api_key="none")
+    assert {m.id for m in await provider.get_available_models(capability="text")} == {"opaque", "formatter", "mixed"}
+    assert {m.id for m in await provider.get_available_models(capability="vision")} == {"mixed", "image-input"}

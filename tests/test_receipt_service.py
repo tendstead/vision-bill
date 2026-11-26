@@ -11,8 +11,8 @@ import pytest
 from fastapi import UploadFile
 
 from vision_bill.config import Settings
-from vision_bill.model.db.image import ImageRow
 from vision_bill.model.collection import Collection
+from vision_bill.model.db.image import ImageRow
 from vision_bill.model.db.receipt import ReceiptRow
 from vision_bill.model.receipt import LineItem, Receipt, TaxLine
 from vision_bill.model.search import ProductPurchase
@@ -25,6 +25,39 @@ RECEIPT_ID = UUID("00000000-0000-4000-8000-000000000001")
 OTHER_RECEIPT_ID = UUID("00000000-0000-4000-8000-000000000002")
 IMAGE_ID = UUID("00000000-0000-4000-8000-000000000003")
 OTHER_IMAGE_ID = UUID("00000000-0000-4000-8000-000000000004")
+
+
+@pytest.mark.parametrize("entry", ["path", "paths", "bytes", "all_models"])
+async def test_legacy_helpers_cannot_bypass_configured_ocr_on_failure(settings, tmp_path, entry):
+    from PIL import Image
+    from test_extraction_pipeline import formatter, sidecar
+
+    from vision_bill.config import OcrSettings
+
+    paths = [tmp_path / f"{i}.png" for i in range(2)]
+    for path in paths:
+        Image.new("RGB", (4, 5)).save(path)
+    llm = formatter()
+    ocr = sidecar(1 if entry == "paths" else 0)
+    service = ReceiptService(
+        settings.images, settings.pg, llm, ocr_provider=ocr,
+        ocr_settings=OcrSettings(enabled=True, allow_vision_fallback=True),
+    )
+    if entry == "all_models":
+        results = await service.extract_receipt_all_models(
+            UploadFile(file=io.BytesIO(paths[0].read_bytes()))
+        )
+        assert len(results) == 1
+        assert results[0].receipt is None and results[0].error == "ocr_page_failed"
+        assert llm.get_available_models.call_args_list[0].kwargs == {"capability": "text"}
+    else:
+        with pytest.raises(ValueError, match="ocr_page_failed"):
+            if entry == "bytes":
+                await service.analyse_receipt_from_model("fixture", paths[0].read_bytes())
+            else:
+                await service.analyse_receipt_from_path("fixture", paths if entry == "paths" else paths[0])
+    llm._client.chat.assert_not_awaited()
+    assert ocr.extract_page.await_count == (2 if entry == "paths" else 1)
 
 
 @pytest.fixture
@@ -337,6 +370,7 @@ def delegation_context(settings: Settings) -> Generator[DelegationContext, None,
         patch("vision_bill.service.receipt_service.ReceiptDB") as mock_db_class,
         patch("vision_bill.service.receipt_service.ImageDB") as mock_image_db_class,
         patch("vision_bill.service.receipt_service.UserDB") as mock_user_db_class,
+        patch("vision_bill.service.receipt_service.WorkflowDB") as mock_workflow_db_class,
     ):
         mock_db = mock_db_class.return_value
         mock_db.init_db = AsyncMock()
@@ -370,6 +404,8 @@ def delegation_context(settings: Settings) -> Generator[DelegationContext, None,
         mock_user_db.destroy_db = AsyncMock()
         mock_user_db.is_ready = True
 
+        mock_workflow_db_class.return_value.init_db = AsyncMock()
+        mock_workflow_db_class.return_value.destroy_db = AsyncMock()
         service = ReceiptService(settings.images, settings.pg, MagicMock(spec=LLMProvider))
         yield service, mock_db, mock_image_db
 
@@ -471,6 +507,30 @@ async def test_list_receipts_delegates(delegation_context: DelegationContext) ->
         can_see_all=False,
     )
     assert result is rows
+
+
+@pytest.mark.asyncio
+async def test_search_keeps_purchases_with_missing_prices_without_counting_them_in_summary(
+    delegation_context: DelegationContext,
+) -> None:
+    service, mock_db, _ = delegation_context
+    missing = ProductPurchase(
+        receipt_id=RECEIPT_ID, description="Eggs", merchant_name="Store A",
+        date=Date(2026, 3, 1), quantity=None, unit_price=None, currency="EUR",
+    )
+    known = missing.model_copy(update={
+        "receipt_id": OTHER_RECEIPT_ID, "quantity": 1, "unit_price": Decimal("2.49"),
+    })
+    mock_db.search_products.return_value = [missing, known]
+
+    result = await service.search_products("Eggs")
+    assert result.purchases == [missing, known]
+    assert result.latest_price == result.cheapest_price == result.average_price == Decimal("2.49")
+
+    mock_db.search_products.return_value = [missing]
+    result = await service.search_products("Eggs")
+    assert result.purchases == [missing]
+    assert result.latest_price is result.cheapest_price is result.average_price is None
 
 
 @pytest.mark.asyncio
@@ -662,7 +722,7 @@ async def test_verify_receipt_delegates(delegation_context: DelegationContext) -
 
     result = await service.verify_receipt(RECEIPT_ID)
 
-    mock_db.verify_receipt.assert_awaited_once_with(RECEIPT_ID, user_id=None, can_see_all=False)
+    mock_db.verify_receipt.assert_awaited_once_with(RECEIPT_ID, None, scope=None, user_id=None, can_see_all=False)
     assert result is row
 
 
@@ -695,7 +755,7 @@ async def test_create_tag_normalizes_and_reports_created(
 ) -> None:
     """create_tag trims/collapses whitespace and lower-cases before insert."""
     service, mock_db, _ = delegation_context
-    mock_db.create_tag.return_value = True
+    mock_db.create_tag.return_value = (normalized, True)
 
     name, created = await service.create_tag(raw)
 
@@ -708,11 +768,11 @@ async def test_create_tag_normalizes_and_reports_created(
 async def test_create_tag_existing_is_not_created(delegation_context: DelegationContext) -> None:
     """When the DB reports the tag already exists, created is False (no error)."""
     service, mock_db, _ = delegation_context
-    mock_db.create_tag.return_value = False
+    mock_db.create_tag.return_value = ("Coffee", False)
 
     name, created = await service.create_tag("coffee")
 
-    assert name == "coffee"
+    assert name == "Coffee"
     assert created is False
 
 
@@ -886,7 +946,7 @@ async def test_persist_receipt_captures_to_active_collection(delegation_context)
 
     assert result is not None
     coll_db.active_collection.assert_awaited_once_with(OWNER_ID, can_see_all=False)
-    coll_db.assign.assert_awaited_once_with(ACTIVE_COLLECTION_ID, RECEIPT_ID)
+    coll_db.assign.assert_awaited_once_with(ACTIVE_COLLECTION_ID, RECEIPT_ID, user_id=OWNER_ID)
 
 
 @pytest.mark.asyncio
@@ -913,3 +973,16 @@ async def test_persist_receipt_capture_failure_is_fail_safe(delegation_context) 
     row = await service.persist_receipt(_make_receipt(), user_id=OWNER_ID)  # must not raise
 
     assert row is not None
+
+
+async def test_workflow_provider_lifecycle_and_readiness(delegation_context):
+    service, _, _ = delegation_context
+    database = service.workflow_db
+    database.is_ready = False
+    assert service.workflow_ready is False
+    await service.init_db()
+    database.init_db.assert_awaited_once_with()
+    database.is_ready = True
+    assert service.workflow_ready is True
+    await service.destroy_db()
+    database.destroy_db.assert_awaited_once_with()

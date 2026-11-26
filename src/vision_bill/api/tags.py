@@ -1,4 +1,5 @@
 import logging
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
@@ -25,6 +26,30 @@ class TagCreate(BaseModel):
 async def list_categories() -> list[dict[str, str]]:
     """Stable codes for one spending category per line item."""
     return [{"code": code} for code in CATEGORY_CODES]
+
+
+class CategoryQuery(BaseModel):
+    merchant_name: str = Field(min_length=1)
+    merchant_display_name: str | None = Field(None, max_length=200)
+    merchant_address: str | None = None
+    description: str = Field(min_length=1)
+    receipt_id: UUID | None = None
+
+
+@router.post("/category-suggestion")
+async def editor_category_suggestion(
+    query: CategoryQuery,
+    receipt_service: ReceiptService = Depends(get_receipt_service),  # noqa: B008
+    current_user: User = Depends(get_current_user),  # noqa: B008
+) -> dict[str, str | None]:
+    if not receipt_service.db_ready:
+        raise HTTPException(status_code=503, detail="Database not available")
+    category = await receipt_service.get_category_suggestion(
+        current_user.id, query.merchant_name, query.description,
+        display_name=query.merchant_display_name, address=query.merchant_address,
+        receipt_id=query.receipt_id,
+    )
+    return {"category": category, "source": "history" if category else None}
 
 
 @router.get("/category-suggestion")

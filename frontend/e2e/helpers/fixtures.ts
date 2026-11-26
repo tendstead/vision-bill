@@ -1,3 +1,4 @@
+import { testEnvironment } from './environment';
 /**
  * Committed ground-truth fixtures for the e2e LLM stub.
  *
@@ -6,7 +7,7 @@
  * actually returns. No Node APIs: the frontend workspace has no @types/node.
  */
 
-const STUB_BASE = 'http://localhost:9123';
+const STUB_BASE = testEnvironment('VB_E2E_STUB_URL');
 
 export type FixtureName = 'a' | 'b' | 'c';
 

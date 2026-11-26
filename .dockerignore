@@ -30,3 +30,64 @@ frontend/.svelte-kit/**
 
 # The locally-synced SPA is rebuilt inside the image; never ship host copies.
 src/vision_bill/static/*
+
+# The app wheel includes only the neutral OCR package from the sidecar tree.
+!paddleocr-service/
+paddleocr-service/**
+!paddleocr-service/ocr_contract/
+paddleocr-service/ocr_contract/**
+!paddleocr-service/ocr_contract/*.py
+
+# Public files linked by the offline Settings manuals.
+!README.md
+!AGENTS.md
+!HAENDLERVERZEICHNIS.md
+!MULTI_IMAGE_RECEIPTS.md
+!OPENAI_COMPATIBLE.md
+!RELEASES.md
+!UPGRADE_AND_VERIFY.md
+!.github/
+.github/**
+!.github/workflows/
+!.github/workflows/distribution-inputs.yml
+!.github/workflows/distribution-release.yml
+!scripts/
+scripts/**
+!scripts/README.md
+!scripts/distribution.mjs
+!scripts/receipt_split_experiment.md
+!scripts/receipt_split_results.md
+!scripts/ocr_harness/
+!scripts/ocr_harness/README.md
+!scripts/ocr_harness/BENCHMARK_RESULTS.md
+!tests/
+tests/**
+!tests/e2e/
+!tests/e2e/data/
+!tests/e2e/data/README.md
+!paddleocr-service/first-run-fixtures/
+!paddleocr-service/first-run-fixtures/README.md
+!paddleocr-service/profile.json
+!paddleocr-service/release-bundle.schema.json
+!paddleocr-service/README.md
+!distribution/
+distribution/**
+!distribution/README.md
+!distribution/artifacts.schema.json
+frontend/static/vision-bill-operator-guides.zip
+
+# Operator-owned runtime data can contain unreadable bind mounts.
+server_data
+server_data/**
+
+# Local test output and runtime configuration are not build inputs.
+frontend/test-results
+frontend/test-results/**
+frontend/playwright-report
+frontend/playwright-report/**
+**/.env
+**/.env.*
+**/__pycache__
+**/__pycache__/**
+**/*.pyc
+**/*.pyo

@@ -1,0 +1,43 @@
+--- a/projects/miopen/src/sqlite_db.cpp
++++ b/projects/miopen/src/sqlite_db.cpp
+@@ -53,6 +53,13 @@
+ }
+ namespace miopen {
+ 
++// SQLite's SQLITE_TRANSIENT macro uses a C-style cast. The -1 destructor
++// sentinel tells SQLite to copy text and blob bytes before bind returns.
++static sqlite3_destructor_type TransientDestructor()
++{
++    return reinterpret_cast<sqlite3_destructor_type>(-1);
++}
++
+ class SQLite::impl
+ {
+     struct SQLiteCloser
+@@ -306,7 +313,7 @@
+         for(auto& kinder : vals)
+         {
+             auto rc = sqlite3_bind_text(
+-                ptrStmt.get(), cnt++, kinder.data(), kinder.size(), SQLITE_TRANSIENT); // NOLINT
++                ptrStmt.get(), cnt++, kinder.data(), kinder.size(), TransientDestructor()); // NOLINT
+             if(rc != SQLITE_OK)
+                 MIOPEN_THROW(miopenStatusInternalError, sql.ErrorMessage());
+         }
+@@ -361,7 +368,7 @@
+ int SQLite::Statement::BindText(int idx, const std::string& txt)
+ {
+     sqlite3_bind_text(
+-        pImpl->ptrStmt.get(), idx, txt.data(), txt.size(), SQLITE_TRANSIENT); // NOLINT
++        pImpl->ptrStmt.get(), idx, txt.data(), txt.size(), TransientDestructor()); // NOLINT
+     return 0;
+ }
+ 
+@@ -373,7 +380,7 @@
+ int SQLite::Statement::BindBlob(int idx, const std::vector<char>& blob)
+ {
+     sqlite3_bind_blob(
+-        pImpl->ptrStmt.get(), idx, blob.data(), blob.size(), SQLITE_TRANSIENT); // NOLINT
++        pImpl->ptrStmt.get(), idx, blob.data(), blob.size(), TransientDestructor()); // NOLINT
+     return 0;
+ }
+ 

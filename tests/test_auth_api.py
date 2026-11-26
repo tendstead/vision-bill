@@ -16,6 +16,7 @@ from vision_bill.config import Settings
 from vision_bill.provider.db import image_db as image_db_module
 from vision_bill.provider.db import receipt_db as receipt_db_module
 from vision_bill.provider.db import user_db as user_db_module
+from vision_bill.provider.db import workflow_db as workflow_db_module
 from vision_bill.provider.llm.base import LLMProvider
 from vision_bill.security import create_token, hash_password
 from vision_bill.security.models import User
@@ -91,6 +92,9 @@ def auth_context(
     monkeypatch.setattr(receipt_db_module, "asyncpg", fake_asyncpg)
     monkeypatch.setattr(image_db_module, "asyncpg", fake_asyncpg)
     monkeypatch.setattr(user_db_module, "asyncpg", fake_asyncpg)
+    monkeypatch.setattr(workflow_db_module, "asyncpg", fake_asyncpg)
+    monkeypatch.setattr(main_module.BenchmarkService, "start", AsyncMock())
+    monkeypatch.setattr(main_module.AnalysisScheduler, "start", AsyncMock())
 
     with TestClient(main_module.app) as client:
         yield AuthContext(client=client, conn=conn, provider=provider)
@@ -214,3 +218,133 @@ async def test_bootstrap_skips_without_credentials(settings: Settings) -> None:
     empty_db.create_user = AsyncMock()
     await main_module.bootstrap_admin(empty_db, settings)
     empty_db.create_user.assert_not_awaited()
+
+
+EXPECTED_ACTOR_HEADER = "X-Vision-Bill-Expected-User"
+OTHER_USER_ID = UUID("00000000-0000-4000-8000-000000000002")
+
+
+def _authenticate_as(ctx: AuthContext, settings: Settings, *, admin: bool = False) -> None:
+    ctx.conn.fetchrow = AsyncMock(return_value=_user_row(is_admin=admin))
+    ctx.client.cookies.set(
+        settings.auth.session_cookie_name,
+        create_token(USER_ID, settings.auth.session_max_age_seconds, settings.auth.secret_key),
+    )
+
+
+@pytest.mark.parametrize("admin", [False, True])
+def test_actor_intent_checks_cookie_before_private_reads(
+    auth_context: AuthContext, settings: Settings, monkeypatch: pytest.MonkeyPatch, admin: bool
+) -> None:
+    ctx = auth_context
+    settings.auth.admin_can_see_all = True
+    _authenticate_as(ctx, settings, admin=admin)
+    list_images = AsyncMock(return_value=[])
+    monkeypatch.setattr(main_module.app.state.receipt_service, "list_images", list_images)
+
+    stale = ctx.client.get("/api/v1/images", headers={EXPECTED_ACTOR_HEADER: str(OTHER_USER_ID)})
+
+    assert stale.status_code == 409
+    assert stale.json() == {"detail": "session_actor_changed"}
+    list_images.assert_not_awaited()
+
+    # Both deliberately unbound API clients and correctly bound requests use
+    # the cookie user's normal ownership scope, including the admin setting.
+    assert ctx.client.get("/api/v1/images").status_code == 200
+    assert ctx.client.get("/api/v1/images", headers={EXPECTED_ACTOR_HEADER: str(USER_ID)}).status_code == 200
+    assert list_images.await_count == 2
+    for call in list_images.await_args_list:
+        assert call.kwargs["user_id"] == USER_ID
+        assert call.kwargs["can_see_all"] is admin
+
+
+def test_actor_mismatch_blocks_upload_and_benchmark_mutations(
+    auth_context: AuthContext, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = auth_context
+    _authenticate_as(ctx, settings, admin=True)
+    stale = {EXPECTED_ACTOR_HEADER: str(OTHER_USER_ID)}
+    store = MagicMock(side_effect=AssertionError("upload reached file storage"))
+    monkeypatch.setattr(main_module.app.state.image_service, "store_original", store)
+    create = AsyncMock(side_effect=ValueError("run creation reached service"))
+    qualify = AsyncMock(side_effect=ValueError("reference qualification reached service"))
+    service = main_module.app.state.benchmark_service
+    monkeypatch.setattr(service, "create_run", create)
+    monkeypatch.setattr(service, "qualify_reference", qualify)
+
+    responses = [
+        ctx.client.post(
+            "/api/v1/images", headers=stale, files={"receipt": ("a.png", b"bad image", "image/png")}
+        ),
+        ctx.client.post("/api/v1/benchmarks", headers=stale, json={"model_ids": ["stub"]}),
+        ctx.client.post(
+            f"/api/v1/benchmarks/references/{USER_ID}",
+            headers=stale,
+            json={"expected_review_revision": 1, "expected_document_sha256": "a" * 64},
+        ),
+    ]
+    for response in responses:
+        assert response.status_code == 409
+        assert response.json() == {"detail": "session_actor_changed"}
+    assert (store.call_count, create.await_count, qualify.await_count) == (0, 0, 0)
+
+
+@pytest.mark.parametrize(
+    ("header", "query", "status"),
+    [
+        (None, str(OTHER_USER_ID), 409),
+        (str(USER_ID), str(OTHER_USER_ID), 400),
+        ("not-a-uuid", str(USER_ID), 400),
+        (str(USER_ID), "", 400),
+        (f"{USER_ID},{USER_ID}", None, 400),
+        (None, f"{USER_ID}&vb_expected_user={USER_ID}", 400),
+    ],
+)
+def test_invalid_or_stale_media_actor_is_rejected_before_image_lookup(
+    auth_context: AuthContext, settings: Settings, monkeypatch: pytest.MonkeyPatch,
+    header: str | None, query: str | None, status: int
+) -> None:
+    ctx = auth_context
+    _authenticate_as(ctx, settings, admin=True)
+    lookup = AsyncMock(return_value=None)
+    monkeypatch.setattr(main_module.app.state.receipt_service, "get_image_by_id", lookup)
+
+    response = ctx.client.get(
+        f"/api/v1/images/{USER_ID}/file" + (f"?vb_expected_user={query}" if query is not None else ""),
+        headers={EXPECTED_ACTOR_HEADER: header} if header is not None else {},
+    )
+
+    assert response.status_code == status
+    if status == 409:
+        assert response.json() == {"detail": "session_actor_changed"}
+    lookup.assert_not_awaited()
+
+
+def test_stale_browser_logout_cannot_clear_the_successor_cookie(
+    auth_context: AuthContext, settings: Settings
+) -> None:
+    successor = UUID("00000000-0000-4000-8000-000000000002")
+    token = create_token(successor, settings.auth.session_max_age_seconds, settings.auth.secret_key)
+    auth_context.client.cookies.set(settings.auth.session_cookie_name, token)
+    response = auth_context.client.post(
+        f"{AUTH_URL}/logout", headers={"X-Vision-Bill-Expected-User": str(USER_ID)}
+    )
+    assert response.status_code == 409
+    assert response.json() == {"detail": "session_actor_changed"}
+    assert "set-cookie" not in response.headers
+    assert auth_context.client.cookies.get(settings.auth.session_cookie_name) == token
+
+
+@pytest.mark.parametrize("max_age", [300, -300])
+def test_expected_actor_logout_clears_matching_or_expired_cookie(
+    auth_context: AuthContext, settings: Settings, max_age: int
+) -> None:
+    token = create_token(USER_ID, max_age, settings.auth.secret_key)
+    auth_context.client.cookies.set(
+        settings.auth.session_cookie_name, token, domain="testserver.local", path="/"
+    )
+    response = auth_context.client.post(
+        f"{AUTH_URL}/logout", headers={"X-Vision-Bill-Expected-User": str(USER_ID)}
+    )
+    assert response.status_code == 200
+    assert settings.auth.session_cookie_name not in auth_context.client.cookies

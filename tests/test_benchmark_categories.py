@@ -1,8 +1,16 @@
+from copy import deepcopy
 from datetime import date
 from decimal import Decimal
 
+from vision_bill.model.extraction import EXTRACTION_SCHEMA_VERSION, OBSERVATION_PROMPT_VERSION
 from vision_bill.model.receipt import Receipt
-from vision_bill.service.benchmark_scoring import PROMPT_VERSION, SCORING_VERSION, score_receipts
+from vision_bill.service.benchmark_scoring import (
+    PROMPT_VERSION,
+    SCORING_VERSION,
+    dataset_fingerprint,
+    score_receipts,
+    validation_schema_sha256,
+)
 
 
 def _receipt(items: list[tuple[str, str]]) -> Receipt:
@@ -63,6 +71,27 @@ def test_category_component_is_omitted_without_expected_labels() -> None:
     assert "spending_categories" not in scores
 
 
-def test_prompt_and_scoring_versions_reflect_category_changes() -> None:
-    assert PROMPT_VERSION == "4"
+def test_logical_item_and_tax_contract_versions() -> None:
+    assert PROMPT_VERSION == "7"
+    assert OBSERVATION_PROMPT_VERSION == "6"
+    assert EXTRACTION_SCHEMA_VERSION == "3"
     assert SCORING_VERSION == "2"
+
+
+def test_display_name_does_not_change_historical_dataset_fingerprint() -> None:
+    printed = _receipt([("Milk", "milk")])
+    # Digest of the version-5 fixture's original JSON before display names were introduced.
+    historical = "e22530828eeaff01baee70ef8b7b83336e674c5eda0c346229aa0ab6c2fdc997"
+    assert dataset_fingerprint([printed]) == historical
+    assert dataset_fingerprint([printed.model_copy(update={"merchant_display_name": "HIT"})]) == historical
+    assert dataset_fingerprint([printed.model_copy(update={"merchant_name": "HIT"})]) != historical
+
+
+def test_benchmark_schema_hash_tracks_printed_merchant_contract_only(monkeypatch) -> None:
+    original = validation_schema_sha256()
+    schema = Receipt.model_json_schema()
+    monkeypatch.setattr(Receipt, "model_json_schema", lambda: deepcopy(schema))
+    schema["properties"]["merchant_display_name"]["description"] = "Revised display-only guidance"
+    assert validation_schema_sha256() == original
+    schema["properties"]["merchant_name"]["description"] = "Changed printed receipt requirement"
+    assert validation_schema_sha256() != original

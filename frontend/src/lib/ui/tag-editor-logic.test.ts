@@ -88,3 +88,21 @@ describe('moveActiveIndex', () => {
 		expect(moveActiveIndex(0, 0, -1)).toBe(-1);
 	});
 });
+
+it('finds German synonyms alongside existing custom tags and orders choices by the visible label', () => {
+	const options = ['coffee', 'carrots', 'Möhren', 'sauces', 'alcohol'];
+	expect(filterTags(options, '', 'de')).toEqual([
+		'alcohol',
+		'coffee',
+		'carrots',
+		'Möhren',
+		'sauces'
+	]);
+	expect(filterTags(options, 'Möhren', 'de')).toEqual(['Möhren', 'carrots']);
+	expect(filterTags(options, 'Moehren', 'de')).toContain('carrots');
+	expect(filterTags(options, 'Remoulade', 'de')).toEqual(['sauces']);
+	expect(filterTags(options, 'Möhren', 'en')).toEqual(['Möhren']);
+	expect(buildTagRows(['carrots'], 'Möhren', [], 'de')).toEqual([
+		{ kind: 'tag', tag: 'carrots', selected: false, optionIndex: 0 }
+	]);
+});

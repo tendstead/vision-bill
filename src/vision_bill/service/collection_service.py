@@ -121,14 +121,20 @@ class CollectionService:
         )
         if receipt is None:
             raise NotFoundError("Receipt not found")
-        await self._db.assign(collection_id, receipt_id)
+        try:
+            await self._db.assign(collection_id, receipt_id, user_id=user_id, can_see_all=can_see_all)
+        except ValueError as exc:
+            raise NotFoundError(str(exc)) from exc
 
     async def unassign(
         self, collection_id: UUID, receipt_id: UUID, user_id: UUID | None, can_see_all: bool
     ) -> bool:
         if not await self._db.exists(collection_id, user_id, can_see_all):
             raise NotFoundError("Collection not found")
-        return await self._db.unassign(collection_id, receipt_id)
+        try:
+            return await self._db.unassign(collection_id, receipt_id, user_id=user_id, can_see_all=can_see_all)
+        except ValueError as exc:
+            raise NotFoundError(str(exc)) from exc
 
     async def collection_ids_for_receipt(self, receipt_id: UUID) -> list[UUID]:
         return await self._db.collection_ids_for_receipt(receipt_id)
@@ -149,4 +155,7 @@ class CollectionService:
         for collection_id in collection_ids:
             if not await self._db.exists(collection_id, user_id, can_see_all):
                 raise NotFoundError("Collection not found")
-        await self._db.set_receipt_collections(receipt_id, collection_ids)
+        try:
+            await self._db.set_receipt_collections(receipt_id, collection_ids, user_id=user_id, can_see_all=can_see_all)
+        except ValueError as exc:
+            raise NotFoundError(str(exc)) from exc

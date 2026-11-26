@@ -36,7 +36,7 @@ test.describe('adversarial inputs (browser-level)', () => {
 
 		await page.goto('/receipts');
 		await expect(page.getByText(payload)).toBeVisible();
-		await page.locator('li > [role="link"]').first().click();
+		await page.getByRole('link').filter({ hasText: payload }).click();
 		await expect(page.getByRole('heading', { name: payload })).toBeVisible();
 	});
 

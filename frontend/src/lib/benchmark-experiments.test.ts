@@ -13,15 +13,16 @@ describe('benchmark experiment options', () => {
 		expect(request.temperature).toBe(0);
 		expect(request.think).toBe(false);
 	});
-	it('keeps classification and OCR fallback independently selectable', () => {
-		const request = experimentRequest({
+	it('keeps classification selectable without granting fallback from legacy state', () => {
+		const legacySettings = {
 			...defaultExperiment(),
-			pipeline: 'ocr',
+			pipeline: 'ocr' as const,
 			includeClassification: false,
 			allowFallback: true
-		});
+		};
+		const request = experimentRequest(legacySettings);
 		expect(request.pipeline).toBe('ocr');
 		expect(request.include_classification).toBe(false);
-		expect(request.allow_ocr_fallback).toBe(true);
+		expect(request.allow_ocr_fallback).toBe(false);
 	});
 });

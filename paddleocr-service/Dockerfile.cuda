@@ -1,0 +1,60 @@
+# syntax=docker/dockerfile:1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+FROM scratch AS cuda-wheel
+FROM scratch AS cuda-locks
+COPY requirements.cuda.* /
+FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS apt-ca
+FROM ubuntu:24.04@sha256:2198e4c65076e9cb0b3d695219df667c0e3b0072da64ca3c2648aca17dcecaf5 AS runtime-base
+# Bootstrap HTTPS until Ubuntu's own ca-certificates package is installed.
+COPY --from=apt-ca /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+RUN rm -f /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources \
+ && echo 'deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] https://snapshot.ubuntu.com/ubuntu/20261101T000000Z noble main universe' > /etc/apt/sources.list \
+ && echo 'deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] https://snapshot.ubuntu.com/ubuntu/20261101T000000Z noble-updates main universe' >> /etc/apt/sources.list \
+ && echo 'deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] https://snapshot.ubuntu.com/ubuntu/20261101T000000Z noble-security main universe' >> /etc/apt/sources.list \
+ && apt-get update --error-on=any \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    ca-certificates python3.12 python3.12-venv libgl1 libglib2.0-0 libgomp1 libgfortran5 libnuma1 libstdc++6 \
+ && mkdir -p /opt/ocr/build-evidence \
+ && dpkg-query -W > /opt/ocr/build-evidence/os-packages.txt \
+ && rm -rf /var/lib/apt/lists/*
+RUN python3.12 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+FROM runtime-base AS cuda-builder
+ENV SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PADDLEX=3.7.2 \
+    SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PADDLEOCR=3.7.0
+COPY requirements.cuda-build.lock /opt/locks/requirements.cuda-build.lock
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip install --require-hashes --no-deps --only-binary=:all: -r /opt/locks/requirements.cuda-build.lock
+COPY requirements.runtime.lock /opt/locks/
+COPY --from=cuda-locks /requirements.cuda.* /opt/locks/
+COPY build/resolve_cuda.py /opt/ocr/build/resolve_cuda.py
+ARG OCR_CUDA_CHANNEL=cu129
+RUN --mount=type=bind,from=cuda-wheel,target=/wheel-input \
+    --mount=type=cache,target=/root/.cache/pip \
+    python /opt/ocr/build/resolve_cuda.py --check /opt/locks/requirements.cuda.lock --channel "$OCR_CUDA_CHANNEL" \
+      --install-lock /wheel-input /tmp/requirements.install \
+ && python -m pip install --root /runtime --ignore-installed --require-hashes --no-deps --no-build-isolation -r /tmp/requirements.install \
+ && rm /tmp/requirements.install
+
+# Stage the locked runtime under its final prefix, including scripts and source metadata.
+FROM runtime-base
+COPY --from=cuda-builder /runtime/opt/venv/ /opt/venv/
+COPY --from=cuda-builder /opt/locks/ /opt/locks/
+COPY --from=cuda-builder /opt/ocr/build/resolve_cuda.py /opt/ocr/build/resolve_cuda.py
+RUN --network=none python -m pip check \
+ && python -c "import cv2, numpy, pillow_heif; from PIL import Image"
+WORKDIR /app
+COPY ocr_service/ /app/ocr_service/
+COPY ocr_contract/ /app/ocr_contract/
+COPY profile.json server.py /app/
+COPY runtime-lock.json /opt/ocr/runtime-lock.json
+ENV OMP_NUM_THREADS=4 OCR_PORT=8082 \
+    PADDLE_PDX_DISABLE_DEVICE_FALLBACK=1 \
+    PADDLE_PDX_CACHE_HOME=/var/cache/paddlex \
+    OCR_STATE_DIR=/var/lib/ocr \
+    OCR_SOURCE_LOCK_PATH=/opt/ocr/runtime-lock.json \
+    OCR_INSTALLATION_LOCK_PATH=/coord/installation.lock \
+    OCR_STARTUP_TIMEOUT_SECONDS=600
+HEALTHCHECK --interval=30s --timeout=10s --start-period=600s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8082/health')"
+CMD ["python", "-m", "ocr_service.entrypoint"]

@@ -12,6 +12,24 @@
 # keeps this safe when orchestrated.
 set -e
 
-uv run alembic upgrade head
+# Prepared-install commands must work before any database or settings exist.
+case "${1:-}" in
+    init)
+        shift
+        exec python -m vision_bill.distribution.bootstrap "$@"
+        ;;
+    provision-model)
+        echo "Bundled model provisioning was removed; configure an external Ollama or OpenAI endpoint and explicit model in runtime.env." >&2
+        exit 64
+        ;;
+esac
+
+if [ "${VISION_BILL_MANAGED_OCR:-}" = "true" ]; then
+    python -m vision_bill.distribution.bootstrap --check-managed-ocr
+fi
+
+# Dependencies are installed during the image build. Startup must not resolve
+# or rebuild packages before running the migrations from that locked environment.
+alembic upgrade head
 
 exec "$@"

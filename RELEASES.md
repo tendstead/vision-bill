@@ -1,6 +1,42 @@
-# Manual releases to GHCR
+# Release procedures
 
-After merging this workflow, open **Actions → Release → Run workflow**, select the
+For schema-v2 prebuilt installation variants, input staging, physical
+qualification and assets-last publication, use the
+[distribution guide](distribution/README.md). The variants are `app`, `ocr-cuda`,
+`ocr-rocm`, `app-ocr-cuda` and `app-ocr-rocm`. App installations use an external
+LLM endpoint and an explicit installed model. This update verifies the software
+gates locally. Public distribution and physical accelerator qualification require
+a separate release run. The app-image workflow below publishes the app image.
+
+## Unreleased package
+
+This package includes durable asynchronous uploads and retries, review of original
+receipt evidence, exact monetary values, and recovery of completed observations.
+Benchmarks offer a direct image run, an OCR-plus-LLM run, and an opt-in comparison
+using the same frozen references. Admins can select existing receipts or upload
+independent photo cases. Receipt-only runs use scoring version 4. Runs containing
+independent cases use version 5 across the dataset and score confirmed observations.
+Migrations 0022 and 0023 preserve existing runs and add private cases and paired
+run identity. Migration 0024 extends the product tag vocabulary for new and
+existing installations. The English and German interfaces display localized
+built-in labels and save the same tag identifiers. Migration 0025 adds an
+editable merchant display name and merchant choices learned on explicit receipt
+saves within each account. Back up the database and
+image store together before upgrading.
+The update also includes account and view isolation. The source launcher starts
+the app and database first. Dedicated OCR activation starts the local GPU build
+and verifies the three pinned models. The first prediction uses a submitted receipt.
+App-only source upgrades can reuse a verified native image. AMD Dedicated OCR is
+experimental and the first local build may take hours.
+[Source activation and upgrades](paddleocr-service/README.md#dedicated-ocr-from-source)
+
+Pending uploads bind their formatter endpoint, and migrated
+unverified receipts can be reviewed using their current findings. Historical split/CPU results retain
+their original meaning. See [upgrade prerequisites and accepted evidence](UPGRADE_AND_VERIFY.md).
+No version/tag/release or deployment has been authorized by this documentation
+update. In particular, publishing the app image does not qualify CUDA/ROCm OCR.
+
+After maintainers deliberately adopt this workflow on the default branch, open **Actions → Release → Run workflow**, select the
 repository's default branch, and choose `patch`, `minor`, or `major`. Merging a PR
 or adding a label never publishes a release. Only users with repository write
 access can dispatch workflows; protect the default branch and workflow changes

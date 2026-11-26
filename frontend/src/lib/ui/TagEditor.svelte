@@ -1,16 +1,25 @@
 <script lang="ts">
-	import { t } from '$lib/i18n';
+	import { onDestroy } from 'svelte';
+	import { locale, t } from '$lib/i18n';
+	import {
+		collidingProductTagLabels,
+		hasCustomTagCollision,
+		productTagLabel
+	} from '$lib/i18n/product-tag-label';
 	import { api } from '$lib/api/client';
+	import { currentSessionGeneration } from '$lib/session-lifetime';
 	import { queryClient } from '$lib/query/client';
 	import { queryKeys } from '$lib/query/keys';
 	import { snackbar } from '$lib/ui/snackbar.svelte';
 	import Icon from './Icon.svelte';
-	import { buildTagRows, moveActiveIndex, normalizeTag, type TagRow } from './tag-editor-logic';
+	import { buildTagRows, moveActiveIndex, type TagRow } from './tag-editor-logic';
 
 	let {
 		value,
 		tagOptions,
-		id
+		id,
+		onPendingChange,
+		disabled = false
 	}: {
 		/** The line item's tags (standard + suggested). Mutated in place. */
 		value: string[];
@@ -18,6 +27,8 @@
 		tagOptions: string[];
 		/** Unique prefix used to build stable input ids. */
 		id: string;
+		onPendingChange?: (pending: boolean) => void;
+		disabled?: boolean;
 	} = $props();
 
 	const labelClass = 'mb-1 block text-xs font-medium text-on-surface-variant';
@@ -26,6 +37,38 @@
 	let open = $state(false);
 	let query = $state('');
 	let creating = $state(false);
+	$effect(() => {
+		onPendingChange?.(creating);
+	});
+	let alive = true;
+	onDestroy(() => {
+		alive = false;
+		onPendingChange?.(false);
+	});
+	let activeOwner: { value: string[]; id: string } | null = null;
+	$effect(() => {
+		if (activeOwner?.value === value && activeOwner.id === id) return;
+		const owner = { value, id };
+		activeOwner = owner;
+		creating = false;
+		query = '';
+		open = false;
+	});
+	function ownerLifetime() {
+		const owner = activeOwner,
+			original = value,
+			ownerId = id,
+			generation = currentSessionGeneration();
+		return {
+			samePrincipal: () => generation === currentSessionGeneration(),
+			current: () =>
+				alive &&
+				activeOwner === owner &&
+				value === original &&
+				id === ownerId &&
+				generation === currentSessionGeneration()
+		};
+	}
 	let wasOpen = $state(false);
 	/** Keyboard highlight offset within `selectableRows` (−1 = nothing). */
 	let activeOffset = $state(-1);
@@ -53,6 +96,15 @@
 		return value.filter((tag) => !isStandard(tag));
 	});
 
+	let collisions = $derived(
+		collidingProductTagLabels([...tagOptions, ...standardTags, ...suggestedTags], $locale)
+	);
+	function tagName(tag: string) {
+		return hasCustomTagCollision(tag, collisions)
+			? $t('editor.customTagName', { values: { tag } })
+			: productTagLabel(tag, $locale);
+	}
+
 	/** Replace the standard tags while preserving any suggested ones. */
 	function setStandardTags(nextStandard: string[]): void {
 		const next = [...nextStandard, ...suggestedTags];
@@ -66,6 +118,7 @@
 	}
 
 	function toggleStandardTag(tag: string): void {
+		if (disabled) return;
 		const next = hasStandardTag(tag)
 			? standardTags.filter((entry) => entry.toLowerCase() !== tag.toLowerCase())
 			: [...standardTags, tag];
@@ -73,10 +126,12 @@
 	}
 
 	function removeStandardTag(tag: string): void {
+		if (disabled) return;
 		setStandardTags(standardTags.filter((entry) => entry.toLowerCase() !== tag.toLowerCase()));
 	}
 
 	function removeSuggested(tag: string): void {
+		if (disabled) return;
 		const next = value.filter((entry) => entry !== tag);
 		value.length = 0;
 		value.push(...next);
@@ -89,35 +144,38 @@
 
 	/** Promote a suggested (non-vocabulary) tag into the standard vocabulary. */
 	async function keepSuggested(tag: string): Promise<void> {
-		if (creating) return;
+		if (creating || disabled) return;
+		const origin = ownerLifetime();
 		creating = true;
 		try {
 			await api.createTag(tag);
-			await refreshVocabulary();
+			if (origin.samePrincipal()) await refreshVocabulary();
 		} catch {
-			snackbar.notify('error', $t('editor.tagsCreateFailed'));
+			if (origin.current()) snackbar.notify('error', $t('editor.tagsCreateFailed'));
 		} finally {
-			creating = false;
+			if (origin.current()) creating = false;
 		}
 	}
 
 	/** Create the tag currently typed into the search and attach it to the line. */
-	async function createFromQuery(): Promise<void> {
-		const name = normalizeTag(query);
-		if (name === '' || creating) return;
+	async function createTag(name: string): Promise<void> {
+		if (name === '' || creating || disabled) return;
+		const origin = ownerLifetime();
 		creating = true;
 		try {
 			const { name: created } = await api.createTag(name);
-			if (!value.includes(created)) {
-				value.push(created);
-				revision++;
+			if (origin.current()) {
+				if (!value.some((tag) => tag.toLowerCase() === created.toLowerCase())) {
+					value.push(created);
+					revision++;
+				}
+				query = '';
 			}
-			query = '';
-			await refreshVocabulary();
+			if (origin.samePrincipal()) await refreshVocabulary();
 		} catch {
-			snackbar.notify('error', $t('editor.tagsCreateFailed'));
+			if (origin.current()) snackbar.notify('error', $t('editor.tagsCreateFailed'));
 		} finally {
-			creating = false;
+			if (origin.current()) creating = false;
 		}
 	}
 
@@ -126,23 +184,24 @@
 	// derived here would be re-evaluated by the reactivity scheduler between
 	// two synchronous key events, clobbering the highlight.
 	function computeSelectableRows(): Array<Extract<TagRow, { kind: 'tag' | 'create' }>> {
-		return buildTagRows(tagOptions, query, standardTags).filter(
+		return buildTagRows(tagOptions, query, standardTags, $locale).filter(
 			(row): row is Extract<TagRow, { kind: 'tag' | 'create' }> =>
 				row.kind === 'tag' || row.kind === 'create'
 		);
 	}
 
-	let rows = $derived(buildTagRows(tagOptions, query, standardTags));
+	let rows = $derived(buildTagRows(tagOptions, query, standardTags, $locale));
 
 	function activateRow(row: Extract<TagRow, { kind: 'tag' | 'create' }>): void {
 		if (row.kind === 'tag') {
 			toggleStandardTag(row.tag);
 		} else {
-			void createFromQuery();
+			void createTag(row.tag);
 		}
 	}
 
 	function openDropdown(): void {
+		if (disabled) return;
 		if (open) return;
 		open = true;
 		// Highlight the first row immediately (no-op when the list is empty).
@@ -180,6 +239,7 @@
 	});
 
 	function onKeydown(event: KeyboardEvent): void {
+		if (disabled) return;
 		const selectable = computeSelectableRows();
 		switch (event.key) {
 			case 'ArrowDown':
@@ -228,10 +288,12 @@
 <div>
 	<span id="{id}-tags-label" class={labelClass}>{$t('editor.tags')}</span>
 	<div
+		{id}
 		bind:this={boxEl}
 		class="relative"
 		role="button"
-		tabindex="0"
+		aria-disabled={disabled}
+		tabindex={disabled ? -1 : 0}
 		aria-label={$t('editor.tags')}
 		onclick={openDropdown}
 		onkeydown={(event) => {
@@ -248,11 +310,11 @@
 				<span
 					class="inline-flex items-center gap-1 rounded-full bg-primary-container py-1 pl-3 pr-1 text-sm font-medium text-on-primary-container"
 				>
-					{tag}
+					{tagName(tag)}
 					<button
 						type="button"
 						class="flex size-5 items-center justify-center rounded-full text-xs hover:bg-on-primary-container/10 max-sm:min-h-11 max-sm:min-w-11"
-						aria-label={$t('editor.tagsRemove', { values: { tag } })}
+						aria-label={$t('editor.tagsRemove', { values: { tag: tagName(tag) } })}
 						onclick={(event) => {
 							event.stopPropagation();
 							removeStandardTag(tag);
@@ -267,16 +329,16 @@
 					class="inline-flex items-center gap-1.5 rounded-full border border-warning/50 bg-warning-container py-1 pl-3 pr-1 text-sm font-medium text-on-warning-container"
 				>
 					<span
-						class="rounded-full bg-warning px-1.5 py-0.5 text-[0.65rem] font-semibold uppercase tracking-wide text-on-warning"
+						class="rounded-full bg-warning-action px-1.5 py-0.5 text-[0.65rem] font-semibold uppercase tracking-wide text-on-warning"
 					>
 						{$t('editor.tagsSuggestedBadge')}
 					</span>
-					{tag}
+					{tagName(tag)}
 					<button
 						type="button"
 						class="flex size-5 items-center justify-center rounded-full text-xs font-bold hover:bg-on-warning-container/10 max-sm:min-h-11 max-sm:min-w-11"
-						title={$t('editor.tagsKeep', { values: { tag } })}
-						aria-label={$t('editor.tagsKeep', { values: { tag } })}
+						title={$t('editor.tagsKeep', { values: { tag: tagName(tag) } })}
+						aria-label={$t('editor.tagsKeep', { values: { tag: tagName(tag) } })}
 						disabled={creating}
 						onclick={(event) => {
 							event.stopPropagation();
@@ -288,8 +350,8 @@
 					<button
 						type="button"
 						class="flex size-5 items-center justify-center rounded-full text-xs hover:bg-error-container hover:text-on-error-container max-sm:min-h-11 max-sm:min-w-11"
-						title={$t('editor.tagsRemove', { values: { tag } })}
-						aria-label={$t('editor.tagsRemove', { values: { tag } })}
+						title={$t('editor.tagsRemove', { values: { tag: tagName(tag) } })}
+						aria-label={$t('editor.tagsRemove', { values: { tag: tagName(tag) } })}
 						disabled={creating}
 						onclick={(event) => {
 							event.stopPropagation();
@@ -360,7 +422,7 @@
 									}
 								}}
 							>
-								<span>{row.tag}</span>
+								<span>{tagName(row.tag)}</span>
 								{#if row.selected}
 									<span class="text-primary"><Icon icon="check" /></span>
 								{/if}
@@ -387,7 +449,7 @@
 								}}
 							>
 								<Icon icon="plus" />
-								{$t('editor.tagsCreate', { values: { tag: row.tag } })}
+								{$t('editor.tagsCreate', { values: { tag: tagName(row.tag) } })}
 							</li>
 						{:else if row.kind === 'nomatch'}
 							<li class="px-2.5 py-2 text-xs text-on-surface-variant">

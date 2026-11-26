@@ -47,7 +47,7 @@ class UserDB:
             return
 
         dsn = self._settings.pg_dsn
-        logger.info("Creating asyncpg user connection pool (dsn=%s…)", dsn[:30])
+        logger.info("Creating asyncpg user connection pool")
         self._pool = await asyncpg.create_pool(dsn=dsn)
 
     async def destroy_db(self) -> None:
@@ -87,7 +87,7 @@ class UserDB:
         self, username: str, hashed_password: str, is_admin: bool = False
     ) -> User:
         """Insert a new user and return it."""
-        logger.info("Creating user '%s' (is_admin=%s)", username, is_admin)
+        logger.debug("Creating user is_admin=%s", is_admin)
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(CREATE_USER_SQL, username, hashed_password, is_admin)
         return self._user_from_record(row)

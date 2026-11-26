@@ -8,7 +8,12 @@ export type Locale = (typeof LOCALES)[number];
 const STORAGE_KEY = 'vb-lang';
 
 function detectLocale(): Locale {
-	const stored = localStorage.getItem(STORAGE_KEY);
+	let stored: string | null = null;
+	try {
+		stored = localStorage.getItem(STORAGE_KEY);
+	} catch {
+		/* Browser language remains available without storage. */
+	}
 	if (stored === 'en' || stored === 'de') {
 		return stored;
 	}
@@ -18,13 +23,20 @@ function detectLocale(): Locale {
 addMessages('en', en);
 addMessages('de', de);
 
+const initialLocale = detectLocale();
+document.documentElement.lang = initialLocale;
+
 init({
-	initialLocale: detectLocale(),
+	initialLocale,
 	fallbackLocale: 'en'
 });
 
 export function setLocale(code: Locale): void {
-	localStorage.setItem(STORAGE_KEY, code);
+	try {
+		localStorage.setItem(STORAGE_KEY, code);
+	} catch {
+		/* Keep session-only language changes usable. */
+	}
 	document.documentElement.lang = code;
 	void locale.set(code);
 }

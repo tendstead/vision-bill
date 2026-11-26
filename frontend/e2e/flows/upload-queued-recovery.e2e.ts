@@ -19,7 +19,11 @@ test.describe('queued upload with provider down', () => {
 			buffer: fixture.bytes
 		});
 		await page.getByRole('button', { name: 'Upload' }).click();
-		await expect(page.locator('p.font-medium.text-on-secondary-container')).toBeVisible();
+		await expect(page).toHaveURL(/\/upload\?job=[a-f0-9-]+/);
+		const id = new URL(page.url()).searchParams.get('job');
+		const accepted = await (await context.request.get(`/api/v1/images/${id}`)).json();
+		expect(accepted.status).toBe('pending');
+		expect(accepted.attempt_count).toBe(0);
 
 		// The header queue badge appears after a navigation (refetch).
 		await page.goto('/');

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { createQuery } from '@tanstack/svelte-query';
+	import { sessionViewGuard } from '$lib/session-view';
 	import { resolve } from '$app/paths';
 	import { t, translate } from '$lib/i18n';
 	import { api, ApiError } from '$lib/api/client';
@@ -8,12 +9,14 @@
 	import { queryClient } from '$lib/query/client';
 	import { formatMoney } from '$lib/ui/money';
 	import { formatRelativeTime } from '$lib/ui/time';
-	import { goto } from '$app/navigation';
+	import { onDestroy } from 'svelte';
 	import { snackbar } from '$lib/ui/snackbar.svelte';
 	import ConfirmDialog from '$lib/ui/ConfirmDialog.svelte';
 	import Icon from '$lib/ui/Icon.svelte';
 	import ReceiptImage from '$lib/ui/ReceiptImage.svelte';
 	import type { ReceiptRow, ReceiptStatus } from '$lib/types';
+
+	const isCurrentView = sessionViewGuard();
 
 	type StatusFilter = '' | ReceiptStatus;
 
@@ -30,18 +33,23 @@
 		timer = setTimeout(() => (debounced = search), 300);
 	}
 
+	onDestroy(() => clearTimeout(timer));
+
 	async function removeReceipt() {
-		if (!confirmDelete || deleting) {
+		if (!isCurrentView() || !confirmDelete || deleting) {
 			return;
 		}
 		deleting = true;
 		try {
 			await api.deleteReceipt(confirmDelete.id);
+			if (!isCurrentView()) return;
 			snackbar.notify('success', translate('receipt.deleted'));
 			confirmDelete = null;
 			await queryClient.invalidateQueries({ queryKey: ['receipts'] });
+			if (!isCurrentView()) return;
 			await queryClient.invalidateQueries({ queryKey: ['images'] });
 		} catch (error) {
+			if (!isCurrentView()) return;
 			snackbar.notify(
 				'error',
 				error instanceof ApiError && error.status === 409
@@ -49,7 +57,7 @@
 					: translate('receipt.deleteFailed')
 			);
 		} finally {
-			deleting = false;
+			if (isCurrentView()) deleting = false;
 		}
 	}
 
@@ -130,47 +138,48 @@
 		<ul class="mt-4 space-y-3">
 			{#each list.data as receipt (receipt.id)}
 				<li class="flex items-center gap-3">
-					<div
-						class="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-xl border border-outline-variant bg-surface-container-low p-4 transition-colors hover:border-primary/50"
-						role="link"
-						tabindex="0"
-						onclick={() => goto(resolve(`/receipts/${receipt.id}`))}
-						onkeydown={(e) => {
-							if (e.key === 'Enter' || e.key === ' ') {
-								e.preventDefault();
-								goto(resolve(`/receipts/${receipt.id}`));
-							}
-						}}
+					<ReceiptImage
+						imageId={receipt.image_id}
+						thumbnailPath={receipt.thumbnail_path ?? null}
+						alt={receipt.merchant_display_name ||
+							receipt.merchant_name ||
+							$t('receipts.unknownVendor')}
+						previewLabel={`${$t('receipt.viewFullImage')}: ${receipt.merchant_display_name || receipt.merchant_name || $t('receipts.unknownVendor')}`}
+						class="size-12 shrink-0 rounded-lg object-cover"
+					/>
+					<a
+						href={resolve(`/receipts/${receipt.id}`)}
+						class="grid min-w-0 flex-1 grid-cols-1 items-center gap-3 rounded-xl border border-outline-variant bg-surface-container-low p-4 transition-colors hover:border-primary/50 sm:grid-cols-[minmax(0,1fr)_auto]"
 					>
-						<ReceiptImage
-							imageId={receipt.image_id}
-							thumbnailPath={receipt.thumbnail_path ?? null}
-							alt={receipt.merchant_name || $t('receipts.unknownVendor')}
-							class="size-12 shrink-0 rounded-lg object-cover"
-						/>
 						<div class="min-w-0 flex-1">
-							<p class="truncate text-sm font-medium">
-								{receipt.merchant_name || $t('receipts.unknownVendor')}
+							<p class="break-words text-sm font-medium">
+								{receipt.merchant_display_name ||
+									receipt.merchant_name ||
+									$t('receipts.unknownVendor')}
 							</p>
 							<p class="text-xs text-on-surface-variant">
-								{formatMoney(receipt.total, receipt.currency)}
 								{#if receipt.date}
-									· {receipt.date}
+									{receipt.date}
 								{/if}
 								{#if receipt.created_at}
 									· {formatRelativeTime(receipt.created_at)}
 								{/if}
 							</p>
 						</div>
-						<span
-							class="shrink-0 rounded-full px-2.5 py-1 text-xs font-medium
+						<div class="flex flex-wrap items-center justify-between gap-2 sm:flex-col sm:items-end">
+							<p class="break-words text-lg font-semibold tabular-nums">
+								{formatMoney(receipt.total, receipt.currency)}
+							</p>
+							<span
+								class="shrink-0 rounded-full px-2.5 py-1 text-xs font-medium
 								{receipt.status === 'verified'
-								? 'bg-primary-container text-on-primary-container'
-								: 'bg-surface-container-highest text-on-surface-variant'}"
-						>
-							{$t(receipt.status === 'verified' ? 'receipt.verified' : 'receipt.unverified')}
-						</span>
-					</div>
+									? 'bg-primary-container text-on-primary-container'
+									: 'bg-surface-container-highest text-on-surface-variant'}"
+							>
+								{$t(receipt.status === 'verified' ? 'receipt.verified' : 'receipt.unverified')}
+							</span>
+						</div>
+					</a>
 					<button
 						type="button"
 						class="shrink-0 rounded-lg p-2 text-on-surface-variant hover:bg-error-container hover:text-on-error-container"
@@ -191,7 +200,12 @@
 	title={$t('receipt.deleteTitle')}
 	body={confirmDelete
 		? translate('receipt.deleteBody', {
-				values: { merchant: confirmDelete.merchant_name || $t('receipts.unknownVendor') }
+				values: {
+					merchant:
+						confirmDelete.merchant_display_name ||
+						confirmDelete.merchant_name ||
+						$t('receipts.unknownVendor')
+				}
 			})
 		: ''}
 	confirmLabel={$t('common.delete')}

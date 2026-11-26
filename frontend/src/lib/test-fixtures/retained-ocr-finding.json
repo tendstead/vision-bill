@@ -1,0 +1,7 @@
+{
+	"code": "ocr_page_failed",
+	"severity": "info",
+	"field_path": "input",
+	"source_refs": [],
+	"comparison": {}
+}

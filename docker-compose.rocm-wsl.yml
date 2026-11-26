@@ -1,0 +1,18 @@
+# Apply after docker-compose.rocm.yml inside Windows WSL 2.
+services:
+  paddleocr-service:
+    build:
+      args:
+        OCR_ROCM_TRANSPORT: ${OCR_ROCM_TRANSPORT:-wsl}
+    devices: !override
+      - /dev/dxg:/dev/dxg
+    group_add: !reset []
+    environment:
+      HIP_VISIBLE_DEVICES: "${OCR_ROCM_DEVICE_ID:-0}"
+    volumes:
+      - type: bind
+        source: /usr/lib/wsl/lib/libdxcore.so
+        target: /usr/lib/libdxcore.so
+        read_only: true
+        bind:
+          create_host_path: false

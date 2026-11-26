@@ -37,6 +37,9 @@
 <div class="rounded-xl border border-outline-variant bg-surface-container-low p-4 sm:p-5">
 	<h2 class="text-lg font-semibold">{$t('statistics.itemTitle')}</h2>
 	<p class="mt-1 text-sm text-on-surface-variant">{$t('statistics.itemIntro')}</p>
+	<p class="mt-2 text-sm font-medium">
+		{$t('statistics.itemPeriod', { values: { from: stats.date_from, to: stats.date_to } })}
+	</p>
 	{#if currencies.length > 1}
 		<label class="mt-4 block text-sm" for="item-currency">{$t('editor.currency')}</label>
 		<select

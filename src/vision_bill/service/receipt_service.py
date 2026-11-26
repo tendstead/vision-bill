@@ -1,11 +1,12 @@
 import asyncio
 import logging
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
-from typing import TYPE_CHECKING
+from time import monotonic
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 import asyncpg
@@ -13,23 +14,38 @@ import httpx
 from fastapi import UploadFile
 from openai import APITimeoutError
 
-from ..config import ImageSettings, PGSettings
+from ..config import ImageSettings, OcrSettings, PGSettings, Settings, WorkerSettings
 from ..model.db.image import ImagePart, ImageRow
-from ..model.db.receipt import ReceiptRow, ReceiptWithDetails
+from ..model.db.receipt import MerchantOptions, ReceiptRow, ReceiptWithDetails
+from ..model.extraction import InferenceEnvelope
+from ..model.handoff import HandoffStatus, HandoffWait
+from ..model.ocr import OcrCapabilities, OcrResponse, SourceRef
 from ..model.receipt import Receipt
 from ..model.search import ProductSearchResponse
 from ..model.statistics import ReceiptStatistics
+from ..model.workflow import (
+    AccessScope,
+    EnqueueResult,
+    ReviewPreview,
+    ReviewRequest,
+    SubmissionCreate,
+    SubmissionStatus,
+)
 from ..provider.db.collection_db import CollectionDB
 from ..provider.db.image_db import ImageDB
 from ..provider.db.receipt_db import ReceiptDB
 from ..provider.db.user_db import UserDB
+from ..provider.db.workflow_db import WorkflowDB
 from ..provider.llm.base import LLMProvider, ModelInfo
 from ..provider.llm.errors import AnalysisTimeoutError
+from ..provider.ocr.base import OcrProvider
 from .image_service import ImageService
 
 if TYPE_CHECKING:
     from ..model.experiment import ExperimentOptions
     from .experiment_execution import ExperimentResult
+    from .extraction_pipeline import ExtractionPipeline, UnmanagedClassificationEvent
+    from .gpu_handoff import ModelHandoff
 
 logger = logging.getLogger(__name__)
 
@@ -54,13 +70,26 @@ class ReceiptService:
     _experiment_tags: list[str] | None = None
 
     def __init__(
-        self, image_settings: ImageSettings, pg_settings: PGSettings, provider: LLMProvider
+        self,
+        image_settings: ImageSettings,
+        pg_settings: PGSettings,
+        provider: LLMProvider,
+        ocr_provider: OcrProvider | None = None,
+        ocr_settings: OcrSettings | None = None,
+        worker_settings: WorkerSettings | None = None,
     ):
         self._provider: LLMProvider = provider
+        self._ocr_provider: OcrProvider | None = ocr_provider
+        self._ocr_settings = ocr_settings or OcrSettings(enabled=ocr_provider is not None)
         self._image_service = ImageService(image_settings)
-        self._db = ReceiptDB(pg_settings)
+        self._db = ReceiptDB(pg_settings, original_checker=self._image_service.check_originals)
         self._image_db = ImageDB(pg_settings)
         self._user_db = UserDB(pg_settings)
+        self._workflow_db = WorkflowDB(
+            pg_settings, worker_settings=worker_settings,
+            original_checker=self._image_service.check_originals,
+            working_view_checker=self._image_service.read_working_image,
+        )
         self._collection_db: CollectionDB | None = None
 
     # ── Database delegation ──────────────────────────────────────────
@@ -69,11 +98,34 @@ class ReceiptService:
         await self._db.init_db()
         await self._image_db.init_db()
         await self._user_db.init_db()
+        await self._workflow_db.init_db()
 
     async def destroy_db(self) -> None:
         await self._db.destroy_db()
         await self._image_db.destroy_db()
         await self._user_db.destroy_db()
+        await self._workflow_db.destroy_db()
+
+    @property
+    def workflow_db(self) -> WorkflowDB:
+        """Durable submission provider shared with the workflow worker."""
+        return self._workflow_db
+
+    @property
+    def workflow_ready(self) -> bool:
+        return self._workflow_db.is_ready
+
+    async def enqueue_submission(
+        self, submission: SubmissionCreate, *, scope: AccessScope, idempotency_key: str | None
+    ) -> EnqueueResult:
+        return await self._workflow_db.enqueue_submission(
+            submission, scope=scope, idempotency_key=idempotency_key
+        )
+
+    async def get_submission(
+        self, image_id: UUID, *, scope: AccessScope
+    ) -> SubmissionStatus | None:
+        return await self._workflow_db.get_submission(image_id, scope=scope)
 
     @property
     def pool(self) -> asyncpg.Pool:
@@ -93,14 +145,33 @@ class ReceiptService:
         """The users-table provider, exposed for auth and ownership backfill."""
         return self._user_db
 
-    async def list_tags(self) -> list[str]:
+    async def list_tags(self, *, deadline: float | None = None) -> list[str]:
         """Return the allowed line-item tag vocabulary from the database."""
-        return await self._db.list_tags()
+        if deadline is None:
+            return await self._db.list_tags()
+        return await self._db.list_tags(deadline=deadline)
+
+    async def suggested_merchant_name(
+        self, user_id: UUID | None, merchant_name: str, merchant_address: str | None,
+        *, deadline: float | None = None,
+    ) -> str | None:
+        return await self._db.suggested_merchant_name(
+            user_id, merchant_name, merchant_address, deadline=deadline,
+        )
+
+    async def merchant_options(
+        self, scope: AccessScope, printed: str, address: str | None, query: str,
+        receipt_id: UUID | None, image_id: UUID | None,
+    ) -> MerchantOptions | None:
+        return await self._db.merchant_options(scope, printed, address, query, receipt_id, image_id)
 
     async def get_category_suggestion(
-        self, user_id: UUID, merchant_name: str, description: str
+        self, user_id: UUID, merchant_name: str, description: str, *,
+        display_name: str | None = None, address: str | None = None, receipt_id: UUID | None = None,
     ) -> str | None:
-        return await self._db.get_category_suggestion(user_id, merchant_name, description)
+        return await self._db.get_category_suggestion(
+            user_id, merchant_name, description, display_name=display_name, address=address, receipt_id=receipt_id,
+        )
 
     async def create_tag(self, raw_name: str) -> tuple[str, bool]:
         """Normalize a tag name and make sure it exists in the tag vocabulary.
@@ -114,8 +185,7 @@ class ReceiptService:
             raise ValueError("Tag name must not be blank")
         if len(name) > 100:
             raise ValueError("Tag name must be at most 100 characters long")
-        created = await self._db.create_tag(name)
-        return name, created
+        return await self._db.create_tag(name)
 
     async def persist_receipt(
         self,
@@ -147,9 +217,9 @@ class ReceiptService:
         try:
             active = await self._collection_db.active_collection(user_id, can_see_all=False)
             if active is not None:
-                await self._collection_db.assign(active.id, receipt_id)
-        except Exception:
-            logger.warning("auto-capture to active collection failed", exc_info=True)
+                await self._collection_db.assign(active.id, receipt_id, user_id=user_id)
+        except Exception:  # noqa: BLE001 - optional capture must not fail extraction
+            logger.warning("collection_capture_failed")
 
     async def get_receipt_by_id(
         self, receipt_id: UUID, user_id: UUID | None = None, can_see_all: bool = False
@@ -197,7 +267,7 @@ class ReceiptService:
         if not purchases:
             return ProductSearchResponse(query=query, purchases=[])
 
-        prices = [purchase.unit_price for purchase in purchases]
+        prices = [purchase.unit_price for purchase in purchases if purchase.unit_price is not None]
         # Currency conversion is intentionally out of scope: the current
         # application assumes a user pays in one currency.
         # cheapest_price is the lowest non-negative unit price: a negative Pfand
@@ -207,10 +277,13 @@ class ReceiptService:
         return ProductSearchResponse(
             query=query,
             purchases=purchases,
-            latest_price=purchases[0].unit_price,
+            latest_price=prices[0] if prices else None,
             cheapest_price=min(non_negative_prices) if non_negative_prices else None,
-            average_price=sum(prices, Decimal(0)) / len(prices),
-            currency=purchases[0].currency,
+            average_price=sum(prices, Decimal(0)) / len(prices) if prices else None,
+            currency=next(
+                (purchase.currency for purchase in purchases if purchase.unit_price is not None),
+                purchases[0].currency,
+            ),
         )
 
     async def get_statistics(
@@ -229,8 +302,13 @@ class ReceiptService:
         )
 
     async def get_receipt_with_details(
-        self, receipt_id: UUID, user_id: UUID | None = None, can_see_all: bool = False
+        self, receipt_id: UUID, user_id: UUID | None = None, can_see_all: bool = False,
+        *, deadline: float | None = None,
     ) -> ReceiptWithDetails | None:
+        if deadline is not None:
+            return await self._db.get_receipt_with_details(
+                receipt_id, user_id=user_id, can_see_all=can_see_all, deadline=deadline
+            )
         return await self._db.get_receipt_with_details(
             receipt_id, user_id=user_id, can_see_all=can_see_all
         )
@@ -246,10 +324,26 @@ class ReceiptService:
             receipt_id, receipt, user_id=user_id, can_see_all=can_see_all
         )
 
+    async def preview_human_review(
+        self, receipt_id: UUID, *, scope: AccessScope
+    ) -> ReviewPreview | None:
+        return await self._db.preview_human_review(receipt_id, scope=scope)
+
     async def verify_receipt(
-        self, receipt_id: UUID, user_id: UUID | None = None, can_see_all: bool = False
+        self, receipt_id: UUID, request: ReviewRequest | None = None, *,
+        scope: AccessScope | None = None, user_id: UUID | None = None, can_see_all: bool = False,
     ) -> ReceiptRow | None:
-        return await self._db.verify_receipt(receipt_id, user_id=user_id, can_see_all=can_see_all)
+        return await self._db.verify_receipt(receipt_id, request, scope=scope, user_id=user_id, can_see_all=can_see_all)
+
+    async def delete_resource(self, resource_id: UUID, *, receipt: bool, scope: AccessScope, images: "ImageService") -> bool:
+        try:
+            deleted = await self.workflow_db.delete_resource(resource_id, receipt=receipt, scope=scope, validate_files=lambda deleted: images.validate_deleted_files(deleted, initial=True))
+        except asyncpg.ForeignKeyViolationError as exc:
+            raise ReceiptReferencedError("resource_referenced") from exc
+        if deleted is None:
+            return False
+        await self.workflow_db.cleanup_deleted_resource(resource_id, receipt=receipt, scope=scope, remove_files=images.remove_deleted_files)
+        return True
 
     async def delete_receipt(
         self, receipt_id: UUID, user_id: UUID | None = None, can_see_all: bool = False
@@ -290,10 +384,6 @@ class ReceiptService:
             model_id=model_id,
         )
 
-    async def claim_image_for_analysis(self, image_id: UUID) -> ImageRow | None:
-        """Claim a queued image before an in-request analysis starts."""
-        return await self._image_db.claim_for_analysis(image_id)
-
     async def get_image_by_id(
         self, image_id: UUID, user_id: UUID | None = None, can_see_all: bool = False
     ) -> ImageRow | None:
@@ -322,18 +412,6 @@ class ReceiptService:
     async def mark_image_failed(self, image_id: UUID, error: str) -> None:
         await self._image_db.mark_failed(image_id, error)
 
-    async def mark_image_terminal(self, image_id: UUID, status: str, error: str) -> None:
-        await self._image_db.mark_terminal(image_id, status, error)
-
-    async def move_additional_images(self, image: ImageRow, receipt_id: UUID) -> None:
-        for part in image.additional_images:
-            path, thumb = self._image_service.store_perm_image(Path(part.image_path), receipt_id)
-            if path is not None:
-                part.image_path = str(path)
-            if thumb is not None:
-                part.thumbnail_path = str(thumb)
-            await self._image_db.update_additional_images(image.id, image.additional_images)
-
     async def update_image_path(self, image_id: UUID, image_path: str) -> None:
         await self._image_db.update_image_path(image_id, image_path)
 
@@ -345,13 +423,29 @@ class ReceiptService:
 
     # ── Extraction methods ───────────────────────────────────────────
 
-    async def get_available_models(self) -> list[ModelInfo]:
+    async def get_available_models(self, *, capability: str = "vision") -> list[ModelInfo]:
         logger.debug("Requesting available models from provider")
-        return await self._provider.get_available_models()
+        return await self._provider.get_available_models(capability=capability)
 
     async def check_connection(self) -> bool:
         """Return True if the LLM backend is reachable, False otherwise."""
         return await self._provider.check_connection()
+
+    @property
+    def inference_identity(self) -> str:
+        return self._provider.inference_identity
+
+    def managed_ocr_compatible(self) -> bool:
+        """Check the actual LLM's handoff contract without resource side effects."""
+        from .gpu_handoff import handoff_resource_identity
+
+        if not self._provider.supports_model_release:
+            return False
+        try:
+            handoff_resource_identity(self._provider, "llm")
+        except ValueError:
+            return False
+        return True
 
     async def _available_tags(self) -> list[str]:
         """The tag vocabulary for the prompt; empty when the database is unavailable."""
@@ -359,23 +453,98 @@ class ReceiptService:
             return list(self._experiment_tags)
         return await self._db.list_tags() if self.db_ready else []
 
+    async def ocr_capabilities(self, settings: OcrSettings) -> OcrCapabilities:
+        provider = self._extraction_pipeline(settings).ocr
+        if provider is None:
+            return OcrCapabilities(enabled=False, configured=False, reachable=False, ready=False)
+        return await provider.get_capabilities()
+
+    def set_ocr_route(self, provider: OcrProvider | None, settings: OcrSettings) -> None:
+        """Publish the qualified selection while the app holds activation admission."""
+        self._ocr_provider = provider
+        self._ocr_settings = settings
+
+    def _extraction_pipeline(self, settings: OcrSettings | None = None) -> "ExtractionPipeline":
+        from ..provider.factory import get_ocr_provider
+        from .extraction_pipeline import ExtractionPipeline
+
+        if settings is None or (settings == self._ocr_settings and self._ocr_provider is not None):
+            return ExtractionPipeline(self._provider, self._ocr_provider, self._ocr_settings)
+        return ExtractionPipeline(self._provider, get_ocr_provider(settings), settings)
+
+    def execution_handoff(self, settings: OcrSettings) -> "ModelHandoff | None":
+        from .execution_policy import managed_ocr
+
+        selected = self._extraction_pipeline(settings).coordinator()
+        live = self._extraction_pipeline().coordinator() if self._ocr_provider is not None else selected
+        if ((managed_ocr(settings) and selected is None)
+                or (selected is None) != (live is None)
+                or (live is not None and selected is not None and not selected.matches(live))):
+            raise HandoffWait(HandoffStatus(
+                state="configuration_required", reason_code="execution_policy_changed",
+            ))
+        return selected
+
+    def current_execution_snapshot(self, settings: Settings) -> dict[str, Any]:
+        from .execution_policy import current_snapshot
+
+        try:
+            handoff = self.execution_handoff(settings.ocr)
+        except (HandoffWait, ValueError, OSError):
+            handoff = None
+        return current_snapshot(settings, inference_identity=self.inference_identity, handoff=handoff)
+
+    async def extract_receipt(
+        self, model_id: str, paths: Sequence[Path], *, options: "ExperimentOptions",
+        deadline: float, tags: Sequence[str],
+        checkpoint: Callable[[OcrResponse], Awaitable[None]] | None = None,
+        observation_checkpoint: Callable[[InferenceEnvelope], Awaitable[None]] | None = None,
+        unmanaged_classification_event: "UnmanagedClassificationEvent | None" = None,
+        resume_pages: Sequence[OcrResponse] = (), source_refs: Sequence[SourceRef] = (),
+        ocr_settings: OcrSettings | None = None, max_output_tokens: int | None = None,
+        expected_binding_sha256: str | None = None, handoff_deadline: float | None = None,
+    ) -> InferenceEnvelope:
+        """Explicit per-attempt snapshots; never inject state into shared providers."""
+        if ocr_settings is not None:
+            self.execution_handoff(ocr_settings)
+        return await self._extraction_pipeline(ocr_settings).extract(
+            model_id, paths, options=options, deadline=deadline, tags=tags,
+            checkpoint=checkpoint, resume_pages=resume_pages, source_refs=source_refs,
+            observation_checkpoint=observation_checkpoint,
+            unmanaged_classification_event=unmanaged_classification_event,
+            max_output_tokens=max_output_tokens, expected_binding_sha256=expected_binding_sha256,
+            handoff_deadline=handoff_deadline,
+        )
+
     async def analyse_receipt_from_path(
         self, model_id: str, image_path: Path | Sequence[Path]
     ) -> Receipt:
-        """Run LLM extraction on an image file whose lifetime the caller owns."""
+        """Run normal extraction on caller-owned originals using configured OCR."""
         logger.info("Analysing receipt using model: %s", model_id)
         tags = await self._available_tags()
         try:
             async with asyncio.timeout(self._provider.analysis_timeout_seconds):
-                result = await self._provider.analyse_receipt_from_model(
-                    model_id, image_path, tags=tags
-                )
+                if self._ocr_settings.enabled:
+                    from ..model.experiment import ExperimentOptions
+
+                    paths = [image_path] if isinstance(image_path, Path) else list(image_path)
+                    envelope = await self.extract_receipt(
+                        model_id, paths, options=ExperimentOptions(),
+                        deadline=monotonic() + self._provider.analysis_timeout_seconds, tags=tags,
+                    )
+                    if envelope.receipt is None:
+                        raise ValueError(envelope.findings[-1].code if envelope.findings else "receipt_incomplete")
+                    result = envelope.receipt
+                else:
+                    result = await self._provider.analyse_receipt_from_model(
+                        model_id, image_path, tags=tags
+                    )
             logger.info("Successfully analysed receipt with model: %s", model_id)
             return result
         except (TimeoutError, httpx.TimeoutException, APITimeoutError) as exc:
             raise AnalysisTimeoutError("The LLM request timed out. Please try again.") from exc
         except Exception:
-            logger.exception("Failed to analyse receipt with model %s", model_id)
+            logger.warning("receipt_extraction_failed")
             raise
 
     async def analyse_receipt_from_model(self, model_id: str, image: bytes) -> Receipt:
@@ -390,23 +559,22 @@ class ReceiptService:
     async def extract_receipt_all_models(self, image: UploadFile) -> list[ModelResult]:
         """Run extraction concurrently across every available model."""
         logger.info("Starting concurrent extraction across all models for uploaded file")
-        models = await self.get_available_models()
-        tags = await self._available_tags()
+        models = await self.get_available_models(
+            capability="text" if self._ocr_settings.enabled else "vision"
+        )
         content = await image.read()
         tmp_path = self._image_service.store_tmp_image(content)
 
         async def run_one(model: ModelInfo) -> ModelResult:
             try:
                 logger.debug("Running extraction for model: %s", model.id)
-                receipt = await self._provider.analyse_receipt_from_model(
-                    model.id, tmp_path, tags=tags
-                )
+                receipt = await self.analyse_receipt_from_path(model.id, tmp_path)
                 return ModelResult(model_id=model.id, receipt=receipt)
             except ValueError as e:
-                logger.warning("Model %s failed with expected warning: %s", model.id, e)
+                logger.warning("receipt_model_failed: %s", type(e).__name__)
                 return ModelResult(model_id=model.id, receipt=None, error=str(e))
-            except Exception as e:
-                logger.exception("Unexpected failure for model %s", model.id)
+            except Exception as e:  # noqa: BLE001 - isolate independent model failures
+                logger.warning("receipt_model_failed")
                 return ModelResult(model_id=model.id, receipt=None, error=str(e))
 
         try:
@@ -419,8 +587,9 @@ class ReceiptService:
         return results
 
     async def analyse_submission_with_metadata(
-        self, model_id: str, paths: list[Path], options: "ExperimentOptions", tags: list[str]
+        self, model_id: str, paths: list[Path], options: "ExperimentOptions", tags: list[str],
+        *, deadline: float | None = None,
     ) -> "ExperimentResult":
         """Run an isolated experiment through normal upload extraction paths."""
         from .experiment_execution import execute_submission
-        return await execute_submission(self, model_id, paths, options, tags)
+        return await execute_submission(self, model_id, paths, options, tags, deadline=deadline)

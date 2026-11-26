@@ -68,16 +68,13 @@ def test_history_key_preserves_product_numbers_and_punctuation() -> None:
     assert normalize_history_key("H-MILCH 3,5%") != normalize_history_key("H-MILCH 1,5%")
 
 
-def test_line_item_has_no_category_field() -> None:
-    """Only the receipt carries a category; line items use tags instead."""
-    assert "category" not in LineItem.model_fields
-
-
-def test_receipt_schema_keeps_only_receipt_level_category() -> None:
-    """The LLM JSON schema exposes category on the receipt, not on line items."""
+def test_receipt_and_line_item_have_distinct_category_fields() -> None:
     schema = Receipt.model_json_schema()
-    assert "category" not in schema["$defs"]["LineItem"]["properties"]
+    row_fields = schema["$defs"]["LineItem"]["properties"]
+    assert {"tags", "spending_category"} <= row_fields.keys()
+    assert "category" not in row_fields
     assert "category" in schema["properties"]
+    assert "spending_category" not in schema["properties"]
 
 
 # ── Negative prices (Pfand / bottle-deposit refunds) ──────────────────
@@ -142,3 +139,57 @@ def test_receipt_accepts_net_negative_pfand_return() -> None:
     )
     assert receipt.subtotal == Decimal("-0.75")
     assert receipt.total == Decimal("-0.75")
+
+
+@pytest.mark.parametrize(
+    "field,value", [("time", "25:00"), ("time", "12:60"), ("currency", "usd"), ("currency", "EURO")]
+)
+def test_receipt_rejects_invalid_formatter_time_and_currency(field: str, value: str) -> None:
+    from pydantic import ValidationError
+
+    values = {
+        "confidence": 90,
+        "merchant_name": "Shop",
+        "date": "2025-01-01",
+        "line_items": [],
+        "subtotal": "1.00",
+        "total": "1.00",
+    }
+    values[field] = value
+    with pytest.raises(ValidationError):
+        Receipt(**values)
+
+
+@pytest.mark.parametrize("model_name", ["receipt", "update", "draft"])
+@pytest.mark.parametrize("value,canonical", [
+    (None, None), ("00:00:00.000000", "00:00"), ("14:30", "14:30"),
+    ("14:30:00.0", "14:30"), ("14:30:15", "14:30:15"),
+    ("14:30:15.000000", "14:30:15"), ("14:30:15.1", "14:30:15.100000"),
+    ("14:30:00.000001", "14:30:00.000001"), ("23:59:59.999999", "23:59:59.999999"),
+])
+def test_local_time_preserves_precision_and_matches_stored_review(model_name, value, canonical):
+    from vision_bill.api.receipts import ReceiptUpdate
+    from vision_bill.model.extraction import ExtractionDraft
+
+    model = {"receipt": Receipt, "update": ReceiptUpdate, "draft": ExtractionDraft}[model_name]
+    data = dict(confidence=90, merchant_name="Shop", date="2025-01-01",
+                line_items=[], subtotal="1.00", total="1.00", time=value)
+    result = model.model_validate(data)
+    assert result.time == canonical
+    assert model.model_validate(result.model_dump(mode="json")).time == canonical
+
+
+@pytest.mark.parametrize("value", [
+    "24:00", "25:00:00", "12:60", "12:00:60", "12:00:59.1234567", "9:00",
+    "120000", "12:00.1", "12:00:00.", "12:00\n", "12:00junk", " 12:00", "12:00 ",
+    "12:00:00,1", "12:00Z", "12:00:00+01:00", "2025-01-01T12:00", "１２:００",
+])
+def test_local_time_rejects_lossy_or_nonlocal_input_at_all_write_boundaries(value):
+    from pydantic import ValidationError
+    from vision_bill.api.receipts import ReceiptUpdate
+    from vision_bill.model.extraction import ExtractionDraft
+
+    for model in (Receipt, ReceiptUpdate, ExtractionDraft):
+        with pytest.raises(ValidationError):
+            model.model_validate(dict(confidence=90, merchant_name="Shop", date="2025-01-01",
+                                     line_items=[], subtotal="1", total="1", time=value))

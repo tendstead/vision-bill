@@ -28,17 +28,35 @@ export function isSignedDecimal(value: string | null | undefined): boolean {
 	return SIGNED_RE.test(value.trim());
 }
 
+/** Compare a printed quantity or fractional rate without binary floating-point rounding. */
+export function validReviewDecimal(
+	value: string | number,
+	range: 'positive' | 'rate' | 'any'
+): boolean {
+	const match = /^([+-]?)(\d*)(?:\.(\d*))?(?:e([+-]?\d+))?$/i.exec(String(value).trim());
+	if (!match || !(match[2] || match[3])) return false;
+	if (range === 'any') return true;
+	const fraction = match[3] ?? '';
+	const digits = (match[2] + fraction).replace(/^0+/, '');
+	if (!digits) return range === 'rate';
+	if (match[1] === '-') return false;
+	if (range === 'positive') return true;
+	const integerDigits = digits.length - fraction.length + Number(match[4] ?? '0');
+	return integerDigits <= 0 || (integerDigits === 1 && /^10*$/.test(digits));
+}
+
 interface Scaled {
 	int: bigint;
 	digits: number;
 }
 
 function toScaled(value: string): Scaled {
-	const [intPart, fracPart = ''] = value.trim().split('.');
-	return {
-		int: BigInt(intPart || '0') * 10n ** BigInt(fracPart.length),
-		digits: fracPart.length
-	};
+	const match = /^(-?)(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/i.exec(value.trim());
+	if (!match) throw new Error('Invalid decimal');
+	const [, sign, whole, fraction = '', exponent = '0'] = match;
+	const scale = fraction.length - Number(exponent);
+	const integer = BigInt(`${sign}${whole}${fraction}`);
+	return { int: scale < 0 ? integer * 10n ** BigInt(-scale) : integer, digits: Math.max(0, scale) };
 }
 
 function formatScaled(int: bigint, digits: number): string {

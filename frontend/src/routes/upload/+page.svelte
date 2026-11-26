@@ -8,9 +8,18 @@
 	import { api, ApiError } from '$lib/api/client';
 	import { queryClient } from '$lib/query/client';
 	import { queryKeys } from '$lib/query/keys';
-	import { snackbar } from '$lib/ui/snackbar.svelte';
+	import { session } from '$lib/auth';
+	import { captureSessionActor, isCurrentSessionActor } from '$lib/session-lifetime';
+	import {
+		prepareUpload,
+		readPendingUpload,
+		clearPendingUpload,
+		matchPendingUpload,
+		type PendingUpload
+	} from '$lib/api/upload';
 	import Icon from '$lib/ui/Icon.svelte';
 	import SubmissionStatus from '$lib/ui/SubmissionStatus.svelte';
+	import ExtractionDraftEditor from '$lib/ui/ExtractionDraftEditor.svelte';
 
 	const ACCEPTED_TYPES = 'image/jpeg,image/png,image/webp,image/heic,image/heif,image/gif';
 
@@ -20,12 +29,20 @@
 	let photos = $state<{ file: File; url: string }[]>([]);
 	let file = $derived(photos[0]?.file ?? null);
 	let jobId = $derived(page.url.searchParams.get('job'));
-	onDestroy(() => photos.forEach((photo) => URL.revokeObjectURL(photo.url)));
+	const actor = captureSessionActor();
+	let alive = true;
+	onDestroy(() => {
+		alive = false;
+		photos.forEach((photo) => URL.revokeObjectURL(photo.url));
+	});
 	let dragging = $state(false);
-	let bypassReview = $state(false);
-	let bypassReviewDefaultApplied = $state(false);
 	let uploading = $state(false);
-	let queued: { image_id: string; warning?: string } | null = $state(null);
+	let bypassChoice = $state<boolean>();
+	let recoveredUpload = $state.raw<PendingUpload | null>(null);
+	let checkingRecovery = $state(false);
+	let recoveryFailed = $state(false);
+	let recoveryOwner = $state('');
+	let recovering = $state(false);
 	let uploadError = $state('');
 
 	const uiConfig = createQuery(
@@ -37,33 +54,77 @@
 		() => queryClient
 	);
 
+	const bypassReview = $derived(
+		bypassChoice ??
+			recoveredUpload?.options.bypass_review ??
+			uiConfig.data?.bypass_review_default ??
+			false
+	);
+
 	$effect(() => {
-		if (!bypassReviewDefaultApplied && uiConfig.data) {
-			bypassReview = uiConfig.data.bypass_review_default;
-			bypassReviewDefaultApplied = true;
+		if ($session && $session !== 'loading' && recoveryOwner !== $session.id) {
+			recoveryOwner = $session.id;
+			recovering = !!readPendingUpload($session.id);
+			bypassChoice = undefined;
 		}
 	});
 
+	function setPhotos(next: typeof photos) {
+		photos = next;
+		const selection = photos;
+		const origin = jobId;
+		recoveredUpload = null;
+		checkingRecovery = false;
+		recoveryFailed = false;
+		if (origin || !selection.length || !isCurrentSessionActor(actor)) return;
+
+		const sameSelection = () => alive && photos === selection && isCurrentSessionActor(actor);
+		const current = () => sameSelection() && jobId === origin;
+		checkingRecovery = true;
+		void matchPendingUpload(
+			actor.userId,
+			selection.map((photo) => photo.file),
+			() => {
+				if (!current()) throw new DOMException('Upload selection changed', 'AbortError');
+			}
+		).then(
+			(pending) => {
+				if (!sameSelection()) return;
+				if (current()) {
+					recoveredUpload = pending;
+					if (pending) recovering = true;
+				} else {
+					recoveryFailed = true;
+				}
+				checkingRecovery = false;
+			},
+			() => {
+				if (!sameSelection()) return;
+				recoveryFailed = true;
+				checkingRecovery = false;
+			}
+		);
+	}
+
 	function addFiles(next: File[]) {
-		if (uploading) return;
+		if (uploading || !next.length) return;
 		if (photos.length + next.length > 10 || next.some((file) => file.size > 20 * 1024 * 1024)) {
 			uploadError = translate('submission.limits');
 			return;
 		}
-		photos = [...photos, ...next.map((file) => ({ file, url: URL.createObjectURL(file) }))];
-		queued = null;
+		setPhotos([...photos, ...next.map((file) => ({ file, url: URL.createObjectURL(file) }))]);
 		uploadError = '';
 	}
 
 	function removePhoto(index: number) {
 		URL.revokeObjectURL(photos[index].url);
-		photos = photos.filter((_, i) => i !== index);
+		setPhotos(photos.filter((_, i) => i !== index));
 	}
 
 	function movePhoto(index: number, direction: number) {
 		const next = [...photos];
 		[next[index], next[index + direction]] = [next[index + direction], next[index]];
-		photos = next;
+		setPhotos(next);
 	}
 
 	function onFileChange(input: HTMLInputElement) {
@@ -79,53 +140,58 @@
 
 	function onBypassChange(event: Event) {
 		const checkbox = event.currentTarget as HTMLInputElement;
-		bypassReview = checkbox.checked;
+		bypassChoice = checkbox.checked;
 	}
 
 	async function upload() {
-		if (!file || uploading) {
+		if (
+			!alive ||
+			jobId ||
+			!file ||
+			uploading ||
+			checkingRecovery ||
+			recoveryFailed ||
+			!isCurrentSessionActor(actor)
+		)
 			return;
-		}
+		const owner = actor.userId;
+		const selection = photos;
+		const current = () => alive && !jobId && photos === selection && isCurrentSessionActor(actor);
 		uploading = true;
 		uploadError = '';
-		queued = null;
 		try {
-			const result = await api.uploadImage(
-				photos.map((photo) => photo.file),
-				bypassReview
-			);
-			if (result.status === 'pending') {
-				if (photos.length > 1) {
-					photos.forEach((photo) => URL.revokeObjectURL(photo.url));
-					photos = [];
-					await goto(resolve(`/upload?job=${result.image_id}`));
-					return;
-				}
-				queued = { image_id: result.image_id, warning: result.warning };
-				snackbar.notify('info', translate('upload.queuedTitle'));
-			} else if (result.receipt_id !== undefined && result.receipt_id !== null) {
-				void queryClient.invalidateQueries({ queryKey: ['receipts'] });
-				void queryClient.invalidateQueries({ queryKey: ['images'] });
-				await goto(resolve(`/receipts/${result.receipt_id}`));
-			}
+			const files = selection.map((photo) => photo.file);
+			const recovery = recoveredUpload;
+			const options = { ...recovery?.options };
+			if (bypassChoice !== undefined) options.bypass_review = bypassChoice;
+			const pending =
+				recovery && options.bypass_review === recovery.options.bypass_review
+					? recovery
+					: await prepareUpload(owner, files, options, () => {
+							if (!current()) throw new DOMException('Upload view changed', 'AbortError');
+						});
+			if (!current()) return;
+			recoveredUpload = pending;
+			const result = await api.uploadImages(files, pending.options, pending.key, actor);
+			if (!current()) return;
+			// Treat a malformed successful response as ambiguous, retaining the key/options.
+			if (!result.id) throw new ApiError(202, 'Response did not include a submission ID');
+			clearPendingUpload(owner, pending.key);
+			photos.forEach((photo) => URL.revokeObjectURL(photo.url));
+			setPhotos([]);
+			void queryClient.invalidateQueries({ queryKey: ['images'] });
+			void queryClient.invalidateQueries({ queryKey: ['receipts'] });
+			await goto(resolve(`/upload?job=${result.id}`));
 		} catch (error) {
-			if (error instanceof ApiError) {
-				if (error.imageId) {
-					await goto(resolve(`/upload?job=${error.imageId}`));
-					return;
-				}
-				if (error.status === 415) {
-					uploadError = translate('upload.errorUnsupported');
-				} else if (error.status === 503) {
-					uploadError = translate('upload.errorDb');
-				} else {
-					uploadError = translate('upload.errorGeneric');
-				}
-			} else {
-				uploadError = translate('upload.errorGeneric');
+			if (!current()) return;
+			recovering = !!readPendingUpload(owner);
+			if (error instanceof ApiError && error.imageId) {
+				await goto(resolve(`/upload?job=${error.imageId}`));
+				return;
 			}
+			uploadError = error instanceof Error ? error.message : translate('upload.errorGeneric');
 		} finally {
-			uploading = false;
+			if (alive && isCurrentSessionActor(actor)) uploading = false;
 		}
 	}
 
@@ -144,34 +210,28 @@
 	<title>{$t('pages.upload.title')} – {$t('app.name')}</title>
 </svelte:head>
 
-<section class="mx-auto max-w-2xl">
+<section
+	class="mx-auto min-w-0 {jobId && page.url.searchParams.get('draft') === '1'
+		? 'max-w-6xl'
+		: 'max-w-2xl'}"
+>
 	<h1 class="text-2xl font-semibold">{$t('pages.upload.title')}</h1>
 	{#if jobId}
-		<SubmissionStatus id={jobId} />
+		<SubmissionStatus id={jobId} editingDraft={page.url.searchParams.get('draft') === '1'} />
+		{#if page.url.searchParams.get('draft') === '1'}<ExtractionDraftEditor id={jobId} />{/if}
 	{:else}
 		<p class="mt-3 text-sm text-on-surface-variant">{$t('submission.captureHint')}</p>
 
-		{#if queued}
-			<div
-				class="mt-4 flex flex-col gap-3 rounded-xl border border-outline-variant bg-secondary-container p-4 sm:flex-row sm:items-center sm:justify-between"
-				role="status"
-			>
-				<div class="flex items-start gap-3">
-					<Icon icon="queue" />
-					<div>
-						<p class="font-medium text-on-secondary-container">{$t('upload.queuedTitle')}</p>
-						<p class="text-sm text-on-secondary-container/80">{$t('upload.queuedBody')}</p>
-					</div>
-				</div>
-				<a
-					href={resolve('/queue')}
-					class="rounded-lg bg-secondary px-4 py-2.5 text-center text-sm font-medium text-on-secondary hover:opacity-90"
-				>
-					{$t('upload.openQueue')}
-				</a>
-			</div>
+		{#if recovering}
+			<p class="mt-4 rounded-xl border border-outline-variant p-4 text-sm" role="status">
+				{$t('submission.recovery')}
+			</p>
 		{/if}
 
+		<p class="mt-3 text-sm text-on-surface-variant">{$t('submission.limits')}</p>
+		<p class="mt-2 text-sm font-medium" role="status">
+			{$t('receiptWorkspace.selection', { values: { count: photos.length } })}
+		</p>
 		<!-- Dropzone / preview -->
 		{#each photos as photo, index (photo.url)}
 			<div
@@ -182,7 +242,7 @@
 					alt={photo.file.name}
 					class="max-h-80 w-full bg-surface-container object-contain"
 				/>
-				<div class="flex items-center justify-between gap-3 p-3">
+				<div class="flex flex-wrap items-center justify-between gap-3 p-3">
 					<div class="min-w-0">
 						<p class="truncate text-sm font-medium">{index + 1}. {photo.file.name}</p>
 						<p class="text-xs text-on-surface-variant">{formatSize(photo.file.size)}</p>
@@ -229,7 +289,7 @@
 			<div class="flex flex-wrap items-center justify-center gap-2">
 				<button
 					type="button"
-					class="flex items-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-on-primary hover:opacity-90"
+					class="flex items-center gap-2 rounded-lg bg-action px-4 py-2.5 text-sm font-medium text-on-primary hover:opacity-90"
 					onclick={() => galleryInput?.click()}
 					disabled={uploading}
 				>
@@ -268,6 +328,20 @@
 			/>
 		</div>
 
+		{#if recoveryFailed}
+			<div class="mt-3 flex items-center gap-2 text-sm text-error" role="alert">
+				<Icon icon="alert" />
+				<p>{$t('upload.recoveryReadError')}</p>
+				<button
+					type="button"
+					class="rounded-lg px-2 py-1 font-medium text-primary underline"
+					onclick={() => setPhotos([...photos])}
+				>
+					{$t('common.retry')}
+				</button>
+			</div>
+		{/if}
+
 		{#if uploadError}
 			<p class="mt-3 flex items-center gap-2 text-sm text-error" role="alert">
 				<Icon icon="alert" />
@@ -281,7 +355,7 @@
 					type="checkbox"
 					class="mt-1 size-4"
 					checked={bypassReview}
-					disabled={uploading}
+					disabled={uploading || checkingRecovery || recoveryFailed}
 					onchange={onBypassChange}
 				/>
 				<span>
@@ -293,8 +367,13 @@
 
 		<button
 			type="button"
-			class="mt-4 w-full rounded-lg bg-primary px-4 py-3 text-sm font-medium text-on-primary hover:opacity-90 disabled:opacity-50"
-			disabled={!file || uploading}
+			class="mt-4 w-full rounded-lg bg-action px-4 py-3 text-sm font-medium text-on-primary hover:opacity-90 disabled:opacity-50"
+			disabled={!file ||
+				uploading ||
+				checkingRecovery ||
+				recoveryFailed ||
+				!$session ||
+				$session === 'loading'}
 			onclick={upload}
 		>
 			{#if uploading}

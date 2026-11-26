@@ -12,6 +12,8 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+from PIL import Image
+
 from vision_bill.model.receipt import Receipt
 
 DEFAULT_DATA_DIR = Path(__file__).parent / "data"
@@ -62,8 +64,10 @@ def load_fixture_cases(data_dir: Path = DEFAULT_DATA_DIR) -> list[FixtureCase]:
         try:
             expected = json.loads(json_path.read_text(encoding="utf-8"))
             expected_receipt = Receipt.model_validate(expected)
+            with Image.open(image_path) as image:
+                image.load()
         except Exception as exc:  # noqa: BLE001 - discovery must never crash the suite
-            _warn(name, f"invalid ground truth: {exc}")
+            _warn(name, f"invalid fixture: {type(exc).__name__}")
             continue
         cases.append(
             FixtureCase(

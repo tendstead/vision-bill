@@ -1,329 +1,293 @@
-"""Tests for AnalysisScheduler.process_pending with fully mocked collaborators."""
+"""Durable readiness gates precede claims; retries wake at their due time."""
 
 import asyncio
-from collections.abc import Generator
-from datetime import date as Date
-from decimal import Decimal
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
-from uuid import UUID
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+from uuid import uuid4
 
+import httpx
 import pytest
 
-from vision_bill.config import Settings
 from vision_bill.model.db.image import ImageRow
-from vision_bill.model.db.receipt import ReceiptRow
-from vision_bill.model.receipt import Receipt
-from vision_bill.provider.llm.base import ModelInfo
-from vision_bill.service.analysis_scheduler import AnalysisScheduler, PendingImageResult
-
-SchedulerContext = tuple[AnalysisScheduler, MagicMock, MagicMock, MagicMock]
-RECEIPT_ID = UUID("00000000-0000-4000-8000-000000000001")
-IMAGE_ID = UUID("00000000-0000-4000-8000-000000000002")
-USER_ID = UUID("00000000-0000-4000-8000-000000000003")
+from vision_bill.model.workflow import CommitResult, SubmissionStatus
+from vision_bill.service.analysis_scheduler import AnalysisScheduler
 
 
-def _make_receipt() -> Receipt:
-    return Receipt(
-        confidence=95,
-        merchant_name="Test Store",
-        date=Date(2024, 1, 15),
-        currency="USD",
-        line_items=[],
-        subtotal=Decimal("10.00"),
-        total=Decimal("10.00"),
+def context(settings):
+    image = ImageRow(id=uuid4())
+    claim = SimpleNamespace(image=image)
+    db = SimpleNamespace(
+        is_ready=True,
+        reap_expired_claims=AsyncMock(return_value=0),
+        due_candidates=AsyncMock(return_value=[image]),
+        claim_next=AsyncMock(return_value=claim),
+        next_wake_delay=AsyncMock(return_value=0.01),
     )
-
-
-def _receipt_row(receipt_id: UUID = RECEIPT_ID) -> ReceiptRow:
-    return ReceiptRow(
-        id=receipt_id,
-        confidence=95,
-        merchant_name="Test Store",
-        date=Date(2024, 1, 15),
-        subtotal=Decimal("10.00"),
-        total=Decimal("10.00"),
+    receipts = SimpleNamespace(workflow_db=db)
+    service = SimpleNamespace(
+        ready_for=AsyncMock(return_value=True),
+        process_claim=AsyncMock(
+            return_value=CommitResult(
+                stale=False,
+                submission=SubmissionStatus(id=image.id, status="pending", result_code="timed_out"),
+            )
+        ),
     )
+    scheduler = AnalysisScheduler(settings, None, receipts, None, submission_service=service)
+    return scheduler, db, service, image
 
 
-def _pending_image(
-    image_id: UUID,
-    image_path: Path,
-    bypass_review: bool = False,
-    user_id: UUID | None = None,
-) -> ImageRow:
-    return ImageRow(
-        id=image_id,
-        image_path=str(image_path),
-        status="pending",
-        bypass_review=bypass_review,
-        user_id=user_id,
-    )
+async def test_provider_down_waits_before_claim_without_attempt(settings):
+    scheduler, db, service, _image = context(settings)
+    service.ready_for.return_value = False
+    assert await scheduler.process_pending() == []
+    db.claim_next.assert_not_awaited()
+    service.process_claim.assert_not_awaited()
 
 
-@pytest.fixture
-def scheduler_context(settings: Settings) -> Generator[SchedulerContext, None, None]:
-    """AnalysisScheduler with mocked provider, receipt service and image DB.
-
-    No real pools are created; collaborators are plain mocks so process_pending
-    can be exercised directly (start()/stop() are never called).
-    """
-    provider = MagicMock()
-    provider.get_available_models = AsyncMock(return_value=[ModelInfo(id="test-model")])
-
-    receipt_service = MagicMock()
-    receipt_service.db_ready = True
-    receipt_service.analyse_receipt_from_path = AsyncMock(return_value=_make_receipt())
-    receipt_service.persist_receipt = AsyncMock(return_value=_receipt_row())
-
-    image_db = MagicMock()
-    image_db.is_ready = True
-    image_db.list_pending_images = AsyncMock(return_value=[])
-
-    async def claim_image(image_id: UUID) -> ImageRow | None:
-        pending = image_db.list_pending_images.return_value
-        if isinstance(pending, list):
-            return next((image for image in pending if image.id == image_id), None)
-        return None
-
-    image_db.claim_for_analysis = AsyncMock(side_effect=claim_image)
-    image_db.mark_analyzed = AsyncMock()
-    image_db.mark_failed = AsyncMock()
-    image_db.update_image_path = AsyncMock()
-    image_db.update_image_thumbnail_path = AsyncMock()
-    receipt_service.get_receipt_by_image_id = AsyncMock(return_value=None)
-
-    image_service = MagicMock()
-    image_service.store_perm_image = MagicMock(return_value=None)
-
-    scheduler = AnalysisScheduler(settings, provider, receipt_service, image_db, image_service)
-    yield scheduler, provider, receipt_service, image_db
-
-
-@pytest.mark.asyncio
-async def test_unavailable_provider_keeps_queue(
-    scheduler_context: SchedulerContext,
-) -> None:
-    """A raising provider yields no results and leaves the queue untouched."""
-    scheduler, provider, _, image_db = scheduler_context
-    provider.get_available_models = AsyncMock(side_effect=RuntimeError("down"))
-    image_db.list_pending_images = AsyncMock(
-        return_value=[_pending_image(IMAGE_ID, Path("/tmp/a.png"))]
-    )
-
+async def test_pending_backoff_is_nonterminal_and_fenced_claim_used(settings):
+    scheduler, db, service, image = context(settings)
     result = await scheduler.process_pending()
-
-    assert result == []
-    image_db.list_pending_images.assert_not_awaited()
-    image_db.mark_failed.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_no_models_keeps_queue(scheduler_context: SchedulerContext) -> None:
-    """An empty model list yields no results and drains nothing."""
-    scheduler, provider, _, image_db = scheduler_context
-    provider.get_available_models = AsyncMock(return_value=[])
-
-    result = await scheduler.process_pending()
-
-    assert result == []
-    image_db.list_pending_images.assert_not_awaited()
-    image_db.mark_failed.assert_not_awaited()
+    assert result[0].status == "pending" and result[0].error == "timed_out"
+    db.claim_next.assert_awaited_once_with(lease_seconds=900, image_id=image.id)
+    service.process_claim.assert_awaited_once_with(db.claim_next.return_value)
 
 
-@pytest.mark.asyncio
-async def test_success_analyzes_and_links(
-    scheduler_context: SchedulerContext, tmp_path: Path
-) -> None:
-    """A pending image with an existing file is analyzed, persisted and marked.
+async def test_earliest_retry_wakes_without_waiting_300_seconds(settings):
+    scheduler, db, _service, _image = context(settings)
+    done = asyncio.Event()
+    count = 0
 
-    The receipt inherits the image's owner so the row is scoped to the user who
-    queued it, even though the worker runs outside any request.
-    """
-    scheduler, _, receipt_service, image_db = scheduler_context
-    image_file = tmp_path / "a.png"
-    image_file.write_bytes(b"image-bytes")
-    image_db.list_pending_images = AsyncMock(
-        return_value=[_pending_image(IMAGE_ID, image_file, user_id=USER_ID)]
-    )
-    receipt = _make_receipt()
-    receipt_service.analyse_receipt_from_path = AsyncMock(return_value=receipt)
-
-    result = await scheduler.process_pending()
-
-    assert result == [
-        PendingImageResult(image_id=IMAGE_ID, status="analyzed", receipt_id=RECEIPT_ID)
-    ]
-    # The configured model is unavailable, so the first available one is used.
-    receipt_service.analyse_receipt_from_path.assert_awaited_once_with("test-model", image_file)
-    receipt_service.persist_receipt.assert_awaited_once_with(
-        receipt,
-        image_id=IMAGE_ID,
-        status="unverified",
-        verified=False,
-        user_id=USER_ID,
-    )
-    image_db.mark_analyzed.assert_awaited_once_with(IMAGE_ID, RECEIPT_ID)
-    image_db.mark_failed.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_bypass_review_auto_verifies(
-    scheduler_context: SchedulerContext, tmp_path: Path
-) -> None:
-    """A bypass-reviewed image is persisted as verified and moved to permanent storage."""
-    scheduler, _, receipt_service, image_db = scheduler_context
-    image_file = tmp_path / "bypass.png"
-    image_file.write_bytes(b"image-bytes")
-    perm_file = tmp_path / "receipt_7.png"
-    thumb_file = tmp_path / "receipt_7.thumb.webp"
-    scheduler._image_service.store_perm_image = MagicMock(return_value=(perm_file, thumb_file))
-    image_db.list_pending_images = AsyncMock(
-        return_value=[_pending_image(IMAGE_ID, image_file, bypass_review=True, user_id=USER_ID)]
-    )
-    receipt = _make_receipt()
-    receipt_service.analyse_receipt_from_path = AsyncMock(return_value=receipt)
-
-    result = await scheduler.process_pending()
-
-    assert result == [
-        PendingImageResult(image_id=IMAGE_ID, status="analyzed", receipt_id=RECEIPT_ID)
-    ]
-    receipt_service.persist_receipt.assert_awaited_once_with(
-        receipt,
-        image_id=IMAGE_ID,
-        status="verified",
-        verified=True,
-        user_id=USER_ID,
-    )
-    image_db.mark_analyzed.assert_awaited_once_with(IMAGE_ID, RECEIPT_ID)
-    scheduler._image_service.store_perm_image.assert_called_once_with(image_file, RECEIPT_ID)
-    image_db.update_image_path.assert_awaited_once_with(IMAGE_ID, str(perm_file))
-    image_db.update_image_thumbnail_path.assert_awaited_once_with(IMAGE_ID, str(thumb_file))
-
-
-@pytest.mark.asyncio
-async def test_analysis_failure_marks_failed(
-    scheduler_context: SchedulerContext, tmp_path: Path
-) -> None:
-    """A parsing/extraction failure marks the image failed with the error."""
-    scheduler, _, receipt_service, image_db = scheduler_context
-    image_file = tmp_path / "a.png"
-    image_file.write_bytes(b"image-bytes")
-    image_db.list_pending_images = AsyncMock(return_value=[_pending_image(IMAGE_ID, image_file)])
-    receipt_service.analyse_receipt_from_path = AsyncMock(side_effect=ValueError("bad json"))
-
-    result = await scheduler.process_pending()
-
-    assert result == [PendingImageResult(image_id=IMAGE_ID, status="failed", error="bad json")]
-    image_db.mark_failed.assert_awaited_once_with(IMAGE_ID, "bad json")
-    receipt_service.persist_receipt.assert_not_awaited()
-    image_db.mark_analyzed.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_missing_file_marks_failed(
-    scheduler_context: SchedulerContext, tmp_path: Path
-) -> None:
-    """A queue row whose on-disk file vanished is marked failed, not analysed."""
-    scheduler, _, receipt_service, image_db = scheduler_context
-    missing = tmp_path / "gone.png"
-    image_db.list_pending_images = AsyncMock(return_value=[_pending_image(IMAGE_ID, missing)])
-
-    result = await scheduler.process_pending()
-
-    assert len(result) == 1
-    assert result[0].status == "failed"
-    assert "gone.png" in (result[0].error or "")
-    image_db.mark_failed.assert_awaited_once()
-    receipt_service.analyse_receipt_from_path.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_model_fallback_uses_first_available(
-    settings: Settings, scheduler_context: SchedulerContext, tmp_path: Path
-) -> None:
-    """When the configured model is absent, the first available model is used."""
-    scheduler, provider, receipt_service, image_db = scheduler_context
-    # Sanity guard: this only proves a fallback if the preferred model differs.
-    assert settings.llm.model_name not in {"other-model", "third-model"}
-    provider.get_available_models = AsyncMock(
-        return_value=[ModelInfo(id="other-model"), ModelInfo(id="third-model")]
-    )
-    image_file = tmp_path / "a.png"
-    image_file.write_bytes(b"image-bytes")
-    image_db.list_pending_images = AsyncMock(return_value=[_pending_image(IMAGE_ID, image_file)])
-
-    result = await scheduler.process_pending()
-
-    assert result == [
-        PendingImageResult(image_id=IMAGE_ID, status="analyzed", receipt_id=RECEIPT_ID)
-    ]
-    receipt_service.analyse_receipt_from_path.assert_awaited_once_with("other-model", image_file)
-
-
-@pytest.mark.asyncio
-async def test_db_not_ready_skips_cycle(scheduler_context: SchedulerContext) -> None:
-    """Without a ready receipt DB the cycle is skipped without probing the provider."""
-    scheduler, provider, receipt_service, _ = scheduler_context
-    receipt_service.db_ready = False
-
-    result = await scheduler.process_pending()
-
-    assert result == []
-    provider.get_available_models.assert_not_awaited()
-
-
-def test_check_interval_from_settings(scheduler_context: SchedulerContext) -> None:
-    """The cycle interval comes from the worker settings section."""
-    scheduler = scheduler_context[0]
-
-    assert scheduler.check_interval_seconds == 300
-
-
-@pytest.mark.asyncio
-async def test_process_pending_lock_serializes(scheduler_context: SchedulerContext) -> None:
-    """A second concurrent cycle waits on the lock instead of overlapping."""
-    scheduler, _, _, image_db = scheduler_context
-    release = asyncio.Event()
-    state = {"entered": False}
-
-    async def fake_list_pending() -> list[ImageRow]:
-        if not state["entered"]:
-            state["entered"] = True
-            await release.wait()  # first cycle blocks while holding the lock
+    async def scan():
+        nonlocal count
+        count += 1
+        if count > 1:
+            done.set()
         return []
 
-    image_db.list_pending_images = fake_list_pending
-
-    first = asyncio.create_task(scheduler.process_pending())
-    second = asyncio.create_task(scheduler.process_pending())
-
-    for _ in range(100):
-        if state["entered"]:
-            break
-        await asyncio.sleep(0)
-
-    # The first cycle holds the lock; the second must still be waiting for it.
-    assert state["entered"] is True
-    assert not second.done()
-
-    release.set()
-    await asyncio.wait([first, second])
-
-    assert (await first) == []
-    assert (await second) == []
-
-
-@pytest.mark.asyncio
-async def test_start_stop_lifecycle(scheduler_context: SchedulerContext) -> None:
-    """start() spawns a background task; a second start is a no-op; stop() clears it."""
-    scheduler = scheduler_context[0]
-
+    scheduler.process_pending = scan
     await scheduler.start()
-    assert scheduler._task is not None
-    assert not scheduler._task.done()
+    try:
+        async with asyncio.timeout(0.3):
+            await done.wait()
+    finally:
+        await scheduler.stop()
+    assert count >= 2
+    db.next_wake_delay.assert_awaited()
 
-    await scheduler.start()  # idempotent: must not spawn a second task
+
+async def test_wake_trigger_and_stop_are_idempotent(settings):
+    scheduler, db, _service, _image = context(settings)
+    db.next_wake_delay.return_value = 300
+    await scheduler.start()
+    task = scheduler._task
+    await scheduler.start()
+    assert scheduler._task is task
+    await asyncio.sleep(0)
+    scheduler.trigger()
+    await asyncio.sleep(0.01)
+    await scheduler.stop()
     await scheduler.stop()
     assert scheduler._task is None
+
+
+async def test_database_unavailable_never_claims(settings):
+    scheduler, db, _service, _image = context(settings)
+    db.is_ready = False
+    assert await scheduler.process_pending() == []
+    db.reap_expired_claims.assert_not_awaited()
+    db.due_candidates.assert_not_awaited()
+
+
+async def test_retry_due_during_long_second_job_rescans_without_provider_down_hot_loop(
+    settings, monkeypatch
+):
+    from datetime import UTC, datetime, timedelta
+
+    import vision_bill.service.analysis_scheduler as module
+
+    scheduler, db, service, first = context(settings)
+    second = ImageRow(id=uuid4())
+    clock = [0.0]
+    due = {first.id: 0.0, second.id: 0.0}
+    runs = []
+    waits = []
+    done = asyncio.Event()
+    ready = {first.id: True, second.id: True}
+
+    async def candidates(*, purpose=None):
+        return [image for image in [first, second] if due.get(image.id, 999) <= clock[0]]
+
+    async def claim_next(*, image_id, lease_seconds):
+        return SimpleNamespace(image=first if image_id == first.id else second)
+
+    async def process(claim):
+        runs.append((claim.image.id, clock[0]))
+        if claim.image.id == first.id and len(runs) == 1:
+            due[first.id] = clock[0] + 30
+            return CommitResult(
+                stale=False,
+                submission=SubmissionStatus(
+                    id=first.id,
+                    status="pending",
+                    retry_at=datetime.now(UTC) + timedelta(seconds=30),
+                ),
+            )
+        if claim.image.id == second.id:
+            clock[0] += 60
+            del due[second.id]
+        else:
+            ready[first.id] = False
+            due[first.id] = clock[0]  # another overdue retry, but provider then goes down
+        return CommitResult(
+            stale=False, submission=SubmissionStatus(id=claim.image.id, status="pending")
+        )
+
+    async def wake_delay(maximum, *, deferred_image_ids=()):
+        eligible = [
+            when - clock[0] for image_id, when in due.items() if image_id not in deferred_image_ids
+        ]
+        return min(maximum, max(0, min(eligible))) if eligible else maximum
+
+    async def wait_for(awaitable, *, timeout):
+        waits.append(timeout)
+        awaitable.close()
+        if len(waits) >= 4:
+            done.set()
+            raise asyncio.CancelledError()
+        if timeout:
+            clock[0] += timeout if len(waits) > 1 else 0
+        raise TimeoutError()
+
+    db.due_candidates.side_effect = candidates
+    db.claim_next.side_effect = claim_next
+    db.next_wake_delay.side_effect = wake_delay
+    service.ready_for.side_effect = lambda image: ready[image.id]
+    service.process_claim.side_effect = process
+    monkeypatch.setattr(module.asyncio, "wait_for", wait_for)
+    task = asyncio.create_task(scheduler._run_forever())
+    await done.wait()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    assert runs == [(first.id, 0), (second.id, 0), (first.id, 60)]
+    assert db.claim_next.await_count == 3
+    assert waits == [300, 0, 0, 300]
+
+
+@pytest.mark.parametrize("worker_ready", [False, True], ids=["parked", "ready"])
+@pytest.mark.parametrize("managed_lifecycle", [False, True], ids=["unmanaged", "managed"])
+@pytest.mark.parametrize("attempt_count", [0, 2], ids=["new", "last-attempt"])
+async def test_incompatible_ocr_mode_waits_before_claim_and_preserves_attempt_budget(
+    settings, monkeypatch, tmp_path, worker_ready, managed_lifecycle, attempt_count,
+):
+    from test_ocr_provider import http_client
+
+    from vision_bill import config
+    from vision_bill.config import OcrSettings
+    from vision_bill.provider.llm.base import ModelInfo
+    from vision_bill.service.execution_policy import current_snapshot
+    from vision_bill.service.receipt_service import ReceiptService
+    from vision_bill.service.submission_service import SubmissionService
+
+    settings.ocr = OcrSettings(
+        enabled=True, service_url="http://local", manage_model_lifecycle=managed_lifecycle,
+        coordination_path=tmp_path / "handoff.lock",
+    )
+    # Enable the real global managed-ownership guard when this client requires it.
+    monkeypatch.setattr(config, "settings", settings)
+    image = ImageRow(
+        id=uuid4(), model_id="formatter", attempt_count=attempt_count,
+        effective_options=current_snapshot(settings, inference_identity="ollama:" + "d" * 64),
+    )
+    model = ModelInfo("formatter")
+    model.capabilities = ["completion"]
+    formatter = SimpleNamespace(
+        inference_identity="ollama:" + "d" * 64,
+        supports_model_release=True,
+        lifecycle_identity="cpu-fixture:formatter",
+        resident_model_ids=AsyncMock(return_value=frozenset()),
+        check_connection=AsyncMock(return_value=True),
+        get_available_models=AsyncMock(return_value=[model]),
+    )
+
+    async def persist_wait(candidate, reason):
+        candidate.wait_reason = reason
+        return True
+
+    async def claim_next(**kwargs):
+        # Mirror the claim's budget increment so mistaken admission is observable.
+        image.attempt_count += 1
+        return SimpleNamespace(image=image)
+
+    db = SimpleNamespace(
+        is_ready=True,
+        reap_expired_claims=AsyncMock(return_value=0),
+        due_candidates=AsyncMock(return_value=[image]),
+        set_wait_reason=AsyncMock(side_effect=persist_wait),
+        claim_next=AsyncMock(side_effect=claim_next),
+    )
+    receipts = ReceiptService(settings.images, settings.pg, formatter)
+    if managed_lifecycle:
+        from test_handoff_binding import adopt
+
+        await adopt(receipts.execution_handoff(settings.ocr), ("formatter",))
+        image.effective_options = receipts.current_execution_snapshot(settings)
+    receipts._workflow_db = db
+    submissions = SubmissionService(settings, receipts, receipts._image_service)
+    submissions.process_claim = AsyncMock(return_value=CommitResult(stale=False))
+    scheduler = AnalysisScheduler(
+        settings, formatter, receipts, None, submission_service=submissions,
+    )
+    requests = []
+    worker = {
+        "ready": worker_ready, "generation": 1,
+        "profile_id": "fixed-profile" if worker_ready else None,
+        "reason_code": None if worker_ready else "ocr_parked",
+    }
+
+    def handler(request):
+        requests.append((request.method, request.url.path))
+        if request.url.path == "/info":
+            return httpx.Response(200, json={
+                "contract_version": 2, "profile": {"max_new_tokens": 4096},
+                "worker": worker,
+                "service_mode": "standalone" if managed_lifecycle else "managed",
+            })
+        assert request.url.path == "/ready"
+        return httpx.Response(200 if worker_ready else 503, json=worker)
+
+    http_client(monkeypatch, handler)
+    for _ in range(image.max_attempts + 1):
+        assert await scheduler.process_pending() == []
+    db.claim_next.assert_not_awaited()
+    submissions.process_claim.assert_not_awaited()
+    assert image.attempt_count == attempt_count
+    assert image.status == "pending" and image.wait_reason == "ocr_mode_mismatch"
+    assert db.set_wait_reason.await_count == image.max_attempts + 1
+    for call in db.set_wait_reason.await_args_list:
+        assert call.args == (image, "ocr_mode_mismatch")
+    assert requests == [("GET", "/info")] * (image.max_attempts + 1)
+    formatter.check_connection.assert_awaited()
+
+
+async def test_saved_observations_dispatch_only_completion(settings):
+    scheduler, db, service, image = context(settings)
+    image.observation_checkpoint = {"eligible_generation": image.generation}
+    db.due_candidates.side_effect = lambda *, purpose="inference": (
+        [image] if purpose in (None, "completion") else []
+    )
+    service.ready_for_completion = AsyncMock(return_value=True)
+    service.complete_checkpoint = AsyncMock(
+        return_value=CommitResult(
+            stale=False,
+            submission=SubmissionStatus(id=image.id, status="analyzed", attempt_count=3),
+        )
+    )
+    assert [result.status for result in await scheduler.process_pending()] == ["analyzed"]
+    db.claim_next.assert_awaited_once_with(
+        lease_seconds=900, image_id=image.id, purpose="completion"
+    )
+    service.ready_for.assert_not_awaited()
+    service.process_claim.assert_not_awaited()

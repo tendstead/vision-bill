@@ -3,16 +3,68 @@ import { loginAdmin } from '../helpers/auth';
 import { getSettings, putSettings } from '../helpers/api';
 
 test.describe('settings (admin)', () => {
-	test('loads with source labels and locked env fields', async ({ page, context }) => {
+	test('loads with source labels and editable environment defaults', async ({ page, context }) => {
 		await loginAdmin(context);
 		await page.goto('/settings');
-		await expect(page.getByText('Vision model')).toBeVisible();
-		await expect(page.getByText('Environment').first()).toBeVisible();
+		await expect(page.getByRole('group', { name: 'Receipt formatter', exact: true })).toBeVisible();
+		await expect(page.getByText('Environment default').first()).toBeVisible();
 		await expect(page.getByText('Config').first()).toBeVisible();
-		await expect(page.getByLabel('Provider')).toBeDisabled();
-		await expect(page.getByLabel('Host')).toBeDisabled();
-		await expect(page.getByLabel('Default model')).toBeDisabled();
+		await expect(page.getByLabel('Provider')).toBeEnabled();
+		await expect(page.getByLabel('Host')).toBeEnabled();
+		await expect(page.getByLabel('Default model')).toBeEnabled();
 		await expect(page.getByLabel('Temperature')).toBeEnabled();
+	});
+
+	test('opens the installed OCR recovery guide and returns to Settings', async ({
+		page,
+		context
+	}) => {
+		await loginAdmin(context);
+		await page.goto('/settings');
+		await page.getByRole('link', { name: 'GPU setup and recovery guide' }).click();
+		await expect(page).toHaveURL(/\/settings\/ocr-guide\/?$/);
+		await expect(page.getByRole('heading', { name: 'Recover a failed setup' })).toBeVisible();
+		const archive = page.getByRole('link', { name: 'Download offline operator guides (.zip)' });
+		const downloadEvent = page.waitForEvent('download');
+		await archive.click();
+		const download = await downloadEvent;
+		expect(download.suggestedFilename()).toBe('vision-bill-operator-guides.zip');
+		expect(await download.failure()).toBeNull();
+
+		const manual = await page
+			.getByRole('link', { name: 'Source installation (.md)' })
+			.evaluate((link) => (link as HTMLAnchorElement).href);
+		const response = await page.request.get(manual);
+		expect(response.ok()).toBe(true);
+		expect(await response.text()).toContain('## Dedicated OCR from source');
+		await page.getByRole('article').getByRole('link', { name: 'Settings' }).click();
+		await expect(page).toHaveURL(/\/settings\/?$/);
+	});
+
+	test('selects and saves an exact model from the saved formatter endpoint', async ({
+		page,
+		context
+	}) => {
+		await loginAdmin(context);
+		const before = await getSettings(context);
+		const selected = 'e2e-alternate-vision';
+		try {
+			await page.goto('/settings');
+			await page.getByRole('button', { name: 'Test saved connection' }).click();
+			const models = page.getByRole('combobox', { name: /Default model/ });
+			await expect(models).toHaveValue(before.llm.model_name);
+			await models.selectOption(selected);
+			await page.getByRole('button', { name: 'Save', exact: true }).click();
+			await expect(page.getByText('Settings saved.')).toBeVisible();
+			await page.reload();
+			await expect(page.getByLabel(/Default model/)).toHaveValue(selected);
+			expect((await getSettings(context)).llm.model_name).toBe(selected);
+		} finally {
+			const restored = await context.request.put('/api/v1/system/settings', {
+				data: { ...before, changed_paths: ['llm.model_name'] }
+			});
+			expect(restored.ok()).toBeTruthy();
+		}
 	});
 
 	test('temperature edit saves and persists', async ({ page, context }) => {

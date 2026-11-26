@@ -6,5 +6,5 @@ services:
     ports:
       - "8081:80"
     volumes:
-      - ./image-sticher/index.html:/usr/share/nginx/custom_html/image-stitcher.html:ro
+      - ./image-sticher/image-stitcher.html:/usr/share/nginx/custom_html/image-stitcher.html:ro
       - ./image-sticher/nginx_site.conf:/etc/nginx/conf.d/default.conf:ro

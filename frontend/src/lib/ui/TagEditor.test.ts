@@ -1,3 +1,4 @@
+import { session } from '$lib/session-lifetime';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import TagEditor from './TagEditor.svelte';
@@ -41,6 +42,10 @@ beforeEach(() => {
 	vi.stubGlobal('fetch', setupFetch());
 });
 
+beforeEach(() =>
+	session.set({ id: 'viewer', username: 'alice', is_admin: false, can_see_all: false })
+);
+
 afterEach(() => {
 	// Vitest runs without `globals: true`, so testing-library's automatic
 	// cleanup (which registers a global afterEach) is not active — unmount
@@ -52,18 +57,25 @@ afterEach(() => {
 describe('TagEditor', () => {
 	it('renders standard tags as chips and suggested tags with a badge', () => {
 		mount(['food', 'custom-tag']);
-		expect(screen.getByText('food')).not.toBeNull();
+		expect(screen.getByText('Food')).not.toBeNull();
 		expect(screen.getByText('Suggested')).not.toBeNull();
 		expect(screen.getByText('custom-tag')).not.toBeNull();
 		// The vocabulary itself is not rendered until the dropdown opens.
-		expect(screen.queryByText('alcohol')).toBeNull();
+		expect(screen.queryByText('Alcohol')).toBeNull();
 	});
 
 	it('opens the dropdown on click and lists every option', async () => {
 		mount([]);
 		expect(screen.queryByRole('listbox')).toBeNull();
 		await openDropdown();
-		for (const option of OPTIONS) {
+		for (const option of [
+			'Alcohol',
+			'Beverages',
+			'Coffee',
+			'Food',
+			'Fresh produce and perishables',
+			'Household goods'
+		]) {
 			expect(screen.getByRole('option', { name: option })).not.toBeNull();
 		}
 	});
@@ -71,8 +83,8 @@ describe('TagEditor', () => {
 	it('marks selected options with aria-selected', async () => {
 		mount(['food']);
 		await openDropdown();
-		expect(screen.getByRole('option', { name: 'food' }).getAttribute('aria-selected')).toBe('true');
-		expect(screen.getByRole('option', { name: 'beverage' }).getAttribute('aria-selected')).toBe(
+		expect(screen.getByRole('option', { name: 'Food' }).getAttribute('aria-selected')).toBe('true');
+		expect(screen.getByRole('option', { name: 'Beverages' }).getAttribute('aria-selected')).toBe(
 			'false'
 		);
 	});
@@ -82,19 +94,19 @@ describe('TagEditor', () => {
 		await openDropdown();
 		const search = screen.getByPlaceholderText('Search tags…');
 		await fireEvent.input(search, { target: { value: 'f' } });
-		expect(screen.getByRole('option', { name: 'food' })).not.toBeNull();
-		expect(screen.getByRole('option', { name: 'fresh' })).not.toBeNull();
-		expect(screen.queryByRole('option', { name: 'beverage' })).toBeNull();
+		expect(screen.getByRole('option', { name: 'Food' })).not.toBeNull();
+		expect(screen.getByRole('option', { name: 'Fresh produce and perishables' })).not.toBeNull();
+		expect(screen.queryByRole('option', { name: 'Beverages' })).toBeNull();
 	});
 
 	it('toggles tags when options are clicked and keeps the dropdown open', async () => {
 		const value = ['food'];
 		mount(value);
 		await openDropdown();
-		await fireEvent.click(screen.getByRole('option', { name: 'beverage' }));
+		await fireEvent.click(screen.getByRole('option', { name: 'Beverages' }));
 		expect(value).toEqual(['food', 'beverage']);
 		expect(screen.getByRole('listbox')).not.toBeNull();
-		await fireEvent.click(screen.getByRole('option', { name: 'food' }));
+		await fireEvent.click(screen.getByRole('option', { name: 'Food' }));
 		expect(value).toEqual(['beverage']);
 	});
 
@@ -125,7 +137,7 @@ describe('TagEditor', () => {
 		const search = screen.getByPlaceholderText('Search tags…');
 		await fireEvent.input(search, { target: { value: 'FOOD' } });
 		expect(screen.queryByRole('option', { name: /Create/ })).toBeNull();
-		expect(screen.getByRole('option', { name: 'food' })).not.toBeNull();
+		expect(screen.getByRole('option', { name: 'Food' })).not.toBeNull();
 	});
 
 	it('removes the last chip with Backspace on an empty search', async () => {
@@ -188,3 +200,189 @@ describe('TagEditor', () => {
 		expect(screen.getByText('No tags yet — type to create one.')).not.toBeNull();
 	});
 });
+it('blocks an already-open custom create option while its parent is saving', async () => {
+	const value: string[] = [];
+	const view = render(TagEditor, { value, tagOptions: OPTIONS, id: 'disabled-tag' });
+	await fireEvent.click(screen.getByRole('button', { name: 'Tags' }));
+	await fireEvent.input(screen.getByPlaceholderText('Search tags…'), { target: { value: 'late' } });
+	await view.rerender({ value, tagOptions: OPTIONS, id: 'disabled-tag', disabled: true });
+	await fireEvent.click(screen.getByRole('option', { name: 'Create “late”' }));
+	expect(value).toEqual([]);
+	expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
+});
+
+it('does not attach a pending tag to a successor value after props change', async () => {
+	const { api } = await import('$lib/api/client');
+	let finish!: (value: { name: string; created: boolean }) => void;
+	const create = vi.spyOn(api, 'createTag').mockImplementation(
+		() =>
+			new Promise((resolve) => {
+				finish = resolve;
+			})
+	);
+	const original: string[] = [],
+		successor: string[] = [];
+	const view = render(TagEditor, { value: original, tagOptions: OPTIONS, id: 'original' });
+	await fireEvent.click(screen.getByRole('button', { name: 'Tags' }));
+	await fireEvent.input(screen.getByPlaceholderText('Search tags…'), { target: { value: 'late' } });
+	await fireEvent.click(screen.getByRole('option', { name: 'Create “late”' }));
+	await view.rerender({ value: successor, tagOptions: OPTIONS, id: 'successor' });
+	finish({ name: 'late', created: true });
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	expect(successor).toEqual([]);
+	expect(original).toEqual([]);
+	create.mockRestore();
+});
+
+it.each(['create', 'keep'] as const)(
+	'suppresses abandoned %s errors and pending effects after owner change',
+	async (action) => {
+		const { api } = await import('$lib/api/client');
+		const { snackbar } = await import('$lib/ui/snackbar.svelte');
+		let reject!: (error: Error) => void;
+		const create = vi
+			.spyOn(api, 'createTag')
+			.mockImplementationOnce(
+				() =>
+					new Promise((_, r) => {
+						reject = r;
+					})
+			)
+			.mockImplementation(() => new Promise(() => {}));
+		const notify = vi.spyOn(snackbar, 'notify');
+		const pending = vi.fn();
+		const original = action === 'keep' ? ['custom-tag'] : [];
+		const view = render(TagEditor, {
+			value: original,
+			tagOptions: OPTIONS,
+			id: 'a',
+			onPendingChange: pending
+		});
+		if (action === 'keep')
+			await fireEvent.click(
+				screen.getByRole('button', { name: 'Keep “custom-tag” as standard tag' })
+			);
+		else {
+			await openDropdown();
+			await fireEvent.input(screen.getByPlaceholderText('Search tags…'), {
+				target: { value: 'late' }
+			});
+			await fireEvent.click(screen.getByRole('option', { name: 'Create “late”' }));
+		}
+		await view.rerender({ value: [], tagOptions: OPTIONS, id: 'b', onPendingChange: pending });
+		await openDropdown();
+		await fireEvent.input(screen.getByPlaceholderText('Search tags…'), {
+			target: { value: 'new' }
+		});
+		await fireEvent.click(screen.getByRole('option', { name: 'Create “new”' }));
+		expect(create).toHaveBeenCalledTimes(2);
+		reject(new Error('abandoned'));
+		await new Promise((r) => setTimeout(r, 0));
+		expect(notify).not.toHaveBeenCalled();
+		expect(pending).toHaveBeenLastCalledWith(true);
+		vi.restoreAllMocks();
+	}
+);
+it.each(['create', 'keep'] as const)(
+	'suppresses disposed %s errors including vocabulary refresh failure',
+	async (action) => {
+		const { api } = await import('$lib/api/client');
+		const { queryClient } = await import('$lib/query/client');
+		const { snackbar } = await import('$lib/ui/snackbar.svelte');
+		let reject!: (error: Error) => void;
+		vi.spyOn(api, 'createTag').mockResolvedValue({ name: 'late', created: true });
+		const refresh = vi.spyOn(queryClient, 'invalidateQueries').mockImplementation(
+			() =>
+				new Promise((_, r) => {
+					reject = r;
+				})
+		);
+		const notify = vi.spyOn(snackbar, 'notify');
+		const view = render(TagEditor, {
+			value: action === 'keep' ? ['custom-tag'] : [],
+			tagOptions: OPTIONS,
+			id: 'a'
+		});
+		if (action === 'keep')
+			await fireEvent.click(
+				screen.getByRole('button', { name: 'Keep “custom-tag” as standard tag' })
+			);
+		else {
+			await openDropdown();
+			await fireEvent.input(screen.getByPlaceholderText('Search tags…'), {
+				target: { value: 'late' }
+			});
+			await fireEvent.click(screen.getByRole('option', { name: 'Create “late”' }));
+		}
+		await waitFor(() => expect(refresh).toHaveBeenCalled());
+		view.unmount();
+		reject(new Error('refresh failed'));
+		await new Promise((r) => setTimeout(r, 0));
+		expect(notify).not.toHaveBeenCalled();
+		vi.restoreAllMocks();
+	}
+);
+
+it('searches German labels while preserving stored tag values across language changes', async () => {
+	const { setLocale } = await import('$lib/i18n');
+	setLocale('de');
+	try {
+		const value = ['CoFfEe', 'My CUSTOM tag'];
+		mount(value);
+		expect(screen.getByText('Kaffee')).toBeTruthy();
+		expect(screen.getByText('My CUSTOM tag')).toBeTruthy();
+		await openDropdown();
+		await fireEvent.input(screen.getByRole('textbox'), { target: { value: 'alkoh' } });
+		await fireEvent.click(screen.getByRole('option', { name: 'Alkohol' }));
+		expect(value).toEqual(['CoFfEe', 'alcohol', 'My CUSTOM tag']);
+		setLocale('en');
+		await waitFor(() => expect(screen.getByText('Coffee')).toBeTruthy());
+		expect(value).toEqual(['CoFfEe', 'alcohol', 'My CUSTOM tag']);
+	} finally {
+		setLocale('en');
+	}
+});
+
+it('creates a missing known vocabulary entry under its canonical code from German text', async () => {
+	const { setLocale } = await import('$lib/i18n');
+	setLocale('de');
+	try {
+		const value: string[] = [];
+		mount(value, []);
+		await openDropdown();
+		await fireEvent.input(screen.getByRole('textbox'), { target: { value: 'Getränke' } });
+		await fireEvent.click(screen.getByRole('option', { name: '„Getränke“ anlegen' }));
+		await waitFor(() => expect(value).toEqual(['beverage']));
+		expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+			expect.stringContaining('/tags'),
+			expect.objectContaining({ method: 'POST', body: JSON.stringify({ name: 'beverage' }) })
+		);
+	} finally {
+		setLocale('en');
+	}
+});
+
+it.each([
+	['de', 'milk', 'Milch', 'milch', 'Eigenes Schlagwort'],
+	['en', 'soft_drinks', 'Soft drinks', 'soft drinks', 'Custom tag']
+] as const)(
+	'distinguishes and independently selects a custom tag with the same %s label',
+	async (lang, code, label, custom, hint) => {
+		const { setLocale } = await import('$lib/i18n');
+		setLocale(lang);
+		try {
+			const value: string[] = [];
+			mount(value, [code, custom]);
+			await openDropdown();
+			await fireEvent.click(screen.getByRole('option', { name: label }));
+			await fireEvent.click(screen.getByRole('option', { name: custom + ' (' + hint + ')' }));
+			expect(value).toEqual([code, custom]);
+			await fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Escape' });
+			const remove = screen.getByRole('button', { name: new RegExp(hint) });
+			await fireEvent.click(remove);
+			expect(value).toEqual([code]);
+		} finally {
+			setLocale('en');
+		}
+	}
+);

@@ -50,7 +50,9 @@ test.describe('remembered item categories', () => {
 		await expect(page.getByText('57.14%', { exact: true }).first()).toBeVisible();
 		await page.getByLabel('Category to follow').selectOption('milk');
 		await expect(page.getByRole('table')).toContainText('Milk');
-		await page.getByLabel('Months', { exact: true }).selectOption('3');
+		await page
+			.getByLabel('Item spending: months (independent of receipt statistics)', { exact: true })
+			.selectOption('3');
 		await expect(page.getByRole('table').locator('tbody tr')).toHaveCount(3);
 		await expect(page.getByRole('table')).toContainText('(partial)');
 	});

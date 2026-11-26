@@ -18,9 +18,9 @@ test.describe('upload, edit, save, verify', () => {
 		await expect(page.locator('#re-merchant')).toHaveValue('Aldi Test');
 		await expect(page.locator('#re-date')).toHaveValue('2026-05-01');
 		await expect(page.locator('#re-currency')).toHaveValue('EUR');
-		// Line-item order is by DB UUID (non-deterministic), and a save
-		// re-creates the line items with fresh UUIDs (so the order can change
-		// across a reload). Address items by description, never by #li-0 index.
+		// Persisted line positions preserve upload order; IDs remain attached on save.
+		await expect(page.locator('input[placeholder="Description"]').nth(0)).toHaveValue('Milk');
+		await expect(page.locator('input[placeholder="Description"]').nth(1)).toHaveValue('Bread');
 		const lineIndex = (desc: string) =>
 			page
 				.locator('input[placeholder="Description"]')
@@ -40,7 +40,6 @@ test.describe('upload, edit, save, verify', () => {
 		const milkIdx = await lineIndex('Milk');
 		await page.locator(`#li-${milkIdx}-qty`).fill('2');
 		const milkTags = page.locator('details').filter({ hasText: 'Optional tags' }).nth(milkIdx);
-		await milkTags.locator('summary').click();
 		await milkTags.getByRole('button', { name: 'Tags' }).click();
 		await milkTags.getByPlaceholder('Search or add tags…').fill('test tag');
 		await milkTags.getByPlaceholder('Search or add tags…').press('Enter');
@@ -58,7 +57,6 @@ test.describe('upload, edit, save, verify', () => {
 		await expect(page.locator('#re-category')).toHaveValue('electronics');
 		const milkIdx2 = await lineIndex('Milk');
 		await expect(page.locator(`#li-${milkIdx2}-qty`)).toHaveValue('2');
-		await page.getByText('Optional tags').nth(milkIdx2).click();
 		await expect(
 			page.locator('span.rounded-full.bg-primary-container').filter({ hasText: 'test tag' })
 		).toBeVisible();

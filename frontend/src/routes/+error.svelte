@@ -25,7 +25,7 @@
 		<p class="mt-3 text-sm text-on-surface-variant">{body}</p>
 		<a
 			href={resolve('/')}
-			class="mt-6 inline-block rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-on-primary hover:opacity-90"
+			class="mt-6 inline-block rounded-lg bg-action px-4 py-2.5 text-sm font-medium text-on-primary hover:opacity-90"
 		>
 			Return to dashboard
 		</a>
