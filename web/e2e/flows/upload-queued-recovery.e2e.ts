@@ -31,8 +31,9 @@ test.describe('queued upload with provider down', () => {
 
 		await setStubMode('ok');
 		await page.getByRole('button', { name: 'Analyze now' }).click();
-		await expect(page.getByText('1 image(s) processed')).toBeVisible({ timeout: 30_000 });
-		await expect(page.getByText('The queue is empty')).toBeVisible();
+		// A regular user only wakes the worker (no result list), so the page
+		// waits for the queue to drain.
+		await expect(page.getByText('The queue is empty')).toBeVisible({ timeout: 30_000 });
 
 		// The receipt exists and is still unverified (the queue never verifies).
 		await page.goto('/receipts');

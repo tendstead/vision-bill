@@ -28,6 +28,18 @@
 	let deleting = $state(false);
 	let analyzeError = $state('');
 
+	/** Polls until nothing is pending or processing (at most ~30 s). */
+	async function waitForQueueToDrain() {
+		for (let attempt = 0; attempt < 20; attempt++) {
+			const active = await api.listImages({ status: ['pending', 'processing'], limit: 1 });
+			await queryClient.invalidateQueries({ queryKey: ['images'] });
+			if (active.length === 0) {
+				return;
+			}
+			await new Promise((done) => setTimeout(done, 1500));
+		}
+	}
+
 	async function analyzeNow() {
 		if (analyzing) {
 			return;
@@ -36,6 +48,11 @@
 		analyzeError = '';
 		try {
 			const response = await api.analyzePending();
+			if (response.results.length === 0) {
+				// Only administrators receive the results of the cycle; for everyone
+				// else the background worker was woken, so wait for the queue to drain.
+				await waitForQueueToDrain();
+			}
 			if (response.results.length > 0) {
 				const failed = response.results.filter((r) => r.status === 'failed').length;
 				snackbar.notify(
