@@ -1,0 +1,11 @@
+vision-bill
+Copyright 2026 Alexander Heinecke and contributors
+
+Material in this repository is licensed under the Elastic License 2.0 (see
+LICENSE) from the release that introduced this notice (0.2.1) onwards. Earlier
+releases (up to v0.1.2) were published under the GNU Affero General Public
+License v3.0 and remain available under those terms to those who received them.
+
+Third-party dependencies (Go modules, npm packages, the @tendstead/ui package,
+and the vips/libheif tools in the container image) retain their own licenses.
+Their notices must be preserved when redistributing them.
