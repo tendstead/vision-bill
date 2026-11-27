@@ -630,7 +630,7 @@
      "Images"
     ],
     "summary": "Analyze Pending",
-    "description": "Manually trigger one analysis cycle over the pending queue.",
+    "description": "Trigger an analysis cycle over the pending queue. Administrators run the cycle synchronously and receive its results; other users only wake the background worker and always receive an empty result list.",
     "operationId": "analyze_pending_api_v1_images_analyze_post",
     "responses": {
      "200": {

@@ -5,7 +5,11 @@ package files
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"image"
+	_ "image/jpeg" // register decoders for image.DecodeConfig
+	_ "image/png"
 	"io"
 	"log/slog"
 	"os"
@@ -39,11 +43,22 @@ func (HEICUnavailableError) Error() string {
 	return "HEIC/HEIF images are not supported on this server because the image decoder is not installed"
 }
 
+// DefaultModelMaxEdge is the longest edge (pixels) of a photo handed to a
+// model. Larger photos only cost transfer and inference time, so they are
+// shrunk (never enlarged) on the fly; the stored original is untouched.
+const DefaultModelMaxEdge = 3072
+
+// ErrTooLarge reports an upload that exceeds its size limit.
+var ErrTooLarge = errors.New("file exceeds the size limit")
+
 // Options configure the service.
 type Options struct {
 	TmpDir, SaveDir string
 	ThumbMaxEdge    int
 	ThumbQuality    int
+	// ModelMaxEdge caps the longer edge (pixels) of JPEG/PNG photos sent to a
+	// model; larger photos are shrunk first (0 = default). It needs the helper.
+	ModelMaxEdge int
 	// HelperPath overrides the image helper lookup ("" = find vips in PATH).
 	HelperPath string
 	Logger     *slog.Logger
@@ -54,6 +69,7 @@ type Service struct {
 	tmp, save string
 	maxEdge   int
 	quality   int
+	modelEdge int
 	helper    string // path to the vips binary, "" when unavailable
 	sem       chan struct{}
 	log       *slog.Logger
@@ -70,7 +86,10 @@ func New(o Options) (*Service, error) {
 		}
 	}
 	s := &Service{tmp: o.TmpDir, save: o.SaveDir, maxEdge: o.ThumbMaxEdge, quality: o.ThumbQuality,
-		sem: make(chan struct{}, 2), log: o.Logger}
+		modelEdge: o.ModelMaxEdge, sem: make(chan struct{}, 2), log: o.Logger}
+	if s.modelEdge <= 0 {
+		s.modelEdge = DefaultModelMaxEdge
+	}
 	helper := o.HelperPath
 	if helper == "" {
 		if p, err := exec.LookPath("vips"); err == nil {
@@ -165,6 +184,51 @@ func (s *Service) StoreTmp(content []byte) (string, error) {
 	return p, nil
 }
 
+// StoreTmpStream copies r (at most limit bytes) to a unique temporary file
+// without holding it in memory. It returns the path and size, or ErrTooLarge.
+func (s *Service) StoreTmpStream(r io.Reader, limit int64) (string, int64, error) {
+	p := filepath.Join(s.tmp, "temp_"+ids.UUID()+".png")
+	f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return "", 0, err
+	}
+	n, err := io.Copy(f, io.LimitReader(r, limit+1))
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil && n > limit {
+		err = ErrTooLarge
+	}
+	if err != nil {
+		_ = os.Remove(p)
+		return "", 0, err
+	}
+	return p, n, nil
+}
+
+// ValidateFile is Validate for content already stored at path.
+func (s *Service) ValidateFile(ctx context.Context, path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	head := make([]byte, 16)
+	n, _ := io.ReadFull(f, head)
+	f.Close()
+	mt, err := s.Inspect(head[:n])
+	if err != nil {
+		return mt, err
+	}
+	if mt == HEIC || mt == HEIF {
+		out, err := s.autorot(ctx, path)
+		if err != nil {
+			return mt, &UndecodableError{Err: err}
+		}
+		_ = os.Remove(out)
+	}
+	return mt, nil
+}
+
 func thumbFor(original string) string {
 	base := filepath.Base(original)
 	stem := strings.TrimSuffix(base, filepath.Ext(base))
@@ -175,14 +239,16 @@ func thumbFor(original string) string {
 func ThumbPath(original string) string { return thumbFor(original) }
 
 // StorePerm moves a tmp image (and its thumbnail) to permanent storage and
-// returns the new paths; an empty string means "absent".
-func (s *Service) StorePerm(tmpPath, receiptID string) (orig, thumb string, err error) {
+// returns the new paths; an empty string means "absent". primary marks the
+// first photo of a submission: only that photo owns the receipt_<id> name, so
+// only it may be recovered from there when its tmp file is already gone.
+func (s *Service) StorePerm(tmpPath, receiptID string, primary bool) (orig, thumb string, err error) {
 	ext := filepath.Ext(tmpPath)
 	dest := filepath.Join(s.save, "receipt_"+receiptID+ext)
 	if _, statErr := os.Stat(tmpPath); statErr != nil {
 		// A previous attempt may have moved the file before recording its
 		// path: report the already-stored copy so the caller can repair it.
-		if _, e := os.Stat(dest); e == nil && ext != "" {
+		if _, e := os.Stat(dest); e == nil && ext != "" && primary {
 			if _, te := os.Stat(thumbFor(dest)); te == nil {
 				return dest, thumbFor(dest), nil
 			}
@@ -288,11 +354,26 @@ func (s *Service) GenerateThumbnail(ctx context.Context, src string) string {
 	return dest
 }
 
+// autorot converts a HEIC/HEIF file to an upright JPEG next to it and returns
+// the output path; the caller removes it.
+func (s *Service) autorot(ctx context.Context, in string) (string, error) {
+	out := in + ".conv.jpg"
+	if err := s.run(ctx, "autorot", in, out+"[Q=92]"); err != nil {
+		_ = os.Remove(out)
+		return "", err
+	}
+	return out, nil
+}
+
 // ForModel returns the bytes to send to a model: HEIC/HEIF is converted to an
-// upright JPEG, everything else is passed through unchanged.
+// upright JPEG, oversized JPEG/PNG photos are shrunk to the model edge limit
+// and everything else is passed through unchanged.
 func (s *Service) ForModel(ctx context.Context, content []byte) ([]byte, string, error) {
 	mt := DetectMediaType(content)
 	if mt != HEIC && mt != HEIF {
+		if b, ok := s.shrink(ctx, content, mt); ok {
+			return b, mt, nil
+		}
 		return content, mt, nil
 	}
 	if s.helper == "" {
@@ -308,14 +389,52 @@ func (s *Service) ForModel(ctx context.Context, content []byte) ([]byte, string,
 		return nil, mt, err
 	}
 	in.Close()
-	out := in.Name() + ".jpg"
-	defer os.Remove(out)
-	if err := s.run(ctx, "autorot", in.Name(), out+"[Q=92]"); err != nil {
+	out, err := s.autorot(ctx, in.Name())
+	if err != nil {
 		return nil, mt, err
 	}
+	defer os.Remove(out)
 	b, err := os.ReadFile(out)
 	if err != nil {
 		return nil, mt, err
 	}
 	return b, JPEG, nil
+}
+
+// shrink downsizes a JPEG/PNG whose longer edge exceeds the model limit. It
+// fails soft: ok is false when nothing was (or could be) changed.
+func (s *Service) shrink(ctx context.Context, content []byte, mt string) ([]byte, bool) {
+	if s.helper == "" || (mt != JPEG && mt != PNG) {
+		return nil, false
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(content))
+	if err != nil || max(cfg.Width, cfg.Height) <= s.modelEdge {
+		return nil, false
+	}
+	ext, opts := ".png", ""
+	if mt == JPEG {
+		ext, opts = ".jpg", "[Q=92]"
+	}
+	in, err := os.CreateTemp(s.tmp, "shrink_*"+ext)
+	if err != nil {
+		return nil, false
+	}
+	defer os.Remove(in.Name())
+	_, werr := in.Write(content)
+	in.Close()
+	if werr != nil {
+		return nil, false
+	}
+	out := in.Name() + ".out" + ext
+	defer os.Remove(out)
+	edge := fmt.Sprint(s.modelEdge)
+	if err := s.run(ctx, "thumbnail", in.Name(), out+opts, edge, "--height", edge, "--size", "down"); err != nil {
+		s.log.Warn("could not shrink oversized image for the model, sending the original", "err", err)
+		return nil, false
+	}
+	b, err := os.ReadFile(out)
+	if err != nil || len(b) == 0 {
+		return nil, false
+	}
+	return b, true
 }

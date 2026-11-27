@@ -33,7 +33,7 @@ Technical context for agents working on the vision-bill project.
 Every route requires an authenticated user except `POST /auth/register`, `POST /auth/login`, `POST /auth/logout` and `GET /system/ui-config`. IDs are UUIDs. Errors are `{"detail": ...}`; request validation errors use the `[{type, loc, msg, ...}]` list shape with status 422. `GET /openapi.json`, `/docs` and `/redoc` serve the contract (`internal/httpapi/openapi.json`; a test checks that every contract operation is routed). `GET /healthz` is liveness, `GET /readyz` checks DB connectivity and migration state.
 
 - `auth`: register (201/403 disabled/409 duplicate), login, logout, me.
-- `images`: `POST /` multipart field `receipt` (1–10 photos, 20 MiB each; query `model_id`, `bypass_review`) → `201` analysed synchronously (single photo, model reachable) or `202` + `Location` when queued; `GET /`, `POST /analyze`, `GET /{id}`, `/{id}/file?part=`, `/{id}/thumb`, `DELETE /{id}`.
+- `images`: `POST /` multipart field `receipt` (1–10 photos, 20 MiB each, 200 MiB per request, streamed to disk; query `model_id`, `bypass_review`) → `201` analysed synchronously (single photo, model reachable) or `202` + `Location` when queued; `GET /`, `POST /analyze` (every user wakes the worker; only admins run the cycle inline and receive the queue results), `GET /{id}`, `/{id}/file?part=`, `/{id}/thumb`, `DELETE /{id}`.
 - `receipts`: list/detail/`PUT`/`DELETE`, `POST /{id}/verify` (moves photos to permanent storage; repeatable after interruption). `PUT` commits the receipt edit before validating `collection_ids` (unknown collection → 404 but the edit persists).
 - `collections`, `tags` (+ `/categories`, `/category-suggestion`), `search`, `statistics` (+ `/items`), `llm/models`, `system/settings` (admin), `benchmarks` (admin: create/list/status/results/capabilities/reevaluate).
 
@@ -45,7 +45,7 @@ Every route requires an authenticated user except `POST /auth/register`, `POST /
 - The container listens on :8080 regardless of `api.port` (override with `VB_LISTEN_ADDR`).
 
 ## Database & Migrations
-`internal/store/migrations/*.sql` are applied in order inside one transaction under an advisory lock, recorded in `vision_bill_go_migrations`. `001_baseline.sql` is the schema at revision 0010. An existing database carrying the legacy `alembic_version` marker is adopted only at exactly `0010` with a matching column inventory (`schema_columns.txt`); other revisions, newer revisions and unmarked databases with tables are refused. Fresh installs also get the marker table so existing tooling keeps working. To change the schema add the next numbered SQL file (and update `schema_columns.txt` if you want drift detection of new columns).
+`internal/store/migrations/*.sql` are applied in order inside one transaction under an advisory lock, recorded in `vision_bill_go_migrations`. `001_baseline.sql` is the schema at revision 0010. An existing database carrying the legacy `alembic_version` marker is adopted only at exactly `0010` with a matching column inventory (`schema_columns.txt`); other revisions, newer revisions and unmarked databases with tables are refused. Fresh installs also get the marker table so existing tooling keeps working. To change the schema add the next numbered SQL file. `schema_columns.txt` is the revision-0010 inventory used for adoption: do not add newer columns to it (adoption of a real 0010 database would then fail). The `alembic_version` marker stays at `0010` forever, so rolling back to the previous release is only safe while every migration is additive; the older Go image also ignores unknown ledger entries. See `UPGRADING.md` before adding a destructive migration.
 
 ## Development Workflow (`make help`)
 - `make lint` (gofmt + go vet), `make test` (Go tests with the race detector; starts a throwaway PostgreSQL container unless `VB_TEST_DATABASE_URL` points at one), `make build`, `make run`.
@@ -60,6 +60,7 @@ Every route requires an authenticated user except `POST /auth/register`, `POST /
 ## Constraints
 - **Privacy**: receipt data goes only to the configured inference endpoint (`LLM__HOST`). Do not add external calls for data processing without explicit approval.
 - **Config**: `AUTH__SECRET_KEY` is required. Admin-editable keys: `llm.provider|host|model_name|temperature`, `auth.allow_registration`; keys controlled by environment variables answer `409` on change; provider/host changes need a restart.
+- Analysis timeouts are never final: `timed_out` images are re-queued with a doubling delay (10 min … 6 h, `images.retry_after`). Only `unreadable` is terminal. The LLM deadline starts after an inference slot is acquired. Photos above 3072 px (long edge) are shrunk for the model when vips is available; the stored original is untouched.
 - Background work: the analysis queue is drained by `analysis.Scheduler`, benchmark tasks by `benchmark.Service`; do not add ad-hoc loops.
 - Never log or commit real receipts, credentials or backups (`server_data/` is ignored).
 

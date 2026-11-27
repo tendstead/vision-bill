@@ -125,10 +125,12 @@ func (s *Store) queryImages(ctx context.Context, sql string, args ...any) ([]dom
 	return out, rows.Err()
 }
 
-// claimable matches images that still need analysis, are being retried, or
-// whose previous worker lease (15 minutes) expired.
-const claimable = `(status IN ('pending', 'failed') OR (status = 'processing' AND
-	(processing_at IS NULL OR processing_at < CURRENT_TIMESTAMP - INTERVAL '15 minutes')))`
+// claimable matches images that still need analysis, are being retried,
+// timed out and whose retry delay has passed, or whose previous worker lease
+// (15 minutes) expired.
+const claimable = `(status IN ('pending', 'failed')
+	OR (status = 'timed_out' AND (retry_after IS NULL OR retry_after <= CURRENT_TIMESTAMP))
+	OR (status = 'processing' AND (processing_at IS NULL OR processing_at < CURRENT_TIMESTAMP - INTERVAL '15 minutes')))`
 
 // ListPendingImages returns the analysis queue, oldest first.
 func (s *Store) ListPendingImages(ctx context.Context) ([]domain.ImageRow, error) {
@@ -155,12 +157,26 @@ func (s *Store) MarkImageFailed(ctx context.Context, imageID, msg string) error 
 	return err
 }
 
-// MarkImageTerminal records a final outcome (timed_out or unreadable).
+// MarkImageTerminal records a final outcome (only "unreadable": the model
+// says the photo cannot be read, so retrying would not help).
 func (s *Store) MarkImageTerminal(ctx context.Context, imageID, status, msg string) error {
-	if status != "timed_out" && status != "unreadable" {
+	if status != "unreadable" {
 		return errors.New("unsupported terminal analysis status")
 	}
 	_, err := s.Pool.Exec(ctx, `UPDATE images SET status = $2, error = $3, processing_at = NULL WHERE id = $1::uuid`, imageID, status, msg)
+	return err
+}
+
+// MarkImageTimedOut records a model timeout. It is never final: the image is
+// claimed again once retry_after has passed. The delay doubles with every
+// timeout (10 min, 20 min, 40 min, ... capped at 6 h) so a photo the model
+// cannot handle in time costs little instead of occupying an inference slot
+// for the full deadline every cycle.
+func (s *Store) MarkImageTimedOut(ctx context.Context, imageID, msg string) error {
+	_, err := s.Pool.Exec(ctx, `UPDATE images SET status = 'timed_out', error = $2, processing_at = NULL,
+		analysis_attempts = analysis_attempts + 1,
+		retry_after = CURRENT_TIMESTAMP + LEAST(INTERVAL '10 minutes' * power(2, LEAST(analysis_attempts, 10)), INTERVAL '6 hours')
+		WHERE id = $1::uuid`, imageID, msg)
 	return err
 }
 

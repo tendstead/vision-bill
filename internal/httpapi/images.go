@@ -9,10 +9,12 @@ import (
 	"io"
 	"mime"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tendstead/vision-bill/internal/analysis"
@@ -25,8 +27,10 @@ import (
 const (
 	maxPhotoBytes = 20 * 1024 * 1024
 	maxPhotos     = 10
-	// formOverhead leaves room for multipart framing around the photos.
-	formOverhead        = 1 << 20
+	// maxUploadBytes caps one whole request (all photos plus multipart
+	// framing). Photos are streamed to disk, so this bounds disk and time,
+	// not memory.
+	maxUploadBytes      = 200 * 1024 * 1024
 	pendingQueueWarning = "LLM provider not available – image queued for background analysis"
 )
 
@@ -50,27 +54,57 @@ func writeJSONHeaders(w http.ResponseWriter, status int, headers map[string]stri
 	writeJSON(w, status, v)
 }
 
+// upload is one received photo, already stored in the temporary area.
 type upload struct {
 	filename string
-	content  []byte
+	path     string
+	size     int64
 }
 
-// readUploads streams the "receipt" file fields. ok=false means a response was written.
+func isTimeout(err error) bool {
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
+}
+
+// readUploads streams the "receipt" file fields to temporary files, so a
+// request of up to maxUploadBytes never has to fit in memory. ok=false means
+// a response was written and every stored file was removed again.
 func (s *Server) readUploads(w http.ResponseWriter, r *http.Request) ([]upload, bool) {
-	missing := func() ([]upload, bool) {
-		validationErrors{{Type: "missing", Loc: bodyLoc("receipt"), Msg: "Field required"}}.write(w)
+	var out []upload
+	abort := func(write func()) ([]upload, bool) {
+		for _, up := range out {
+			s.opts.Files.Delete(up.path)
+		}
+		write()
 		return nil, false
+	}
+	missing := func() ([]upload, bool) {
+		return abort(func() {
+			validationErrors{{Type: "missing", Loc: bodyLoc("receipt"), Msg: "Field required"}}.write(w)
+		})
+	}
+	// failed maps a read/copy error to its response.
+	failed := func(err error) ([]upload, bool) {
+		var tooBig *http.MaxBytesError
+		switch {
+		case errors.As(err, &tooBig):
+			return abort(func() { writeError(w, http.StatusRequestEntityTooLarge, "An upload must be at most 200 MB in total") })
+		case errors.Is(err, files.ErrTooLarge):
+			return abort(func() { writeError(w, http.StatusRequestEntityTooLarge, "Each photo must be at most 20 MB") })
+		case isTimeout(err):
+			return abort(func() { writeError(w, http.StatusRequestTimeout, "The upload took too long") })
+		}
+		return abort(func() { writeError(w, http.StatusBadRequest, "Could not read upload") })
 	}
 	ctype := r.Header.Get("Content-Type")
 	if !strings.HasPrefix(strings.ToLower(ctype), "multipart/form-data") {
 		return missing()
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxPhotos*maxPhotoBytes+formOverhead)
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
 	mr, err := r.MultipartReader()
 	if err != nil {
 		return missing()
 	}
-	var out []upload
 	for {
 		part, err := mr.NextPart()
 		if errors.Is(err, io.EOF) {
@@ -78,12 +112,10 @@ func (s *Server) readUploads(w http.ResponseWriter, r *http.Request) ([]upload, 
 		}
 		if err != nil {
 			var tooBig *http.MaxBytesError
-			if errors.As(err, &tooBig) {
-				writeError(w, http.StatusRequestEntityTooLarge, "Each photo must be at most 20 MB")
-				return nil, false
+			if errors.As(err, &tooBig) || isTimeout(err) {
+				return failed(err)
 			}
-			validationErrors{{Type: "missing", Loc: bodyLoc("receipt"), Msg: "Field required"}}.write(w)
-			return nil, false
+			return missing()
 		}
 		filename := rawFileName(part)
 		if part.FormName() != "receipt" || filename == "" {
@@ -91,25 +123,15 @@ func (s *Server) readUploads(w http.ResponseWriter, r *http.Request) ([]upload, 
 			continue
 		}
 		if len(out) >= maxPhotos {
-			writeError(w, http.StatusUnprocessableEntity, "Upload between 1 and 10 photos of one receipt")
-			return nil, false
+			_ = part.Close()
+			return abort(func() { writeError(w, http.StatusUnprocessableEntity, "Upload between 1 and 10 photos of one receipt") })
 		}
-		data, err := io.ReadAll(io.LimitReader(part, maxPhotoBytes+1))
+		path, size, err := s.opts.Files.StoreTmpStream(part, maxPhotoBytes)
 		_ = part.Close()
 		if err != nil {
-			var tooBig *http.MaxBytesError
-			if errors.As(err, &tooBig) {
-				writeError(w, http.StatusRequestEntityTooLarge, "Each photo must be at most 20 MB")
-				return nil, false
-			}
-			writeError(w, http.StatusBadRequest, "Could not read upload")
-			return nil, false
+			return failed(err)
 		}
-		if len(data) > maxPhotoBytes {
-			writeError(w, http.StatusRequestEntityTooLarge, "Each photo must be at most 20 MB")
-			return nil, false
-		}
-		out = append(out, upload{filename: filename, content: data})
+		out = append(out, upload{filename: filename, path: path, size: size})
 	}
 	if len(out) == 0 {
 		return missing()
@@ -129,13 +151,15 @@ func rawFileName(p *multipart.Part) string {
 }
 
 func (s *Server) uploadImage(w http.ResponseWriter, r *http.Request, u userView) {
-	// Bound concurrent uploads: each may hold up to 10 x 20 MiB in memory.
+	// Bound concurrent uploads (disk, CPU for validation and thumbnails). The
+	// slot is released once the photos are stored, not held during analysis.
 	select {
 	case s.uploadSem <- struct{}{}:
-		defer func() { <-s.uploadSem }()
 	case <-r.Context().Done():
 		return
 	}
+	releaseSlot := sync.OnceFunc(func() { <-s.uploadSem })
+	defer releaseSlot()
 	p := newParams(r)
 	modelParam, hasModel := p.optString("model_id")
 	bypassParam := p.boolParam("bypass_review")
@@ -160,12 +184,12 @@ func (s *Server) uploadImage(w http.ResponseWriter, r *http.Request, u userView)
 
 	var parts []domain.ImagePart
 	cleanup := func() {
-		for _, part := range parts {
-			fs.Delete(part.ImagePath)
+		for _, up := range uploads {
+			fs.Delete(up.path)
 		}
 	}
 	for _, up := range uploads {
-		mt, err := fs.Validate(ctx, up.content)
+		mt, err := fs.ValidateFile(ctx, up.path)
 		if err != nil {
 			cleanup()
 			var heic files.HEICUnavailableError
@@ -181,19 +205,14 @@ func (s *Server) uploadImage(w http.ResponseWriter, r *http.Request, u userView)
 			}
 			return
 		}
-		path, err := fs.StoreTmp(up.content)
-		if err != nil {
-			cleanup()
-			s.internalError(w, r, err)
-			return
-		}
-		name, size := up.filename, int64(len(up.content))
-		part := domain.ImagePart{ImagePath: path, OriginalFilename: &name, MediaType: &mt, SizeBytes: &size}
+		name, size := up.filename, up.size
+		part := domain.ImagePart{ImagePath: up.path, OriginalFilename: &name, MediaType: &mt, SizeBytes: &size}
 		parts = append(parts, part)
-		if thumb := fs.GenerateThumbnail(ctx, path); thumb != "" {
+		if thumb := fs.GenerateThumbnail(ctx, up.path); thumb != "" {
 			parts[len(parts)-1].ThumbnailPath = &thumb
 		}
 	}
+	releaseSlot()
 
 	var models []llm.ModelInfo
 	if len(parts) == 1 && s.opts.Provider != nil {
@@ -255,13 +274,14 @@ func (s *Server) uploadImage(w http.ResponseWriter, r *http.Request, u userView)
 		var unreadable *llm.UnreadableError
 		var timeout *llm.TimeoutError
 		switch {
-		case errors.As(err, &timeout), errors.As(err, &unreadable):
-			status, code := "unreadable", http.StatusUnprocessableEntity
-			if timeout != nil {
-				status, code = "timed_out", http.StatusGatewayTimeout
-			}
-			_ = st.MarkImageTerminal(actx, row.ID, status, err.Error())
-			writeJSONHeaders(w, code, loc, map[string]string{"detail": err.Error(), "image_id": row.ID, "status": status})
+		case errors.As(err, &timeout):
+			// Not final: the image stays queued and the worker retries it later.
+			_ = st.MarkImageTimedOut(actx, row.ID, analysis.TimedOutMessage)
+			writeJSONHeaders(w, http.StatusGatewayTimeout, loc, map[string]string{"detail": err.Error(), "image_id": row.ID, "status": "timed_out"})
+			return
+		case errors.As(err, &unreadable):
+			_ = st.MarkImageTerminal(actx, row.ID, "unreadable", err.Error())
+			writeJSONHeaders(w, http.StatusUnprocessableEntity, loc, map[string]string{"detail": err.Error(), "image_id": row.ID, "status": "unreadable"})
 			return
 		}
 		_ = st.MarkImageFailed(actx, row.ID, err.Error())
@@ -317,7 +337,15 @@ func (s *Server) listImages(w http.ResponseWriter, r *http.Request, u userView) 
 	writeJSON(w, http.StatusOK, rows)
 }
 
-func (s *Server) analyzePending(w http.ResponseWriter, r *http.Request, _ userView) {
+// analyzePending lets every user wake the analysis worker. Only an
+// administrator runs the cycle synchronously and sees its results, because they
+// describe the whole queue (other users' images and error texts).
+func (s *Server) analyzePending(w http.ResponseWriter, r *http.Request, u userView) {
+	if !u.IsAdmin {
+		s.opts.Scheduler.Trigger()
+		writeJSON(w, http.StatusOK, map[string]any{"results": []analysis.Result{}})
+		return
+	}
 	results, err := s.opts.Scheduler.ProcessPending(context.WithoutCancel(r.Context()))
 	if err != nil {
 		s.internalError(w, r, err)

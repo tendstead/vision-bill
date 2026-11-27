@@ -15,6 +15,7 @@
 ### 🛠️ Quickstart (Docker)
 Versioned container publishing is available through the manual Release workflow;
 see [release setup, image references, and recovery](RELEASES.md).
+Switching from the Python image, migrations and rollbacks are described in [UPGRADING.md](UPGRADING.md).
 
 The fastest way to get started is using Docker Compose:
 ```bash

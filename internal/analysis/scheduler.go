@@ -175,8 +175,8 @@ func (s *Scheduler) analyzeOne(ctx context.Context, img *domain.ImageRow, model 
 		var timeout *llm.TimeoutError
 		switch {
 		case errors.As(err, &timeout):
-			_ = st.MarkImageTerminal(rec, img.ID, "timed_out", err.Error())
-			return Result{ImageID: img.ID, Status: "timed_out", Error: strp(err.Error())}
+			_ = st.MarkImageTimedOut(rec, img.ID, TimedOutMessage)
+			return Result{ImageID: img.ID, Status: "timed_out", Error: strp(TimedOutMessage)}
 		case errors.As(err, &unreadable):
 			_ = st.MarkImageTerminal(rec, img.ID, "unreadable", err.Error())
 			return Result{ImageID: img.ID, Status: "unreadable", Error: strp(err.Error())}

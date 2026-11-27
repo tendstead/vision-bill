@@ -519,7 +519,7 @@ func (s *Service) Execute(ctx context.Context, st *store.Store, task store.Bench
 	}
 	deadline := time.Duration(timeout) * time.Second
 	if raw != nil {
-		s.executeExperiment(ctx, rec, st, task, raw, deadline)
+		s.executeExperiment(ctx, rec, st, task, raw, deadline, retry)
 		return
 	}
 	s.executeLegacy(ctx, rec, st, task, deadline, retry)
@@ -541,14 +541,25 @@ func (s *Service) executeLegacy(ctx, rec context.Context, st *store.Store, task 
 		fail()
 		return
 	}
-	actx, cancel := context.WithTimeout(ctx, deadline)
-	defer cancel()
-	images, err := s.Analysis.LoadImages(actx, []domain.ImagePart{{ImagePath: *details.ImagePath}})
-	if err != nil {
+	// The deadline starts once an inference slot is held: waiting for a slot
+	// must not be recorded as a model timeout.
+	var a *llm.Analysis
+	loadFailed := false
+	err = s.Analysis.Inference(ctx, func(c context.Context) error {
+		actx, cancel := context.WithTimeout(c, deadline)
+		defer cancel()
+		images, err := s.Analysis.LoadImages(actx, []domain.ImagePart{{ImagePath: *details.ImagePath}})
+		if err != nil {
+			loadFailed = true
+			return err
+		}
+		a, err = llm.Analyse(actx, s.Provider, task.ModelID, images, nil, llm.PromptOptions{}, llm.ChatOptions{})
+		return err
+	})
+	if loadFailed {
 		fail()
 		return
 	}
-	a, err := llm.Analyse(actx, s.Provider, task.ModelID, images, nil, llm.PromptOptions{}, llm.ChatOptions{})
 	if err != nil {
 		var unreadable *llm.UnreadableError
 		var vf *llm.ValidationFailure
@@ -597,7 +608,23 @@ func errKind(err error) string {
 	return "ValueError"
 }
 
+// runInSlot runs one frozen-input extraction while holding an inference slot.
+// The run's deadline starts after the slot is acquired so that waiting behind
+// uploads is never recorded as a model timeout. waited is non-nil when ctx
+// ended before a slot became free.
+func (s *Service) runInSlot(ctx context.Context, deadline time.Duration, m *manifest, receiptID, modelID string) (expected *domain.Receipt, result *experimentResult, timedOut bool, err, waited error) {
+	waited = s.Analysis.Inference(ctx, func(c context.Context) error {
+		rctx, cancel := context.WithTimeout(c, deadline)
+		defer cancel()
+		expected, result, err = s.runExperiment(rctx, m, receiptID, modelID)
+		timedOut = rctx.Err() == context.DeadlineExceeded
+		return nil
+	})
+	return
+}
+
 // runExperiment verifies the frozen inputs still match and extracts again.
+// The caller must hold an inference slot.
 func (s *Service) runExperiment(ctx context.Context, m *manifest, receiptID, modelID string) (*domain.Receipt, *experimentResult, error) {
 	current := s.Provider.Kind()
 	if m.Provider != current {
@@ -667,17 +694,18 @@ func (s *Service) runExperiment(ctx context.Context, m *manifest, receiptID, mod
 		calls = append(calls, t)
 		callsMu.Unlock()
 	}}
+	// The caller holds the inference slot (see runInSlot).
 	actx, cancel := context.WithTimeout(ctx, provider.Timeout())
 	defer cancel()
 	var a *llm.Analysis
-	err := s.Analysis.Inference(actx, func(c context.Context) error {
-		images, err := s.Analysis.LoadImages(c, parts)
+	err := func() error {
+		images, err := s.Analysis.LoadImages(actx, parts)
 		if err != nil {
 			return err
 		}
-		a, err = llm.Analyse(c, provider, modelID, images, m.Tags, promptOptions(m.Options), copts)
+		a, err = llm.Analyse(actx, provider, modelID, images, m.Tags, promptOptions(m.Options), copts)
 		return err
-	})
+	}()
 	callsOrEmpty := func() []map[string]any {
 		callsMu.Lock()
 		defer callsMu.Unlock()
@@ -718,16 +746,17 @@ func (s *Service) runExperiment(ctx context.Context, m *manifest, receiptID, mod
 	return expected, &experimentResult{Receipt: a.Receipt, Attempts: n, Elapsed: elapsed, Metadata: metadata}, nil
 }
 
-func (s *Service) executeExperiment(ctx, rec context.Context, st *store.Store, task store.BenchmarkTask, raw json.RawMessage, deadline time.Duration) {
+func (s *Service) executeExperiment(ctx, rec context.Context, st *store.Store, task store.BenchmarkTask, raw json.RawMessage, deadline time.Duration, retry func(bool)) {
 	started := time.Now()
 	m, err := parseManifest(raw)
 	if err == nil {
-		rctx, cancel := context.WithTimeout(ctx, deadline)
-		var expected *domain.Receipt
-		var result *experimentResult
-		expected, result, err = s.runExperiment(rctx, m, task.ReceiptID, task.ModelID)
-		timedOut := rctx.Err() == context.DeadlineExceeded
-		cancel()
+		expected, result, timedOut, runErr, waited := s.runInSlot(ctx, deadline, m, task.ReceiptID, task.ModelID)
+		if waited != nil {
+			// Shutting down before a slot was free: nothing ran, try again later.
+			retry(false)
+			return
+		}
+		err = runErr
 		if err == nil {
 			detail := DetailedScore(expected, result.Receipt, m.Options.IncludeClassification)
 			payload, _ := json.Marshal(map[string]any{
@@ -805,10 +834,11 @@ func (s *Service) Reevaluate(ctx context.Context, runID, receiptID, modelID stri
 		if err != nil {
 			return nil, err
 		}
-		rctx, cancel := context.WithTimeout(ctx, deadline)
-		defer cancel()
-		expected, result, err := s.runExperiment(rctx, m, receiptID, modelID)
-		if rctx.Err() == context.DeadlineExceeded {
+		expected, result, timedOut, err, waited := s.runInSlot(ctx, deadline, m, receiptID, modelID)
+		if waited != nil {
+			return nil, waited
+		}
+		if timedOut {
 			return nil, ErrTimeout
 		}
 		if err != nil {
@@ -833,12 +863,21 @@ func (s *Service) Reevaluate(ctx context.Context, runID, receiptID, modelID stri
 	if details.ImagePath == nil || !fileExists(*details.ImagePath) {
 		return nil, userErr("Verified receipt image is unavailable")
 	}
-	images, err := s.Analysis.LoadImages(ctx, []domain.ImagePart{{ImagePath: *details.ImagePath}})
+	var a *llm.Analysis
+	err = s.Analysis.Inference(ctx, func(c context.Context) error {
+		actx, cancel := context.WithTimeout(c, deadline)
+		defer cancel()
+		images, err := s.Analysis.LoadImages(actx, []domain.ImagePart{{ImagePath: *details.ImagePath}})
+		if err != nil {
+			return err
+		}
+		a, err = llm.Analyse(actx, s.Provider, modelID, images, nil, llm.PromptOptions{}, llm.ChatOptions{})
+		return err
+	})
 	if err != nil {
-		return nil, err
-	}
-	a, err := llm.Analyse(ctx, s.Provider, modelID, images, nil, llm.PromptOptions{}, llm.ChatOptions{})
-	if err != nil {
+		if llm.IsTimeout(err) {
+			return nil, ErrTimeout
+		}
 		return nil, err
 	}
 	ed, ad := toMap(Dump(expected)), toMap(Dump(a.Receipt))

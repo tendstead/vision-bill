@@ -21,6 +21,9 @@ import (
 // benchmarks share the same slots) so a busy server cannot flood the model host.
 const DefaultInferenceSlots = 2
 
+// TimedOutMessage is stored with a submission whose analysis timed out.
+const TimedOutMessage = "The LLM request timed out. The image stays queued and is retried automatically with increasing delays."
+
 // Service wires extraction to storage.
 type Service struct {
 	Store    func() *store.Store
@@ -90,11 +93,12 @@ func (s *Service) LoadImages(ctx context.Context, parts []domain.ImagePart) ([]l
 // Analyse extracts a receipt from the photos within the configured deadline.
 // Deadline expiry is reported as *llm.TimeoutError.
 func (s *Service) Analyse(ctx context.Context, model string, parts []domain.ImagePart) (*domain.Receipt, error) {
-	// The deadline covers waiting for a slot, loading and the model calls.
-	ctx, cancel := context.WithTimeout(ctx, s.Provider.Timeout())
-	defer cancel()
+	// The deadline covers loading and the model calls but not the wait for an
+	// inference slot: a busy server must delay an analysis, never time it out.
 	var receipt *domain.Receipt
 	err := s.Inference(ctx, func(ctx context.Context) error {
+		ctx, cancel := context.WithTimeout(ctx, s.Provider.Timeout())
+		defer cancel()
 		images, err := s.LoadImages(ctx, parts)
 		if err != nil {
 			return err
@@ -145,7 +149,7 @@ func ChooseModel(models []llm.ModelInfo, requested *string, configured string) s
 // storage and records the new paths. It is safe to repeat after a partial run.
 func (s *Service) MovePermanent(ctx context.Context, st *store.Store, img *domain.ImageRow, receiptID string) error {
 	if img.ImagePath != nil && *img.ImagePath != "" {
-		path, thumb, err := s.Files.StorePerm(*img.ImagePath, receiptID)
+		path, thumb, err := s.Files.StorePerm(*img.ImagePath, receiptID, true)
 		if err != nil {
 			return err
 		}
@@ -165,7 +169,7 @@ func (s *Service) MovePermanent(ctx context.Context, st *store.Store, img *domai
 	}
 	parts := append([]domain.ImagePart(nil), img.AdditionalImages...)
 	for i := range parts {
-		path, thumb, err := s.Files.StorePerm(parts[i].ImagePath, receiptID)
+		path, thumb, err := s.Files.StorePerm(parts[i].ImagePath, receiptID, false)
 		if err != nil {
 			return err
 		}

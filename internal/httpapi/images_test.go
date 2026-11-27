@@ -244,7 +244,15 @@ func TestUploadQueuedWhenProviderDownThenAnalysedByWorker(t *testing.T) {
 	}
 
 	e.provider.set(false, modelReceipt)
-	m := e.do("POST", "/api/v1/images/analyze", nil, alice.cookie)
+	// A regular user may trigger the worker but never sees (or runs inline) the queue.
+	if u := e.do("POST", "/api/v1/images/analyze", nil, alice.cookie); u.Code != 200 || len(u.json(t)["results"].([]any)) != 0 {
+		t.Fatalf("non-admin trigger: %d %s", u.Code, u.Body)
+	}
+	if e.do("GET", "/api/v1/images/"+imageID, nil, alice.cookie).json(t)["status"] != "pending" {
+		t.Fatal("a non-admin trigger must not run the cycle inline")
+	}
+	boss := e.user(t, "boss", true)
+	m := e.do("POST", "/api/v1/images/analyze", nil, boss.cookie)
 	results := m.json(t)["results"].([]any)
 	if m.Code != 200 || len(results) != 1 || results[0].(map[string]any)["status"] != "analyzed" {
 		t.Fatalf("manual trigger: %d %s", m.Code, m.Body)
@@ -431,5 +439,64 @@ func TestSettingsAppliesTemperatureAndUIConfig(t *testing.T) {
 	r := e.do("GET", "/api/v1/system/ui-config", nil)
 	if r.json(t)["heic_supported"] != false {
 		t.Fatalf("%s", r.Body)
+	}
+}
+
+// A model timeout is never final: the image stays queued, is retried only
+// after its backoff delay and succeeds once the model answers in time.
+func TestTimeoutIsRetriedWithBackoff(t *testing.T) {
+	e := newEnv(t, true)
+	alice := e.user(t, "alice", false)
+	e.provider.set(false, modelReceipt)
+	e.provider.mu.Lock()
+	e.provider.chatErr = context.DeadlineExceeded
+	e.provider.mu.Unlock()
+
+	r := e.upload(t, alice, "", pngData)
+	if r.Code != 504 || r.json(t)["status"] != "timed_out" {
+		t.Fatalf("timeout upload: %d %s", r.Code, r.Body)
+	}
+	imageID := r.json(t)["image_id"].(string)
+	var attempts int
+	var wait string
+	q := func() {
+		t.Helper()
+		err := e.st.Pool.QueryRow(context.Background(),
+			`SELECT analysis_attempts, (retry_after > now() + interval '9 minutes')::text FROM images WHERE id = $1::uuid`, imageID).Scan(&attempts, &wait)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	q()
+	if attempts != 1 || wait != "true" {
+		t.Fatalf("attempts=%d delayed=%s", attempts, wait)
+	}
+
+	// Healthy model, but the backoff has not passed: nothing is claimed.
+	e.provider.set(false, modelReceipt)
+	if res, err := e.scheduler.ProcessPending(context.Background()); err != nil || len(res) != 0 {
+		t.Fatalf("backoff ignored: %v %v", res, err)
+	}
+	// A second timeout doubles the delay.
+	if _, err := e.st.Pool.Exec(context.Background(), `UPDATE images SET retry_after = now() - interval '1 second' WHERE id = $1::uuid`, imageID); err != nil {
+		t.Fatal(err)
+	}
+	e.provider.mu.Lock()
+	e.provider.chatErr = context.DeadlineExceeded
+	e.provider.mu.Unlock()
+	res, _ := e.scheduler.ProcessPending(context.Background())
+	if len(res) != 1 || res[0].Status != "timed_out" {
+		t.Fatalf("retry after backoff: %v", res)
+	}
+	q()
+	if attempts != 2 {
+		t.Fatalf("attempts=%d", attempts)
+	}
+	// Once the delay passed and the model answers, the image is analysed.
+	_, _ = e.st.Pool.Exec(context.Background(), `UPDATE images SET retry_after = now() - interval '1 second' WHERE id = $1::uuid`, imageID)
+	e.provider.set(false, modelReceipt)
+	res, _ = e.scheduler.ProcessPending(context.Background())
+	if len(res) != 1 || res[0].Status != "analyzed" {
+		t.Fatalf("final retry: %v", res)
 	}
 }
