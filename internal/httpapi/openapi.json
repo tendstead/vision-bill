@@ -1,0 +1,4483 @@
+{
+ "openapi": "3.1.0",
+ "info": {
+  "title": "Vision Bill API",
+  "version": "0.1.0"
+ },
+ "paths": {
+  "/api/v1/auth/register": {
+   "post": {
+    "tags": [
+     "Auth"
+    ],
+    "summary": "Register",
+    "description": "Create an account and set the session cookie.\n\n``409`` when the username is taken, ``403`` when registration is disabled.\nNew accounts are always non-admin (admins are bootstrapped from env).",
+    "operationId": "register_api_v1_auth_register_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/Credentials"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "201": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/User"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/auth/login": {
+   "post": {
+    "tags": [
+     "Auth"
+    ],
+    "summary": "Login",
+    "description": "Authenticate with username/password and set the session cookie.\n\nReturns ``401`` for unknown users or a wrong password (same response, to\navoid user enumeration).",
+    "operationId": "login_api_v1_auth_login_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/Credentials"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/User"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/auth/logout": {
+   "post": {
+    "tags": [
+     "Auth"
+    ],
+    "summary": "Logout",
+    "description": "Clear the session cookie. Idempotent and unauthenticated (just clears).",
+    "operationId": "logout_api_v1_auth_logout_post",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": {
+          "type": "boolean"
+         },
+         "type": "object",
+         "title": "Response Logout Api V1 Auth Logout Post"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/auth/me": {
+   "get": {
+    "tags": [
+     "Auth"
+    ],
+    "summary": "Me",
+    "description": "Return the currently authenticated user, or ``401``.",
+    "operationId": "me_api_v1_auth_me_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/User"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/receipts": {
+   "get": {
+    "tags": [
+     "Receipts"
+    ],
+    "summary": "List Receipts",
+    "description": "List persisted receipts (the collection resource).\n\nOptional filters: ``status`` (comma-separated), an inclusive\n``date_from``/``date_to`` range, ``search`` over merchant name or\nreceipt number, and ``collection_id`` to scope to one collection.\nNon-see-all users only list their own receipts.",
+    "operationId": "list_receipts_api_v1_receipts_get",
+    "parameters": [
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "maximum": 500,
+       "minimum": 1,
+       "default": 50,
+       "title": "Limit"
+      }
+     },
+     {
+      "name": "offset",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "minimum": 0,
+       "default": 0,
+       "title": "Offset"
+      }
+     },
+     {
+      "name": "status",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "Comma-separated statuses, e.g. unverified,verified",
+       "title": "Status"
+      },
+      "description": "Comma-separated statuses, e.g. unverified,verified"
+     },
+     {
+      "name": "date_from",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string",
+         "format": "date"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "Only receipts dated on or after this date",
+       "title": "Date From"
+      },
+      "description": "Only receipts dated on or after this date"
+     },
+     {
+      "name": "date_to",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string",
+         "format": "date"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "Only receipts dated on or before this date",
+       "title": "Date To"
+      },
+      "description": "Only receipts dated on or before this date"
+     },
+     {
+      "name": "search",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "Case-insensitive match on merchant name or receipt number",
+       "title": "Search"
+      },
+      "description": "Case-insensitive match on merchant name or receipt number"
+     },
+     {
+      "name": "collection_id",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string",
+         "format": "uuid"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "Only receipts in this collection",
+       "title": "Collection Id"
+      },
+      "description": "Only receipts in this collection"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "array",
+         "items": {
+          "$ref": "#/components/schemas/ReceiptRow"
+         },
+         "title": "Response List Receipts Api V1 Receipts Get"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/receipts/{receipt_id}": {
+   "get": {
+    "tags": [
+     "Receipts"
+    ],
+    "summary": "Get Receipt",
+    "operationId": "get_receipt_api_v1_receipts__receipt_id__get",
+    "parameters": [
+     {
+      "name": "receipt_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "format": "uuid",
+       "title": "Receipt Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ReceiptWithDetails"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "put": {
+    "tags": [
+     "Receipts"
+    ],
+    "summary": "Update Receipt",
+    "operationId": "update_receipt_api_v1_receipts__receipt_id__put",
+    "parameters": [
+     {
+      "name": "receipt_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "format": "uuid",
+       "title": "Receipt Id"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ReceiptUpdate"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ReceiptRow"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "tags": [
+     "Receipts"
+    ],
+    "summary": "Delete Receipt",
+    "description": "Delete a receipt (its line items and taxes cascade) plus its stored image.\n\nNon-see-all users may only delete their own receipts.",
+    "operationId": "delete_receipt_api_v1_receipts__receipt_id__delete",
+    "parameters": [
+     {
+      "name": "receipt_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "format": "uuid",
+       "title": "Receipt Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "additionalProperties": true,
+         "title": "Response Delete Receipt Api V1 Receipts  Receipt Id  Delete"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/receipts/{receipt_id}/verify": {
+   "post": {
+    "tags": [
+     "Receipts"
+    ],
+    "summary": "Verify Receipt",
+    "description": "Verify a receipt, moving its image from tmp to permanent storage.\n\nFlow: receipt -> image row -> store_perm_image -> update_image_path ->\nverify_receipt. The path now lives on the images row, not the receipt.\nNon-see-all users may only verify their own receipts.",
+    "operationId": "verify_receipt_api_v1_receipts__receipt_id__verify_post",
+    "parameters": [
+     {
+      "name": "receipt_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "format": "uuid",
+       "title": "Receipt Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ReceiptRow"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/images": {
+   "post": {
+    "tags": [
+     "Images"
+    ],
+    "summary": "Upload Image",
+    "description": "Create a receipt submission from one or more ordered photos.\n\nMultiple photos return 202 immediately after storage and wake the scheduler.\nTheir image UUID identifies the durable submission and all its source photos.\n\nFor one photo, when a model is reachable the image is analysed synchronously, a\nreceipt is persisted and a ``201`` is returned. When no model is reachable\nthe image is queued as ``pending`` and a ``202`` is returned; the background\nscheduler picks it up later. Both responses carry a ``Location`` header so a\nclient can poll the image and, once analysed, follow ``receipt_id`` to the\nreceipt. The tmp image file is always retained so a later verify step (or a\nbackground retry) can still find it.",
+    "operationId": "upload_image_api_v1_images_post",
+    "parameters": [
+     {
+      "name": "model_id",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Model Id"
+      }
+     },
+     {
+      "name": "bypass_review",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "boolean"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Bypass Review"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "multipart/form-data": {
+       "schema": {
+        "$ref": "#/components/schemas/Body_upload_image_api_v1_images_post"
+       }
+      }
+     }
+    },
+    "responses": {
+     "201": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "get": {
+    "tags": [
+     "Images"
+    ],
+    "summary": "List Images",
+    "description": "List image resources, newest first. Filter with ``?status=pending,failed``.",
+    "operationId": "list_images_api_v1_images_get",
+    "parameters": [
+     {
+      "name": "status",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "Comma-separated statuses to filter by, e.g. pending,failed",
+       "title": "Status"
+      },
+      "description": "Comma-separated statuses to filter by, e.g. pending,failed"
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "maximum": 500,
+       "minimum": 1,
+       "default": 50,
+       "title": "Limit"
+      }
+     },
+     {
+      "name": "offset",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "minimum": 0,
+       "default": 0,
+       "title": "Offset"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "array",
+         "items": {
+          "$ref": "#/components/schemas/ImageRow"
+         },
+         "title": "Response List Images Api V1 Images Get"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/images/analyze": {
+   "post": {
+    "tags": [
+     "Images"
+    ],
+    "summary": "Analyze Pending",
+    "description": "Trigger an analysis cycle over the pending queue. Administrators run the cycle synchronously and receive its results; other users only wake the background worker and always receive an empty result list.",
+    "operationId": "analyze_pending_api_v1_images_analyze_post",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "type": "object",
+         "title": "Response Analyze Pending Api V1 Images Analyze Post"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/images/{image_id}": {
+   "get": {
+    "tags": [
+     "Images"
+    ],
+    "summary": "Get Image",
+    "description": "Fetch a single image resource by id.",
+    "operationId": "get_image_api_v1_images__image_id__get",
+    "parameters": [
+     {
+      "name": "image_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "format": "uuid",
+       "title": "Image Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ImageRow"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "tags": [
+     "Images"
+    ],
+    "summary": "Delete Image",
+    "description": "Remove a queued (pending or failed) image resource and its on-disk file.",
+    "operationId": "delete_image_api_v1_images__image_id__delete",
+    "parameters": [
+     {
+      "name": "image_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "format": "uuid",
+       "title": "Image Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "additionalProperties": true,
+         "title": "Response Delete Image Api V1 Images  Image Id  Delete"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/images/{image_id}/file": {
+   "get": {
+    "tags": [
+     "Images"
+    ],
+    "summary": "Get Image File",
+    "description": "Stream the stored image file behind an image resource.",
+    "operationId": "get_image_file_api_v1_images__image_id__file_get",
+    "parameters": [
+     {
+      "name": "image_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "format": "uuid",
+       "title": "Image Id"
+      }
+     },
+     {
+      "name": "part",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "minimum": 0,
+       "default": 0,
+       "title": "Part"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/images/{image_id}/thumb": {
+   "get": {
+    "tags": [
+     "Images"
+    ],
+    "summary": "Get Image Thumb",
+    "description": "Serve the stored thumbnail for an image (404 when there is none).\n\nDumb file server: returns the thumb or 404. It never falls back to the full\nimage \u2014 missing-thumb handling is the frontend's decision.",
+    "operationId": "get_image_thumb_api_v1_images__image_id__thumb_get",
+    "parameters": [
+     {
+      "name": "image_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "format": "uuid",
+       "title": "Image Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/search": {
+   "get": {
+    "tags": [
+     "Search"
+    ],
+    "summary": "Search Products",
+    "description": "Search verified line-item descriptions and return price history.",
+    "operationId": "search_products_api_v1_search_get",
+    "parameters": [
+     {
+      "name": "query",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 255,
+       "description": "Case-insensitive product description search",
+       "title": "Query"
+      },
+      "description": "Case-insensitive product description search"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ProductSearchResponse"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/statistics": {
+   "get": {
+    "tags": [
+     "Statistics"
+    ],
+    "summary": "Get Statistics",
+    "description": "Return verified-only spending aggregates for the current user.",
+    "operationId": "get_statistics_api_v1_statistics_get",
+    "parameters": [
+     {
+      "name": "weeks",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "maximum": 52,
+       "minimum": 1,
+       "default": 12,
+       "title": "Weeks"
+      }
+     },
+     {
+      "name": "collection_id",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string",
+         "format": "uuid"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "Scope statistics to a single collection",
+       "title": "Collection Id"
+      },
+      "description": "Scope statistics to a single collection"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ReceiptStatistics"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/statistics/items": {
+   "get": {
+    "tags": [
+     "Statistics"
+    ],
+    "summary": "Get Item Statistics",
+    "description": "Category shares and calendar-month trends through today, per currency.\n\nDeposits are separate; unknown items remain in the spending denominator.\nReceipt-wide adjustments are shown as unallocated, never guessed per item.",
+    "operationId": "get_item_statistics_api_v1_statistics_items_get",
+    "parameters": [
+     {
+      "name": "months",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "maximum": 36,
+       "minimum": 1,
+       "default": 12,
+       "title": "Months"
+      }
+     },
+     {
+      "name": "collection_id",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string",
+         "format": "uuid"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Collection Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ItemStatistics"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/benchmarks": {
+   "post": {
+    "tags": [
+     "Benchmarks"
+    ],
+    "summary": "Create Benchmark Run",
+    "description": "Queue a benchmark run and return immediately with its durable run id.",
+    "operationId": "create_benchmark_run_api_v1_benchmarks_post",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/BenchmarkCreate"
+       }
+      }
+     }
+    },
+    "responses": {
+     "202": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/BenchmarkRun"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "get": {
+    "tags": [
+     "Benchmarks"
+    ],
+    "summary": "List Benchmark Runs",
+    "description": "Return benchmark history, newest first.",
+    "operationId": "list_benchmark_runs_api_v1_benchmarks_get",
+    "parameters": [
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "maximum": 500,
+       "minimum": 1,
+       "default": 50,
+       "title": "Limit"
+      }
+     },
+     {
+      "name": "offset",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "minimum": 0,
+       "default": 0,
+       "title": "Offset"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "array",
+         "items": {
+          "$ref": "#/components/schemas/BenchmarkRun"
+         },
+         "title": "Response List Benchmark Runs Api V1 Benchmarks Get"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/benchmarks/capabilities": {
+   "get": {
+    "tags": [
+     "Benchmarks"
+    ],
+    "summary": "Experiment Capabilities",
+    "operationId": "experiment_capabilities_api_v1_benchmarks_capabilities_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": {
+          "type": "boolean"
+         },
+         "type": "object",
+         "title": "Response Experiment Capabilities Api V1 Benchmarks Capabilities Get"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/benchmarks/{run_id}/results": {
+   "get": {
+    "tags": [
+     "Benchmarks"
+    ],
+    "summary": "Individual Results",
+    "operationId": "individual_results_api_v1_benchmarks__run_id__results_get",
+    "parameters": [
+     {
+      "name": "run_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "format": "uuid",
+       "title": "Run Id"
+      }
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "maximum": 200,
+       "minimum": 1,
+       "default": 50,
+       "title": "Limit"
+      }
+     },
+     {
+      "name": "offset",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "minimum": 0,
+       "default": 0,
+       "title": "Offset"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "array",
+         "items": {
+          "type": "object",
+          "additionalProperties": true
+         },
+         "title": "Response Individual Results Api V1 Benchmarks  Run Id  Results Get"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/benchmarks/{run_id}": {
+   "get": {
+    "tags": [
+     "Benchmarks"
+    ],
+    "summary": "Get Benchmark Status",
+    "description": "Get live queue state, selected IDs, and aggregate model summaries.",
+    "operationId": "get_benchmark_status_api_v1_benchmarks__run_id__get",
+    "parameters": [
+     {
+      "name": "run_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "format": "uuid",
+       "title": "Run Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/BenchmarkStatus"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/benchmarks/{run_id}/reevaluate": {
+   "post": {
+    "tags": [
+     "Benchmarks"
+    ],
+    "summary": "Reevaluate Receipt",
+    "description": "Evaluate one receipt transiently; no extraction output is persisted.",
+    "operationId": "reevaluate_receipt_api_v1_benchmarks__run_id__reevaluate_post",
+    "parameters": [
+     {
+      "name": "run_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "format": "uuid",
+       "title": "Run Id"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/BenchmarkReevaluation"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "additionalProperties": true,
+         "title": "Response Reevaluate Receipt Api V1 Benchmarks  Run Id  Reevaluate Post"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/tags/categories": {
+   "get": {
+    "tags": [
+     "Tags"
+    ],
+    "summary": "List Categories",
+    "description": "Stable codes for one spending category per line item.",
+    "operationId": "list_categories_api_v1_tags_categories_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "items": {
+          "additionalProperties": {
+           "type": "string"
+          },
+          "type": "object"
+         },
+         "type": "array",
+         "title": "Response List Categories Api V1 Tags Categories Get"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/tags/category-suggestion": {
+   "get": {
+    "tags": [
+     "Tags"
+    ],
+    "summary": "Category Suggestion",
+    "operationId": "category_suggestion_api_v1_tags_category_suggestion_get",
+    "parameters": [
+     {
+      "name": "merchant_name",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "minLength": 1,
+       "title": "Merchant Name"
+      }
+     },
+     {
+      "name": "description",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "minLength": 1,
+       "title": "Description"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "additionalProperties": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ]
+         },
+         "title": "Response Category Suggestion Api V1 Tags Category Suggestion Get"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/tags": {
+   "get": {
+    "tags": [
+     "Tags"
+    ],
+    "summary": "List Tags",
+    "description": "Return the allowed line-item tag vocabulary, ordered by name.\n\nThis is the source of truth behind the tag <select> in the UI.",
+    "operationId": "list_tags_api_v1_tags_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array",
+         "title": "Response List Tags Api V1 Tags Get"
+        }
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "Tags"
+    ],
+    "summary": "Create Tag",
+    "description": "Create a tag, idempotently.\n\nNames are normalized (trimmed, lower-cased). A tag that already exists is\nreturned as-is (200); a newly created one returns 201. This lets the UI\n\"promote\" an LLM-suggested tag without racing a duplicate insert.",
+    "operationId": "create_tag_api_v1_tags_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/TagCreate"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/collections": {
+   "get": {
+    "tags": [
+     "Collections"
+    ],
+    "summary": "List Collections",
+    "operationId": "list_collections_api_v1_collections_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "items": {
+          "$ref": "#/components/schemas/CollectionSummary"
+         },
+         "type": "array",
+         "title": "Response List Collections Api V1 Collections Get"
+        }
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "Collections"
+    ],
+    "summary": "Create Collection",
+    "operationId": "create_collection_api_v1_collections_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/CollectionCreate"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "201": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Collection"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/collections/active": {
+   "get": {
+    "tags": [
+     "Collections"
+    ],
+    "summary": "Get Active Collection",
+    "description": "The current user's active (auto-capturing) collection; 204 when none.\n\nDeclared before the ``/{collection_id}`` route so the literal path wins.",
+    "operationId": "get_active_collection_api_v1_collections_active_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Collection"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/collections/{collection_id}": {
+   "get": {
+    "tags": [
+     "Collections"
+    ],
+    "summary": "Get Collection",
+    "operationId": "get_collection_api_v1_collections__collection_id__get",
+    "parameters": [
+     {
+      "name": "collection_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "format": "uuid",
+       "title": "Collection Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/CollectionDetail"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "patch": {
+    "tags": [
+     "Collections"
+    ],
+    "summary": "Update Collection",
+    "operationId": "update_collection_api_v1_collections__collection_id__patch",
+    "parameters": [
+     {
+      "name": "collection_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "format": "uuid",
+       "title": "Collection Id"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/CollectionUpdate"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Collection"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "tags": [
+     "Collections"
+    ],
+    "summary": "Delete Collection",
+    "operationId": "delete_collection_api_v1_collections__collection_id__delete",
+    "parameters": [
+     {
+      "name": "collection_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "format": "uuid",
+       "title": "Collection Id"
+      }
+     }
+    ],
+    "responses": {
+     "204": {
+      "description": "Successful Response"
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/collections/{collection_id}/receipts/{receipt_id}": {
+   "post": {
+    "tags": [
+     "Collections"
+    ],
+    "summary": "Assign Receipt",
+    "operationId": "assign_receipt_api_v1_collections__collection_id__receipts__receipt_id__post",
+    "parameters": [
+     {
+      "name": "collection_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "format": "uuid",
+       "title": "Collection Id"
+      }
+     },
+     {
+      "name": "receipt_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "format": "uuid",
+       "title": "Receipt Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "additionalProperties": {
+          "type": "boolean"
+         },
+         "title": "Response Assign Receipt Api V1 Collections  Collection Id  Receipts  Receipt Id  Post"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "tags": [
+     "Collections"
+    ],
+    "summary": "Unassign Receipt",
+    "operationId": "unassign_receipt_api_v1_collections__collection_id__receipts__receipt_id__delete",
+    "parameters": [
+     {
+      "name": "collection_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "format": "uuid",
+       "title": "Collection Id"
+      }
+     },
+     {
+      "name": "receipt_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "format": "uuid",
+       "title": "Receipt Id"
+      }
+     }
+    ],
+    "responses": {
+     "204": {
+      "description": "Successful Response"
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/collections/{collection_id}/activate": {
+   "post": {
+    "tags": [
+     "Collections"
+    ],
+    "summary": "Activate Collection",
+    "description": "Activate auto-capture for this collection (deactivates the user's other active one).",
+    "operationId": "activate_collection_api_v1_collections__collection_id__activate_post",
+    "parameters": [
+     {
+      "name": "collection_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "format": "uuid",
+       "title": "Collection Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Collection"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/collections/{collection_id}/deactivate": {
+   "post": {
+    "tags": [
+     "Collections"
+    ],
+    "summary": "Deactivate Collection",
+    "operationId": "deactivate_collection_api_v1_collections__collection_id__deactivate_post",
+    "parameters": [
+     {
+      "name": "collection_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "format": "uuid",
+       "title": "Collection Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Collection"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/system/ui-config": {
+   "get": {
+    "tags": [
+     "System",
+     "System"
+    ],
+    "summary": "Get Ui Config",
+    "description": "Return safe runtime defaults needed by the browser UI (public, pre-auth).",
+    "operationId": "get_ui_config_api_v1_system_ui_config_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": {
+          "type": "boolean"
+         },
+         "type": "object",
+         "title": "Response Get Ui Config Api V1 System Ui Config Get"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/system/settings": {
+   "get": {
+    "tags": [
+     "System",
+     "System"
+    ],
+    "summary": "Get Settings",
+    "description": "Return editable settings without exposing credentials or secrets.",
+    "operationId": "get_settings_api_v1_system_settings_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/SettingsView"
+        }
+       }
+      }
+     }
+    }
+   },
+   "put": {
+    "tags": [
+     "System",
+     "System"
+    ],
+    "summary": "Update Settings",
+    "description": "Persist admin-editable settings and apply safe changes immediately.",
+    "operationId": "update_settings_api_v1_system_settings_put",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/SettingsUpdate"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/SettingsView"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/llm/models": {
+   "get": {
+    "tags": [
+     "LLM",
+     "LLM",
+     "AI",
+     "Model Evaluation"
+    ],
+    "summary": "List Models",
+    "operationId": "list_models_api_v1_llm_models_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "items": {
+          "additionalProperties": true,
+          "type": "object"
+         },
+         "type": "array",
+         "title": "Response List Models Api V1 Llm Models Get"
+        }
+       }
+      }
+     }
+    }
+   }
+  }
+ },
+ "components": {
+  "schemas": {
+   "BenchmarkCreate": {
+    "properties": {
+     "experiment": {
+      "$ref": "#/components/schemas/ExperimentOptions"
+     },
+     "model_ids": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Model Ids"
+     },
+     "receipt_ids": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string",
+         "format": "uuid"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Receipt Ids"
+     },
+     "category": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Category"
+     },
+     "max_source_confidence": {
+      "anyOf": [
+       {
+        "type": "integer",
+        "maximum": 100.0,
+        "minimum": 0.0
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Max Source Confidence"
+     },
+     "limit": {
+      "anyOf": [
+       {
+        "type": "integer",
+        "minimum": 1.0
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Limit"
+     },
+     "request_timeout_seconds": {
+      "type": "integer",
+      "minimum": 1.0,
+      "title": "Request Timeout Seconds",
+      "default": 300
+     },
+     "council_policy": {
+      "$ref": "#/components/schemas/CouncilPolicy",
+      "default": "all"
+     },
+     "council_absolute_threshold": {
+      "anyOf": [
+       {
+        "type": "number",
+        "minimum": 0.0
+       },
+       {
+        "type": "string",
+        "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Council Absolute Threshold"
+     },
+     "council_relative_threshold": {
+      "anyOf": [
+       {
+        "type": "number",
+        "minimum": 0.0
+       },
+       {
+        "type": "string",
+        "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Council Relative Threshold"
+     },
+     "apply_council_flags": {
+      "type": "boolean",
+      "title": "Apply Council Flags",
+      "default": false
+     }
+    },
+    "type": "object",
+    "title": "BenchmarkCreate",
+    "description": "A durable, local-only benchmark request."
+   },
+   "BenchmarkReevaluation": {
+    "properties": {
+     "receipt_id": {
+      "type": "string",
+      "format": "uuid",
+      "title": "Receipt Id"
+     },
+     "model_id": {
+      "type": "string",
+      "minLength": 1,
+      "title": "Model Id"
+     }
+    },
+    "type": "object",
+    "required": [
+     "receipt_id",
+     "model_id"
+    ],
+    "title": "BenchmarkReevaluation",
+    "description": "A transient evaluation of one receipt with one model."
+   },
+   "BenchmarkRun": {
+    "properties": {
+     "id": {
+      "type": "string",
+      "format": "uuid",
+      "title": "Id"
+     },
+     "status": {
+      "type": "string",
+      "title": "Status"
+     },
+     "model_ids": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "title": "Model Ids"
+     },
+     "receipt_ids": {
+      "items": {
+       "type": "string",
+       "format": "uuid"
+      },
+      "type": "array",
+      "title": "Receipt Ids"
+     },
+     "dataset_fingerprint": {
+      "type": "string",
+      "title": "Dataset Fingerprint"
+     },
+     "prompt_version": {
+      "type": "string",
+      "title": "Prompt Version"
+     },
+     "scoring_version": {
+      "type": "string",
+      "title": "Scoring Version"
+     },
+     "council_policy": {
+      "$ref": "#/components/schemas/CouncilPolicy"
+     },
+     "apply_council_flags": {
+      "type": "boolean",
+      "title": "Apply Council Flags"
+     },
+     "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "title": "Created At"
+     },
+     "completed_at": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "date-time"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Completed At"
+     },
+     "experiment": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Experiment"
+     }
+    },
+    "type": "object",
+    "required": [
+     "id",
+     "status",
+     "model_ids",
+     "receipt_ids",
+     "dataset_fingerprint",
+     "prompt_version",
+     "scoring_version",
+     "council_policy",
+     "apply_council_flags",
+     "created_at"
+    ],
+    "title": "BenchmarkRun"
+   },
+   "BenchmarkStatus": {
+    "properties": {
+     "run": {
+      "$ref": "#/components/schemas/BenchmarkRun"
+     },
+     "queued": {
+      "type": "integer",
+      "title": "Queued"
+     },
+     "running": {
+      "type": "integer",
+      "title": "Running"
+     },
+     "waiting_for_model": {
+      "type": "integer",
+      "title": "Waiting For Model"
+     },
+     "retrying": {
+      "type": "integer",
+      "title": "Retrying"
+     },
+     "terminal": {
+      "type": "integer",
+      "title": "Terminal"
+     },
+     "summaries": {
+      "items": {
+       "$ref": "#/components/schemas/BenchmarkSummary"
+      },
+      "type": "array",
+      "title": "Summaries"
+     }
+    },
+    "type": "object",
+    "required": [
+     "run",
+     "queued",
+     "running",
+     "waiting_for_model",
+     "retrying",
+     "terminal",
+     "summaries"
+    ],
+    "title": "BenchmarkStatus"
+   },
+   "BenchmarkSummary": {
+    "properties": {
+     "model_id": {
+      "type": "string",
+      "title": "Model Id"
+     },
+     "model_digest": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Model Digest"
+     },
+     "completed": {
+      "type": "integer",
+      "title": "Completed",
+      "default": 0
+     },
+     "succeeded": {
+      "type": "integer",
+      "title": "Succeeded",
+      "default": 0
+     },
+     "failed": {
+      "type": "integer",
+      "title": "Failed",
+      "default": 0
+     },
+     "average_score": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Average Score"
+     },
+     "average_confidence": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Average Confidence"
+     },
+     "average_attempts": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Average Attempts"
+     },
+     "average_latency_ms": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Average Latency Ms"
+     },
+     "council_candidates": {
+      "type": "integer",
+      "title": "Council Candidates",
+      "default": 0
+     },
+     "council_findings": {
+      "type": "integer",
+      "title": "Council Findings",
+      "default": 0
+     }
+    },
+    "type": "object",
+    "required": [
+     "model_id"
+    ],
+    "title": "BenchmarkSummary"
+   },
+   "Body_upload_image_api_v1_images_post": {
+    "properties": {
+     "receipt": {
+      "items": {
+       "type": "string",
+       "contentMediaType": "application/octet-stream"
+      },
+      "type": "array",
+      "title": "Receipt"
+     }
+    },
+    "type": "object",
+    "required": [
+     "receipt"
+    ],
+    "title": "Body_upload_image_api_v1_images_post"
+   },
+   "Collection": {
+    "properties": {
+     "name": {
+      "type": "string",
+      "maxLength": 100,
+      "minLength": 1,
+      "title": "Name"
+     },
+     "color": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Color"
+     },
+     "start_date": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "date"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Start Date"
+     },
+     "end_date": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "date"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "End Date"
+     },
+     "id": {
+      "type": "string",
+      "format": "uuid",
+      "title": "Id"
+     },
+     "active": {
+      "type": "boolean",
+      "title": "Active",
+      "default": false
+     },
+     "created_at": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "date"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Created At"
+     }
+    },
+    "type": "object",
+    "required": [
+     "name",
+     "id"
+    ],
+    "title": "Collection"
+   },
+   "CollectionCreate": {
+    "properties": {
+     "name": {
+      "type": "string",
+      "maxLength": 100,
+      "minLength": 1,
+      "title": "Name"
+     },
+     "color": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Color"
+     },
+     "start_date": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "date"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Start Date"
+     },
+     "end_date": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "date"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "End Date"
+     },
+     "active": {
+      "type": "boolean",
+      "title": "Active",
+      "default": false
+     }
+    },
+    "type": "object",
+    "required": [
+     "name"
+    ],
+    "title": "CollectionCreate"
+   },
+   "CollectionDetail": {
+    "properties": {
+     "name": {
+      "type": "string",
+      "maxLength": 100,
+      "minLength": 1,
+      "title": "Name"
+     },
+     "color": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Color"
+     },
+     "start_date": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "date"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Start Date"
+     },
+     "end_date": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "date"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "End Date"
+     },
+     "id": {
+      "type": "string",
+      "format": "uuid",
+      "title": "Id"
+     },
+     "active": {
+      "type": "boolean",
+      "title": "Active",
+      "default": false
+     },
+     "created_at": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "date"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Created At"
+     },
+     "totals": {
+      "items": {
+       "$ref": "#/components/schemas/CurrencyTotal"
+      },
+      "type": "array",
+      "title": "Totals"
+     },
+     "receipts": {
+      "items": {
+       "$ref": "#/components/schemas/ReceiptRow"
+      },
+      "type": "array",
+      "title": "Receipts"
+     }
+    },
+    "type": "object",
+    "required": [
+     "name",
+     "id"
+    ],
+    "title": "CollectionDetail"
+   },
+   "CollectionSummary": {
+    "properties": {
+     "name": {
+      "type": "string",
+      "maxLength": 100,
+      "minLength": 1,
+      "title": "Name"
+     },
+     "color": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Color"
+     },
+     "start_date": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "date"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Start Date"
+     },
+     "end_date": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "date"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "End Date"
+     },
+     "id": {
+      "type": "string",
+      "format": "uuid",
+      "title": "Id"
+     },
+     "active": {
+      "type": "boolean",
+      "title": "Active",
+      "default": false
+     },
+     "created_at": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "date"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Created At"
+     },
+     "receipt_count": {
+      "type": "integer",
+      "title": "Receipt Count",
+      "default": 0
+     },
+     "totals": {
+      "items": {
+       "$ref": "#/components/schemas/CurrencyTotal"
+      },
+      "type": "array",
+      "title": "Totals"
+     }
+    },
+    "type": "object",
+    "required": [
+     "name",
+     "id"
+    ],
+    "title": "CollectionSummary"
+   },
+   "CollectionUpdate": {
+    "properties": {
+     "name": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 100,
+        "minLength": 1
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Name"
+     },
+     "color": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Color"
+     },
+     "start_date": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "date"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Start Date"
+     },
+     "end_date": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "date"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "End Date"
+     }
+    },
+    "type": "object",
+    "title": "CollectionUpdate"
+   },
+   "CouncilPolicy": {
+    "type": "string",
+    "enum": [
+     "all",
+     "material",
+     "custom"
+    ],
+    "title": "CouncilPolicy"
+   },
+   "Credentials": {
+    "properties": {
+     "username": {
+      "type": "string",
+      "maxLength": 100,
+      "minLength": 1,
+      "title": "Username"
+     },
+     "password": {
+      "type": "string",
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Password"
+     }
+    },
+    "type": "object",
+    "required": [
+     "username",
+     "password"
+    ],
+    "title": "Credentials",
+    "description": "Login / registration body."
+   },
+   "CurrencyStatistics": {
+    "properties": {
+     "currency": {
+      "type": "string",
+      "title": "Currency"
+     },
+     "receipt_count": {
+      "type": "integer",
+      "title": "Receipt Count"
+     },
+     "total": {
+      "type": "string",
+      "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+      "title": "Total"
+     },
+     "average": {
+      "type": "string",
+      "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+      "title": "Average"
+     },
+     "median": {
+      "type": "string",
+      "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+      "title": "Median"
+     },
+     "minimum": {
+      "type": "string",
+      "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+      "title": "Minimum"
+     },
+     "maximum": {
+      "type": "string",
+      "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+      "title": "Maximum"
+     },
+     "subtotal": {
+      "type": "string",
+      "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+      "title": "Subtotal"
+     },
+     "discounts": {
+      "type": "string",
+      "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+      "title": "Discounts"
+     },
+     "taxes": {
+      "type": "string",
+      "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+      "title": "Taxes"
+     },
+     "tips": {
+      "type": "string",
+      "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+      "title": "Tips"
+     }
+    },
+    "type": "object",
+    "required": [
+     "currency",
+     "receipt_count",
+     "total",
+     "average",
+     "median",
+     "minimum",
+     "maximum",
+     "subtotal",
+     "discounts",
+     "taxes",
+     "tips"
+    ],
+    "title": "CurrencyStatistics"
+   },
+   "CurrencyTotal": {
+    "properties": {
+     "currency": {
+      "type": "string",
+      "title": "Currency"
+     },
+     "total": {
+      "type": "string",
+      "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+      "title": "Total"
+     }
+    },
+    "type": "object",
+    "required": [
+     "currency",
+     "total"
+    ],
+    "title": "CurrencyTotal"
+   },
+   "ExperimentOptions": {
+    "properties": {
+     "pipeline": {
+      "$ref": "#/components/schemas/ExtractionPipeline",
+      "default": "upload"
+     },
+     "temperature": {
+      "anyOf": [
+       {
+        "type": "number",
+        "maximum": 2.0,
+        "minimum": 0.0
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Temperature"
+     },
+     "think": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Think"
+     },
+     "include_classification": {
+      "type": "boolean",
+      "title": "Include Classification",
+      "default": true
+     },
+     "allow_ocr_fallback": {
+      "type": "boolean",
+      "title": "Allow Ocr Fallback",
+      "default": false
+     }
+    },
+    "type": "object",
+    "title": "ExperimentOptions"
+   },
+   "ExtractionPipeline": {
+    "type": "string",
+    "enum": [
+     "upload",
+     "direct_vision",
+     "ocr"
+    ],
+    "title": "ExtractionPipeline"
+   },
+   "HTTPValidationError": {
+    "properties": {
+     "detail": {
+      "items": {
+       "$ref": "#/components/schemas/ValidationError"
+      },
+      "type": "array",
+      "title": "Detail"
+     }
+    },
+    "type": "object",
+    "title": "HTTPValidationError"
+   },
+   "ImagePart": {
+    "properties": {
+     "image_path": {
+      "type": "string",
+      "title": "Image Path"
+     },
+     "thumbnail_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Thumbnail Path"
+     },
+     "original_filename": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Original Filename"
+     },
+     "media_type": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Media Type"
+     },
+     "size_bytes": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Size Bytes"
+     }
+    },
+    "type": "object",
+    "required": [
+     "image_path"
+    ],
+    "title": "ImagePart"
+   },
+   "ImageRow": {
+    "properties": {
+     "id": {
+      "type": "string",
+      "format": "uuid",
+      "title": "Id"
+     },
+     "original_filename": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Original Filename"
+     },
+     "media_type": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Media Type"
+     },
+     "size_bytes": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Size Bytes"
+     },
+     "image_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Image Path"
+     },
+     "thumbnail_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Thumbnail Path"
+     },
+     "status": {
+      "type": "string",
+      "title": "Status",
+      "default": "pending"
+     },
+     "error": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Error"
+     },
+     "receipt_id": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "uuid"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Receipt Id"
+     },
+     "bypass_review": {
+      "type": "boolean",
+      "title": "Bypass Review",
+      "default": false
+     },
+     "user_id": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "uuid"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "User Id"
+     },
+     "created_at": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "date-time"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Created At"
+     },
+     "analyzed_at": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "date-time"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Analyzed At"
+     },
+     "processing_at": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "date-time"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Processing At"
+     },
+     "additional_images": {
+      "items": {
+       "$ref": "#/components/schemas/ImagePart"
+      },
+      "type": "array",
+      "title": "Additional Images"
+     },
+     "model_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Model Id"
+     }
+    },
+    "type": "object",
+    "required": [
+     "id"
+    ],
+    "title": "ImageRow",
+    "description": "Represents a single row in the `images` table.\n\nAn image owns its on-disk path and its analysis workflow\n(pending -> processing -> analyzed | failed). A successfully analyzed image is linked\nto a receipt via ``receipt_id``."
+   },
+   "ItemCategoryStatistics": {
+    "properties": {
+     "category": {
+      "type": "string",
+      "title": "Category"
+     },
+     "currency": {
+      "type": "string",
+      "title": "Currency"
+     },
+     "total": {
+      "type": "string",
+      "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+      "title": "Total"
+     },
+     "share": {
+      "anyOf": [
+       {
+        "type": "string",
+        "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Share"
+     }
+    },
+    "type": "object",
+    "required": [
+     "category",
+     "currency",
+     "total",
+     "share"
+    ],
+    "title": "ItemCategoryStatistics"
+   },
+   "ItemReconciliation": {
+    "properties": {
+     "currency": {
+      "type": "string",
+      "title": "Currency"
+     },
+     "receipt_total": {
+      "type": "string",
+      "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+      "title": "Receipt Total"
+     },
+     "item_total": {
+      "type": "string",
+      "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+      "title": "Item Total"
+     },
+     "deposit_total": {
+      "type": "string",
+      "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+      "title": "Deposit Total"
+     },
+     "unallocated_total": {
+      "type": "string",
+      "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+      "title": "Unallocated Total"
+     }
+    },
+    "type": "object",
+    "required": [
+     "currency",
+     "receipt_total",
+     "item_total",
+     "deposit_total",
+     "unallocated_total"
+    ],
+    "title": "ItemReconciliation"
+   },
+   "ItemStatistics": {
+    "properties": {
+     "months": {
+      "type": "integer",
+      "title": "Months"
+     },
+     "date_from": {
+      "type": "string",
+      "format": "date",
+      "title": "Date From"
+     },
+     "date_to": {
+      "type": "string",
+      "format": "date",
+      "title": "Date To"
+     },
+     "categories": {
+      "items": {
+       "$ref": "#/components/schemas/ItemCategoryStatistics"
+      },
+      "type": "array",
+      "title": "Categories"
+     },
+     "monthly": {
+      "items": {
+       "$ref": "#/components/schemas/MonthlyItemStatistics"
+      },
+      "type": "array",
+      "title": "Monthly"
+     },
+     "reconciliation": {
+      "items": {
+       "$ref": "#/components/schemas/ItemReconciliation"
+      },
+      "type": "array",
+      "title": "Reconciliation"
+     }
+    },
+    "type": "object",
+    "required": [
+     "months",
+     "date_from",
+     "date_to",
+     "categories",
+     "monthly",
+     "reconciliation"
+    ],
+    "title": "ItemStatistics"
+   },
+   "LLMProviderEnum": {
+    "type": "string",
+    "enum": [
+     "ollama",
+     "anthropic",
+     "openai"
+    ],
+    "title": "LLMProviderEnum"
+   },
+   "LLMSettingsUpdate": {
+    "properties": {
+     "provider": {
+      "$ref": "#/components/schemas/LLMProviderEnum"
+     },
+     "host": {
+      "type": "string",
+      "minLength": 1,
+      "title": "Host"
+     },
+     "model_name": {
+      "type": "string",
+      "minLength": 1,
+      "title": "Model Name"
+     },
+     "temperature": {
+      "type": "number",
+      "maximum": 2.0,
+      "minimum": 0.0,
+      "title": "Temperature"
+     }
+    },
+    "type": "object",
+    "required": [
+     "provider",
+     "host",
+     "model_name",
+     "temperature"
+    ],
+    "title": "LLMSettingsUpdate"
+   },
+   "LineItemRow": {
+    "properties": {
+     "id": {
+      "type": "string",
+      "format": "uuid",
+      "title": "Id"
+     },
+     "receipt_id": {
+      "type": "string",
+      "format": "uuid",
+      "title": "Receipt Id"
+     },
+     "description": {
+      "type": "string",
+      "title": "Description"
+     },
+     "original_description": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Original Description"
+     },
+     "spending_category": {
+      "type": "string",
+      "title": "Spending Category",
+      "default": "unknown"
+     },
+     "category_source": {
+      "type": "string",
+      "title": "Category Source",
+      "default": "unknown"
+     },
+     "quantity": {
+      "type": "number",
+      "title": "Quantity"
+     },
+     "unit_price": {
+      "type": "string",
+      "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+      "title": "Unit Price"
+     },
+     "total_price": {
+      "type": "string",
+      "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+      "title": "Total Price"
+     },
+     "tags": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "title": "Tags"
+     },
+     "position": {
+      "type": "integer",
+      "title": "Position",
+      "default": 0
+     }
+    },
+    "type": "object",
+    "required": [
+     "id",
+     "receipt_id",
+     "description",
+     "quantity",
+     "unit_price",
+     "total_price"
+    ],
+    "title": "LineItemRow",
+    "description": "Represents a single row in the `line_items` table."
+   },
+   "LineItemUpdate": {
+    "properties": {
+     "description": {
+      "type": "string",
+      "title": "Description",
+      "description": "Name of the purchased item"
+     },
+     "spending_category": {
+      "type": "string",
+      "enum": [
+       "unknown",
+       "other",
+       "milk",
+       "cheese",
+       "yogurt",
+       "eggs",
+       "butter_spreads",
+       "bread_bakery",
+       "cereals",
+       "pasta_rice_grains",
+       "vegetables",
+       "fruit",
+       "meat",
+       "fish",
+       "ready_meals",
+       "snacks_sweets",
+       "coffee_tea",
+       "water",
+       "soft_drinks",
+       "alcohol",
+       "sauces_spices",
+       "cleaning",
+       "household",
+       "personal_care",
+       "pet",
+       "health",
+       "clothing",
+       "electronics",
+       "hardware",
+       "restaurant",
+       "fuel",
+       "services",
+       "deposit"
+      ],
+      "title": "Spending Category",
+      "description": "One spending category code",
+      "default": "unknown"
+     },
+     "quantity": {
+      "type": "number",
+      "exclusiveMinimum": 0.0,
+      "title": "Quantity",
+      "description": "Quantity purchased"
+     },
+     "unit_price": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "string",
+        "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+       }
+      ],
+      "title": "Unit Price",
+      "description": "Price per unit"
+     },
+     "total_price": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "string",
+        "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+       }
+      ],
+      "title": "Total Price",
+      "description": "quantity * unit_price, line total"
+     },
+     "tags": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "title": "Tags",
+      "description": "Short tags for the item. Prefer the tag list from the prompt; a single new suggested tag is allowed when nothing fits."
+     },
+     "id": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "uuid"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Id"
+     },
+     "remember_category": {
+      "type": "boolean",
+      "title": "Remember Category",
+      "default": false
+     }
+    },
+    "type": "object",
+    "required": [
+     "description",
+     "quantity",
+     "unit_price",
+     "total_price"
+    ],
+    "title": "LineItemUpdate"
+   },
+   "MonthlyItemStatistics": {
+    "properties": {
+     "category": {
+      "type": "string",
+      "title": "Category"
+     },
+     "currency": {
+      "type": "string",
+      "title": "Currency"
+     },
+     "total": {
+      "type": "string",
+      "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+      "title": "Total"
+     },
+     "share": {
+      "anyOf": [
+       {
+        "type": "string",
+        "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Share"
+     },
+     "month": {
+      "type": "string",
+      "format": "date",
+      "title": "Month"
+     }
+    },
+    "type": "object",
+    "required": [
+     "category",
+     "currency",
+     "total",
+     "share",
+     "month"
+    ],
+    "title": "MonthlyItemStatistics"
+   },
+   "NamedStatistics": {
+    "properties": {
+     "name": {
+      "type": "string",
+      "title": "Name"
+     },
+     "currency": {
+      "type": "string",
+      "title": "Currency"
+     },
+     "receipt_count": {
+      "type": "integer",
+      "title": "Receipt Count"
+     },
+     "total": {
+      "type": "string",
+      "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+      "title": "Total"
+     },
+     "average": {
+      "type": "string",
+      "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+      "title": "Average"
+     }
+    },
+    "type": "object",
+    "required": [
+     "name",
+     "currency",
+     "receipt_count",
+     "total",
+     "average"
+    ],
+    "title": "NamedStatistics"
+   },
+   "ProductPurchase": {
+    "properties": {
+     "receipt_id": {
+      "type": "string",
+      "format": "uuid",
+      "title": "Receipt Id"
+     },
+     "description": {
+      "type": "string",
+      "title": "Description"
+     },
+     "merchant_name": {
+      "type": "string",
+      "title": "Merchant Name"
+     },
+     "date": {
+      "type": "string",
+      "format": "date",
+      "title": "Date"
+     },
+     "time": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Time"
+     },
+     "quantity": {
+      "type": "number",
+      "title": "Quantity"
+     },
+     "unit_price": {
+      "type": "string",
+      "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+      "title": "Unit Price"
+     },
+     "currency": {
+      "type": "string",
+      "title": "Currency"
+     }
+    },
+    "type": "object",
+    "required": [
+     "receipt_id",
+     "description",
+     "merchant_name",
+     "date",
+     "quantity",
+     "unit_price",
+     "currency"
+    ],
+    "title": "ProductPurchase",
+    "description": "One verified line-item purchase matching a product search."
+   },
+   "ProductSearchResponse": {
+    "properties": {
+     "query": {
+      "type": "string",
+      "title": "Query"
+     },
+     "purchases": {
+      "items": {
+       "$ref": "#/components/schemas/ProductPurchase"
+      },
+      "type": "array",
+      "title": "Purchases"
+     },
+     "latest_price": {
+      "anyOf": [
+       {
+        "type": "string",
+        "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Latest Price"
+     },
+     "cheapest_price": {
+      "anyOf": [
+       {
+        "type": "string",
+        "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Cheapest Price"
+     },
+     "average_price": {
+      "anyOf": [
+       {
+        "type": "string",
+        "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Average Price"
+     },
+     "currency": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Currency"
+     }
+    },
+    "type": "object",
+    "required": [
+     "query",
+     "purchases"
+    ],
+    "title": "ProductSearchResponse",
+    "description": "Purchase history and unit-price summary for one product query."
+   },
+   "ReceiptRow": {
+    "properties": {
+     "id": {
+      "type": "string",
+      "format": "uuid",
+      "title": "Id"
+     },
+     "confidence": {
+      "type": "integer",
+      "title": "Confidence"
+     },
+     "merchant_name": {
+      "type": "string",
+      "title": "Merchant Name"
+     },
+     "merchant_address": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Merchant Address"
+     },
+     "receipt_number": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Receipt Number"
+     },
+     "date": {
+      "type": "string",
+      "format": "date",
+      "title": "Date"
+     },
+     "time": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Time"
+     },
+     "currency": {
+      "type": "string",
+      "title": "Currency",
+      "default": "USD"
+     },
+     "category": {
+      "type": "string",
+      "title": "Category",
+      "default": "other"
+     },
+     "subtotal": {
+      "type": "string",
+      "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+      "title": "Subtotal"
+     },
+     "discount_total": {
+      "type": "string",
+      "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+      "title": "Discount Total",
+      "default": "0"
+     },
+     "tax_total": {
+      "type": "string",
+      "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+      "title": "Tax Total",
+      "default": "0"
+     },
+     "tip": {
+      "anyOf": [
+       {
+        "type": "string",
+        "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Tip"
+     },
+     "total": {
+      "type": "string",
+      "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+      "title": "Total"
+     },
+     "payment_method": {
+      "type": "string",
+      "title": "Payment Method",
+      "default": "unknown"
+     },
+     "created_at": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "date"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Created At"
+     },
+     "status": {
+      "type": "string",
+      "title": "Status",
+      "default": "unverified"
+     },
+     "image_id": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "uuid"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Image Id"
+     },
+     "thumbnail_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Thumbnail Path"
+     },
+     "verified": {
+      "type": "boolean",
+      "title": "Verified",
+      "default": false
+     },
+     "user_id": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "uuid"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "User Id"
+     }
+    },
+    "type": "object",
+    "required": [
+     "id",
+     "confidence",
+     "merchant_name",
+     "date",
+     "subtotal",
+     "total"
+    ],
+    "title": "ReceiptRow",
+    "description": "Represents a single row in the `receipts` table."
+   },
+   "ReceiptStatistics": {
+    "properties": {
+     "verified_receipt_count": {
+      "type": "integer",
+      "title": "Verified Receipt Count"
+     },
+     "currencies": {
+      "items": {
+       "$ref": "#/components/schemas/CurrencyStatistics"
+      },
+      "type": "array",
+      "title": "Currencies"
+     },
+     "merchants": {
+      "items": {
+       "$ref": "#/components/schemas/NamedStatistics"
+      },
+      "type": "array",
+      "title": "Merchants"
+     },
+     "categories": {
+      "items": {
+       "$ref": "#/components/schemas/NamedStatistics"
+      },
+      "type": "array",
+      "title": "Categories"
+     },
+     "payment_methods": {
+      "items": {
+       "$ref": "#/components/schemas/NamedStatistics"
+      },
+      "type": "array",
+      "title": "Payment Methods"
+     },
+     "weekdays": {
+      "items": {
+       "$ref": "#/components/schemas/WeekdayStatistics"
+      },
+      "type": "array",
+      "title": "Weekdays"
+     },
+     "weekly_spending": {
+      "items": {
+       "$ref": "#/components/schemas/WeeklyStatistics"
+      },
+      "type": "array",
+      "title": "Weekly Spending"
+     }
+    },
+    "type": "object",
+    "required": [
+     "verified_receipt_count",
+     "currencies",
+     "merchants",
+     "categories",
+     "payment_methods",
+     "weekdays",
+     "weekly_spending"
+    ],
+    "title": "ReceiptStatistics"
+   },
+   "ReceiptUpdate": {
+    "properties": {
+     "confidence": {
+      "type": "integer",
+      "maximum": 100.0,
+      "minimum": 0.0,
+      "title": "Confidence",
+      "description": "from 0 - 100 as percentage, how sure are you in the presented data"
+     },
+     "merchant_name": {
+      "type": "string",
+      "title": "Merchant Name",
+      "description": "Name of the store or vendor, taken from printed text on the receipt (header, footer, address, website) \u2014 never guessed from a logo"
+     },
+     "merchant_address": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Merchant Address",
+      "description": "Store address if printed on receipt"
+     },
+     "receipt_number": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Receipt Number",
+      "description": "Transaction/receipt ID"
+     },
+     "date": {
+      "type": "string",
+      "format": "date",
+      "title": "Date",
+      "description": "Date of purchase, ISO format YYYY-MM-DD"
+     },
+     "time": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Time",
+      "description": "Time of purchase, HH:MM 24h format"
+     },
+     "currency": {
+      "type": "string",
+      "title": "Currency",
+      "description": "ISO 4217 currency code, e.g. USD, EUR",
+      "default": "EUR"
+     },
+     "category": {
+      "type": "string",
+      "enum": [
+       "grocery",
+       "electronics",
+       "clothing",
+       "restaurant",
+       "fuel",
+       "pharmacy",
+       "entertainment",
+       "other"
+      ],
+      "title": "Category",
+      "description": "Best-guess category for the whole purchase",
+      "default": "other"
+     },
+     "line_items": {
+      "items": {
+       "$ref": "#/components/schemas/LineItemUpdate"
+      },
+      "type": "array",
+      "title": "Line Items"
+     },
+     "taxes": {
+      "items": {
+       "$ref": "#/components/schemas/TaxLine"
+      },
+      "type": "array",
+      "title": "Taxes",
+      "description": "Tax lines applied"
+     },
+     "subtotal": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "string",
+        "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+       }
+      ],
+      "title": "Subtotal",
+      "description": "Sum of line items before tax/discounts"
+     },
+     "discount_total": {
+      "anyOf": [
+       {
+        "type": "number",
+        "minimum": 0.0
+       },
+       {
+        "type": "string",
+        "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+       }
+      ],
+      "title": "Discount Total",
+      "description": "Total discounts applied",
+      "default": "0"
+     },
+     "tax_total": {
+      "anyOf": [
+       {
+        "type": "number",
+        "minimum": 0.0
+       },
+       {
+        "type": "string",
+        "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+       }
+      ],
+      "title": "Tax Total",
+      "description": "Sum of all taxes",
+      "default": "0"
+     },
+     "tip": {
+      "anyOf": [
+       {
+        "type": "number",
+        "minimum": 0.0
+       },
+       {
+        "type": "string",
+        "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Tip",
+      "description": "Tip/gratuity if applicable"
+     },
+     "total": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "string",
+        "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+       }
+      ],
+      "title": "Total",
+      "description": "Final amount charged"
+     },
+     "payment_method": {
+      "type": "string",
+      "enum": [
+       "cash",
+       "credit_card",
+       "debit_card",
+       "mobile_payment",
+       "check",
+       "other",
+       "unknown"
+      ],
+      "title": "Payment Method",
+      "default": "unknown"
+     },
+     "collection_ids": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string",
+         "format": "uuid"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Collection Ids"
+     }
+    },
+    "type": "object",
+    "required": [
+     "confidence",
+     "merchant_name",
+     "date",
+     "line_items",
+     "subtotal",
+     "total"
+    ],
+    "title": "ReceiptUpdate",
+    "description": "PUT body: the receipt fields plus the collection membership to set.\n\n``collection_ids`` distinguishes \"omitted\" (None -> leave memberships\nuntouched) from an explicit empty list (clear all memberships)."
+   },
+   "ReceiptWithDetails": {
+    "properties": {
+     "receipt": {
+      "$ref": "#/components/schemas/ReceiptRow"
+     },
+     "line_items": {
+      "items": {
+       "$ref": "#/components/schemas/LineItemRow"
+      },
+      "type": "array",
+      "title": "Line Items"
+     },
+     "taxes": {
+      "items": {
+       "$ref": "#/components/schemas/TaxLineRow"
+      },
+      "type": "array",
+      "title": "Taxes"
+     },
+     "image_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Image Path"
+     },
+     "collection_ids": {
+      "items": {
+       "type": "string",
+       "format": "uuid"
+      },
+      "type": "array",
+      "title": "Collection Ids"
+     }
+    },
+    "type": "object",
+    "required": [
+     "receipt",
+     "line_items",
+     "taxes"
+    ],
+    "title": "ReceiptWithDetails",
+    "description": "A receipt row enriched with its line items and taxes.\n\n``image_path`` is resolved from the joined ``images`` row so frontends\ncan keep displaying the image location without a second lookup."
+   },
+   "SettingsUpdate": {
+    "properties": {
+     "llm": {
+      "$ref": "#/components/schemas/LLMSettingsUpdate"
+     },
+     "allow_registration": {
+      "type": "boolean",
+      "title": "Allow Registration"
+     }
+    },
+    "type": "object",
+    "required": [
+     "llm",
+     "allow_registration"
+    ],
+    "title": "SettingsUpdate"
+   },
+   "SettingsView": {
+    "properties": {
+     "llm": {
+      "$ref": "#/components/schemas/LLMSettingsUpdate"
+     },
+     "allow_registration": {
+      "type": "boolean",
+      "title": "Allow Registration"
+     },
+     "sources": {
+      "additionalProperties": {
+       "type": "string"
+      },
+      "type": "object",
+      "title": "Sources"
+     },
+     "restart_required": {
+      "type": "boolean",
+      "title": "Restart Required"
+     }
+    },
+    "type": "object",
+    "required": [
+     "llm",
+     "allow_registration",
+     "sources",
+     "restart_required"
+    ],
+    "title": "SettingsView"
+   },
+   "TagCreate": {
+    "properties": {
+     "name": {
+      "type": "string",
+      "maxLength": 100,
+      "minLength": 1,
+      "title": "Name"
+     }
+    },
+    "type": "object",
+    "required": [
+     "name"
+    ],
+    "title": "TagCreate",
+    "description": "Body for creating (or confirming) a tag in the vocabulary."
+   },
+   "TaxLine": {
+    "properties": {
+     "name": {
+      "type": "string",
+      "title": "Name",
+      "description": "e.g. 'VAT', 'Sales Tax', 'GST'"
+     },
+     "rate": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Rate",
+      "description": "Tax rate as a decimal, e.g. 0.19 for 19%"
+     },
+     "amount": {
+      "anyOf": [
+       {
+        "type": "number",
+        "minimum": 0.0
+       },
+       {
+        "type": "string",
+        "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+       }
+      ],
+      "title": "Amount",
+      "description": "Tax amount charged"
+     }
+    },
+    "type": "object",
+    "required": [
+     "name",
+     "amount"
+    ],
+    "title": "TaxLine"
+   },
+   "TaxLineRow": {
+    "properties": {
+     "id": {
+      "type": "string",
+      "format": "uuid",
+      "title": "Id"
+     },
+     "receipt_id": {
+      "type": "string",
+      "format": "uuid",
+      "title": "Receipt Id"
+     },
+     "name": {
+      "type": "string",
+      "title": "Name"
+     },
+     "rate": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Rate"
+     },
+     "amount": {
+      "type": "string",
+      "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+      "title": "Amount"
+     }
+    },
+    "type": "object",
+    "required": [
+     "id",
+     "receipt_id",
+     "name",
+     "amount"
+    ],
+    "title": "TaxLineRow",
+    "description": "Represents a single row in the `taxes` table."
+   },
+   "User": {
+    "properties": {
+     "id": {
+      "type": "string",
+      "format": "uuid",
+      "title": "Id"
+     },
+     "username": {
+      "type": "string",
+      "title": "Username"
+     },
+     "is_admin": {
+      "type": "boolean",
+      "title": "Is Admin",
+      "default": false
+     },
+     "can_see_all": {
+      "type": "boolean",
+      "title": "Can See All",
+      "default": false
+     }
+    },
+    "type": "object",
+    "required": [
+     "id",
+     "username"
+    ],
+    "title": "User",
+    "description": "An authenticated user with the resolved effective privilege.\n\n``can_see_all`` is the *effective* admin-see-all privilege: ``True`` only\nwhen the user is an admin AND the global ``admin_can_see_all`` flag is on.\nHandlers use it to decide whether to scope data queries to this user."
+   },
+   "ValidationError": {
+    "properties": {
+     "loc": {
+      "items": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "integer"
+        }
+       ]
+      },
+      "type": "array",
+      "title": "Location"
+     },
+     "msg": {
+      "type": "string",
+      "title": "Message"
+     },
+     "type": {
+      "type": "string",
+      "title": "Error Type"
+     },
+     "input": {
+      "title": "Input"
+     },
+     "ctx": {
+      "type": "object",
+      "title": "Context"
+     }
+    },
+    "type": "object",
+    "required": [
+     "loc",
+     "msg",
+     "type"
+    ],
+    "title": "ValidationError"
+   },
+   "WeekdayStatistics": {
+    "properties": {
+     "weekday": {
+      "type": "integer",
+      "title": "Weekday"
+     },
+     "currency": {
+      "type": "string",
+      "title": "Currency"
+     },
+     "receipt_count": {
+      "type": "integer",
+      "title": "Receipt Count"
+     },
+     "total": {
+      "type": "string",
+      "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+      "title": "Total"
+     },
+     "average": {
+      "type": "string",
+      "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+      "title": "Average"
+     }
+    },
+    "type": "object",
+    "required": [
+     "weekday",
+     "currency",
+     "receipt_count",
+     "total",
+     "average"
+    ],
+    "title": "WeekdayStatistics"
+   },
+   "WeeklyStatistics": {
+    "properties": {
+     "week_start": {
+      "type": "string",
+      "format": "date",
+      "title": "Week Start"
+     },
+     "currency": {
+      "type": "string",
+      "title": "Currency"
+     },
+     "receipt_count": {
+      "type": "integer",
+      "title": "Receipt Count"
+     },
+     "total": {
+      "type": "string",
+      "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+      "title": "Total"
+     },
+     "average": {
+      "type": "string",
+      "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+      "title": "Average"
+     }
+    },
+    "type": "object",
+    "required": [
+     "week_start",
+     "currency",
+     "receipt_count",
+     "total",
+     "average"
+    ],
+    "title": "WeeklyStatistics"
+   }
+  }
+ }
+}

@@ -16,28 +16,29 @@ concurrency:
 
 jobs:
   checks:
-    name: Lint + unit tests + frontend
+    name: Go lint + tests + frontend
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-go@v5
         with:
-          enable-cache: true
+          go-version-file: go.mod
+          cache: true
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: web/package-lock.json
       - name: Install frontend dependencies
         run: make fe-install
       - name: Release driver tests (no publication)
         run: make release-test
-      - name: Lint + type check
+      - name: Lint (gofmt + go vet)
         run: make lint
-      - name: Unit tests
+      - name: Go tests (race detector + PostgreSQL)
         run: make test
       - name: Frontend check + unit tests + build
         run: make fe-verify
@@ -50,11 +51,12 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-go@v5
         with:
-          enable-cache: true
-      # Builds the multi-stage app image, boots the stack, runs pytest
-      # tests/e2e/, and tears the stack down (all handled by the target).
+          go-version-file: go.mod
+          cache: true
+      # Builds the multi-stage app image, boots the stack, runs the Go e2e suite
+      # (e2e/suite), and tears the stack down (all handled by the target).
       - name: Run backend e2e
         run: make test-e2e
 
@@ -66,23 +68,20 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: web/package-lock.json
       - name: Install frontend dependencies
         run: make fe-install
       - name: Cache Playwright browsers
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('frontend/package-lock.json') }}
+          key: playwright-${{ runner.os }}-${{ hashFiles('web/package-lock.json') }}
       - name: Install Playwright Chromium (+ system deps)
-        working-directory: frontend
+        working-directory: web
         run: npx playwright install --with-deps chromium
       # Boots the stack, runs playwright test, and tears the stack down
       # (all handled by the target).

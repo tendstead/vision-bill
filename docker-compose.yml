@@ -6,7 +6,6 @@ services:
     env_file:
       - .env
     environment:
-      PYTHONUNBUFFERED: 1
       PG__HOST: db
       PG__PORT: "5432"
     ports:

@@ -1,32 +1,26 @@
 # Ignore everything by default; re-include only what the Dockerfile COPYs.
 *
 
-# The Dockerfile itself
 !Dockerfile
-
-# Entrypoint script (migrates, then execs the CMD)
-!docker-entrypoint.sh
-
-# Root config files the build reads
-!pyproject.toml
-!uv.lock
-!alembic.ini
-
-# Source trees
-!alembic/
-!alembic/**
-!src
-!src/**
-!frontend
-!frontend/**
+!go.mod
+!go.sum
+!cmd/
+!cmd/**
+!internal/
+!internal/**
+!web
+!web/**
+!e2e/stub
+!e2e/stub/main.go
 
 # Frontend build artifacts are compiled inside the image; never ship host copies.
-frontend/node_modules
-frontend/node_modules/**
-frontend/out
-frontend/out/**
-frontend/.svelte-kit
-frontend/.svelte-kit/**
+web/node_modules
+web/node_modules/**
+web/out
+web/out/**
+web/.svelte-kit
+web/.svelte-kit/**
 
 # The locally-synced SPA is rebuilt inside the image; never ship host copies.
-src/vision_bill/static/*
+cmd/server/static/*
+!cmd/server/static/.gitkeep

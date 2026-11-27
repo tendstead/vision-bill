@@ -31,13 +31,12 @@ services:
       - e2e_pgdata:/var/lib/postgresql/data
 
   llm-stub:
-    image: python:3.12-slim
-    working_dir: /stub
-    command: ["python", "server.py"]
+    build:
+      context: .
+      dockerfile: e2e/stub/Dockerfile
     volumes:
-      - ./e2e/llm_stub:/stub:ro
-      - ./tests/e2e/data:/data:ro
-      - ./e2e/llm_stub/fixtures:/fixtures:ro
+      - ./e2e/data:/data:ro
+      - ./e2e/stub/fixtures:/fixtures:ro
     ports:
       - "9123:9123"
 
@@ -47,7 +46,7 @@ services:
       pg:
         condition: service_healthy
       llm-stub:
-        condition: service_started
+        condition: service_healthy
     environment:
       AUTH__SECRET_KEY: e2e-secret-do-not-use
       AUTH__BOOTSTRAP_USERNAME: admin
@@ -69,6 +68,13 @@ services:
       - e2e_uploads_tmp:/app/uploads_tmp
       # Pre-seeded config (llm.temperature); see e2e/config/config.yaml.
       - ./e2e/config:/app/config
+    # `docker compose up --wait` blocks until the app answers (the image's own
+    # check is slower than a test run needs).
+    healthcheck:
+      test: ["CMD", "/app/vision-bill", "-healthcheck"]
+      interval: 1s
+      timeout: 3s
+      retries: 120
     ports:
       - "53625:8080"
 

@@ -1,4 +1,0 @@
-# Opt-in e2e fixtures. Each entry is the basename (no extension) of a
-# <name>.<png|jpg|jpeg> + <name>.json pair in this directory.
-# See README.md. Add your own basenames below (those files stay gitignored).
-fixtures = ["seed_receipt", "deposit_refund"]

@@ -24,11 +24,10 @@ extraction schema asks for all line items, their zero-based `source_image`, and
 Only model-proposed, ordered suffix/prefix overlaps between adjacent photos are
 eligible for removal. Repeated purchases elsewhere remain intact.
 
-`src/vision_bill/helper/duplicates.py::verify_duplicate` compares description,
-quantity and total_price. Defaults require equality, with case and whitespace
-normalization for names. Keyword parameters `name_similarity`,
-`quantity_tolerance`, and `total_tolerance` control matching. If any pair in an
-overlap fails verification, that overlap is retained. Visual identification of
+`llm.Reconcile` (`internal/llm`) verifies each proposed pair by description,
+quantity and total_price: all three must be equal, with case and whitespace
+normalization for names. If any pair in an overlap fails verification, that
+overlap is retained. Visual identification of
 overlap still depends on the model; verification cannot recover omitted rows.
 
 The persisted Receipt schema remains unchanged. The model can instead return
@@ -41,12 +40,24 @@ This ends extraction without JSON-repair retries or automatic reprocessing.
 to 600 seconds and accepts values greater than 0 up to 600. This deadline covers
 the entire extraction including JSON-repair attempts, and stays below the
 existing 15-minute processing lease. Discovery is bounded to five seconds.
-Transport timeouts and deadline expiry mark the submission `timed_out`.
-Single-photo uploads return HTTP 504 for timeouts or 422 for unreadable input,
-including `image_id`, `status`, and `detail`; asynchronous jobs expose these
-outcomes through GET. Neither terminal outcome is automatically retried.
-Uploading again is an explicit retry. Cancelling the client request cannot
-guarantee that an inference server stops its own computation.
+The deadline starts when an inference slot is acquired, so waiting behind other
+analyses never counts as a timeout. Transport timeouts and deadline expiry mark
+the submission `timed_out`. Single-photo uploads return HTTP 504 for timeouts or
+422 for unreadable input, including `image_id`, `status`, and `detail`;
+asynchronous jobs expose these outcomes through GET.
+
+`unreadable` is final and is not retried automatically; uploading again is an
+explicit retry. `timed_out` is **not** final: the submission stays in the queue
+and the background worker retries it after a delay that doubles with every
+timeout (10 minutes, 20, 40, ... capped at 6 hours, `images.retry_after`).
+A photo the model can never process in time therefore costs little instead of
+blocking an inference slot for the full deadline every cycle; delete it from the
+queue to stop the retries. Photos whose longer edge exceeds 3072 px are shrunk
+before they are sent to the model (when vips is installed), which removes the
+most common cause of timeouts. Context overflows cannot be detected: Ollama
+truncates silently instead of failing, so the model returns a bad answer rather
+than a timeout. Cancelling the client request cannot guarantee that an
+inference server stops its own computation.
 
 Apply migration 0009 before running the updated app (Docker applies it on startup).
 Its parent is the existing working-tree migration 0008; neither earlier migration

@@ -6,7 +6,7 @@
 ### 🚀 Core Features
 - **Multi-modal Local LLMs:** Uses Ollama by default to run vision-capable models (like Llama-3-Vision, Moondream, or Gemma) directly on your hardware; an OpenAI-compatible endpoint is optional.
 - **Local Extraction:** No separate OCR engine is required; the LLM performs both image understanding and structured data extraction in one step.
-- **Privacy-Preserving Architecture:** Built with FastAPI to serve as a local backend for personal use, with a bundled SvelteKit SPA frontend.
+- **Privacy-Preserving Architecture:** A single Go binary serves the API and the bundled SvelteKit SPA as a local backend for personal use.
 - **Multi-user & Admin:** Argon2-hashed passwords, stateless session cookies, per-user data ownership, an admin Settings page, and a registration toggle.
 - **Model Benchmarking:** Admins can queue benchmark runs that re-examine your verified receipts with any vision model and compare the results field by field.
 - **Insights:** Product search with price history and spending statistics (per currency, merchant, category, payment method, weekday, and week).
@@ -15,6 +15,7 @@
 ### 🛠️ Quickstart (Docker)
 Versioned container publishing is available through the manual Release workflow;
 see [release setup, image references, and recovery](RELEASES.md).
+Switching from the Python image, migrations and rollbacks are described in [UPGRADING.md](UPGRADING.md).
 
 The fastest way to get started is using Docker Compose:
 ```bash
@@ -37,14 +38,14 @@ provider or host requires a server restart.
 
 ### 📊 Model Testing & Benchmarking
 Since different LLMs perform differently at image extraction, the project includes a benchmark system:
-- **Benchmark Runs:** Admins queue runs via the API (`POST /api/v1/benchmarks`) or `make script-create-benchmark`. Each run re-extracts your **verified** receipts with the selected vision models — verified receipts serve as the ground truth.
+- **Benchmark Runs:** Admins queue runs via the API (`POST /api/v1/benchmarks`) or `make script-create-benchmark` (the `vbctl` tool). Each run re-extracts your **verified** receipts with the selected vision models — verified receipts serve as the ground truth.
 - **Scoring:** Extracted data is compared against the verified values field by field; runs report per-model summaries (score, confidence, attempts, latency) and are durable across restarts.
 - **Customization:** Swap the provider, model, or temperature from the admin Settings page (or via `LLM__*` environment variables); `make script-context-budget` measures prompt token usage of a model.
 
 ### 📦 Tech Stack
-- **Backend:** Python, FastAPI, Pydantic, PostgreSQL (Alembic migrations)
+- **Backend:** Go (`net/http`, pgx), PostgreSQL with embedded SQL migrations
 - **Frontend:** SvelteKit SPA (TypeScript, Tailwind CSS)
 - **Inference:** Ollama (local LLM execution; optional OpenAI-compatible endpoint)
 - **Authentication:** Argon2id password hashing, stateless session cookies
-- **Deployment:** Docker, UV (dependency management)
-- **Testing:** Pytest (API), Vitest + Playwright (frontend)
+- **Deployment:** Docker (static binary; the image adds `vips` for thumbnails and HEIC/HEIF)
+- **Testing:** Go tests with a real PostgreSQL, black-box API e2e (Go), Vitest + Playwright (frontend)

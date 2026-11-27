@@ -7,7 +7,7 @@ access can dispatch workflows; protect the default branch and workflow changes
 with the repository's usual review rules.
 
 The workflow verifies the dispatch commit by calling this repository’s CI workflow in read-only
-jobs (Python lint/unit tests, frontend verification, release-driver tests,
+jobs (Go lint and tests, frontend verification, release-driver tests,
 and backend/frontend E2E suites). A separate job reserves an annotated `vX.Y.Z` Git tag, builds the Dockerfile
 for Linux AMD64, pushes `ghcr.io/<owner>/<repository>:X.Y.Z`, and creates a GitHub
 release containing the image digest and commit SHA. Repository names are
