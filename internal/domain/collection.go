@@ -6,7 +6,7 @@ import (
 )
 
 // Collection is a per-user group a whole receipt may belong to. Field order
-// follows the Python models (base fields first).
+// lists editable fields first.
 type Collection struct {
 	Name      string  `json:"name"`
 	Color     *string `json:"color"`

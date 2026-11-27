@@ -83,7 +83,7 @@ type Receipt struct {
 // DuplicatePair names the same printed row in two adjacent photos.
 type DuplicatePair struct{ First, Second int }
 
-// Issue is one validation problem in FastAPI/pydantic's 422 entry shape.
+// Issue is one validation problem (type, location, message).
 type Issue struct {
 	Type  string         `json:"type"`
 	Loc   []any          `json:"loc"`
@@ -523,8 +523,7 @@ func badIndex(s string) int {
 	return len(s)
 }
 
-// CanonicalUUID accepts the forms Python's UUID() accepts for strings
-// (hyphenated or bare hex, optional braces/urn prefix) and returns the
+// CanonicalUUID accepts hyphenated or bare hex UUIDs (optional braces or urn prefix) and returns the
 // lowercase hyphenated form.
 func CanonicalUUID(s string) (string, bool) {
 	h := strings.ToLower(s)
@@ -548,7 +547,7 @@ func parseDecimalString(s string) (decimal.Decimal, bool) {
 	if s == "" {
 		return decimal.Decimal{}, false
 	}
-	// shopspring accepts forms Python's Decimal does not (e.g. "1_0"); be strict.
+	// The decimal library accepts forms we do not want (e.g. "1_0"); be strict.
 	for i, c := range s {
 		switch {
 		case c >= '0' && c <= '9', c == '.':
@@ -582,7 +581,7 @@ func (p *parser) decimalVal(v any, loc []any) (decimal.Decimal, bool) {
 	return decimal.Decimal{}, false
 }
 
-// decimalFromFloatLike reads a pydantic float field (number or numeric string)
+// decimalFromFloatLike reads a floating-point field (number or numeric string)
 // as an exact decimal so no binary rounding is introduced.
 func (p *parser) decimalFromFloatLike(v any, loc []any) (decimal.Decimal, bool) {
 	switch t := v.(type) {
@@ -629,7 +628,7 @@ func parseDateLoose(s string) (Date, error) {
 	if d, err := ParseDate(s); err == nil {
 		return d, nil
 	}
-	// pydantic also accepts a datetime whose time part is zero.
+	// A datetime whose time part is zero is also accepted.
 	for _, layout := range []string{"2006-01-02T15:04:05", "2006-01-02 15:04:05", time.RFC3339} {
 		if t, err := time.Parse(layout, s); err == nil {
 			if t.Hour() == 0 && t.Minute() == 0 && t.Second() == 0 && t.Nanosecond() == 0 {
@@ -653,7 +652,7 @@ func Quantity(d decimal.Decimal) decimal.Decimal { return d.Round(QuantityScale)
 func Rate(d decimal.Decimal) decimal.Decimal { return d.Round(RateScale) }
 
 // ParseTimeOfDay mirrors datetime.time.fromisoformat for the time column and
-// returns microseconds since midnight. The error text matches Python's.
+// returns microseconds since midnight. Accepted forms: HH, HH:MM, HH:MM:SS[.ffffff] and the compact variants.
 func ParseTimeOfDay(s string) (int64, error) {
 	bad := fmt.Errorf("Invalid isoformat string: '%s'", s) //nolint:staticcheck
 	t := s
@@ -662,7 +661,7 @@ func ParseTimeOfDay(s string) (int64, error) {
 		frac := t[i+1:]
 		t = t[:i]
 		if len(frac) == 0 || len(frac) > 6 {
-			// Python 3.11+ accepts any number of digits but only uses six.
+			// More than six fractional digits are truncated.
 			if len(frac) == 0 {
 				return 0, bad
 			}
@@ -720,7 +719,7 @@ func ParseTimeOfDay(s string) (int64, error) {
 		return 0, bad
 	}
 	if h > 23 || m > 59 || sec > 59 {
-		return 0, fmt.Errorf("%s must be in 0..23", "hour") // Python: "hour must be in 0..23"
+		return 0, fmt.Errorf("time of day out of range")
 	}
 	return ((int64(h)*60+int64(m))*60+int64(sec))*1_000_000 + us, nil
 }

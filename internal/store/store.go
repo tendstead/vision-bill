@@ -22,8 +22,9 @@ var migrationFS embed.FS
 var expectedColumns string
 
 const (
-	// AlembicHead is the only Alembic revision Go adopts directly.
-	AlembicHead = "0010"
+	// LegacyHead is the only revision of the legacy migration marker
+	// (alembic_version) from which an existing database is adopted.
+	LegacyHead  = "0010"
 	baseline    = "001_baseline"
 	ledgerTable = "vision_bill_go_migrations"
 	// advisoryLockKey serialises migrations across replicas.
@@ -91,8 +92,9 @@ func LatestVersion() string {
 }
 
 // Migrate brings the database to the latest embedded migration inside one
-// transaction guarded by an advisory lock. A database managed by Alembic is
-// adopted when it is exactly at AlembicHead and its schema matches.
+// transaction guarded by an advisory lock. An existing database carrying the
+// legacy migration marker is adopted when it is exactly at LegacyHead and its
+// schema matches.
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	ms, err := loadMigrations()
 	if err != nil {
@@ -170,14 +172,14 @@ func installBaseline(ctx context.Context, tx pgx.Tx, m migration) error {
 			versions = append(versions, v)
 		}
 		rows.Close()
-		if len(versions) != 1 || versions[0] != AlembicHead {
-			return fmt.Errorf("database is at Alembic revision %v but Go adopts only %s: "+
-				"upgrade older databases with the pinned Python migrator first, and do not run newer revisions", versions, AlembicHead)
+		if len(versions) != 1 || versions[0] != LegacyHead {
+			return fmt.Errorf("database is at schema revision %v but only %s can be adopted: "+
+				"upgrade older databases to %s first; newer revisions are not supported", versions, LegacyHead, LegacyHead)
 		}
 		if missing, err := missingColumns(ctx, tx); err != nil {
 			return err
 		} else if len(missing) > 0 {
-			return fmt.Errorf("schema does not match Alembic %s; missing columns: %s", AlembicHead, strings.Join(missing, ", "))
+			return fmt.Errorf("schema does not match revision %s; missing columns: %s", LegacyHead, strings.Join(missing, ", "))
 		}
 		return nil
 	}
@@ -191,11 +193,11 @@ func installBaseline(ctx context.Context, tx pgx.Tx, m migration) error {
 	if _, err := tx.Exec(ctx, m.sql); err != nil {
 		return fmt.Errorf("apply baseline: %w", err)
 	}
-	// Keep the Alembic marker so the Python reference can still run on this data.
+	// Keep the legacy marker so existing tooling and older releases keep working on this data.
 	if _, err := tx.Exec(ctx, "CREATE TABLE alembic_version (version_num varchar(32) NOT NULL CONSTRAINT alembic_version_pkc PRIMARY KEY)"); err != nil {
 		return err
 	}
-	_, err := tx.Exec(ctx, "INSERT INTO alembic_version (version_num) VALUES ($1)", AlembicHead)
+	_, err := tx.Exec(ctx, "INSERT INTO alembic_version (version_num) VALUES ($1)", LegacyHead)
 	return err
 }
 

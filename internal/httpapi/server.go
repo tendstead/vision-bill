@@ -87,7 +87,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// writeError uses FastAPI's {"detail": ...} error body.
+// writeError writes the API's {"detail": ...} error body.
 func writeError(w http.ResponseWriter, status int, detail string) {
 	writeJSON(w, status, map[string]string{"detail": detail})
 }

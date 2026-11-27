@@ -11,7 +11,7 @@ import (
 func dec(s string) decimal.Decimal { return decimal.RequireFromString(s) }
 
 func TestMoneyRoundsHalfAwayFromZero(t *testing.T) {
-	// Approved difference from Python: no float64 intermediate.
+	// Amounts are exact decimals: no float64 intermediate.
 	cases := map[string]string{
 		"0.015": "0.02", "0.045": "0.05", "0.145": "0.15", "0.285": "0.29", "1.005": "1.01",
 		"1.015": "1.02", "1.115": "1.12", "2.675": "2.68", "10.075": "10.08", "-1.005": "-1.01",
@@ -143,18 +143,5 @@ func TestTimeOfDay(t *testing.T) {
 func TestNormalizeHistoryKey(t *testing.T) {
 	if NormalizeHistoryKey("  STRASSE\t Café ") != "strasse café" || NormalizeHistoryKey("Straße") != "strasse" {
 		t.Fatal("fold")
-	}
-}
-
-func TestPyFloatRepr(t *testing.T) {
-	cases := map[float64]string{
-		2: "2.0", 0.19: "0.19", 1.5: "1.5", 0: "0.0", 100: "100.0", 0.0001: "0.0001",
-		0.00001: "1e-05", 1e16: "1e+16", 123456789012345678: "1.2345678901234568e+17", -2.5: "-2.5", 0.075: "0.075",
-		1e15: "1000000000000000.0",
-	}
-	for in, want := range cases {
-		if got := pyFloatRepr(in); got != want {
-			t.Errorf("%v -> %s, want %s", in, got, want)
-		}
 	}
 }

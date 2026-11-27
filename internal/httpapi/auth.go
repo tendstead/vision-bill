@@ -160,7 +160,7 @@ func (s *Server) internalError(w http.ResponseWriter, r *http.Request, err error
 	writeError(w, http.StatusInternalServerError, "Internal Server Error")
 }
 
-// authed resolves the session cookie to a user (401/503 like the Python dependency).
+// authed resolves the session cookie to a user (401, or 503 while the user store is down).
 func (s *Server) authed(h func(http.ResponseWriter, *http.Request, userView)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		st := s.db()

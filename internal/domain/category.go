@@ -9,7 +9,7 @@ import (
 )
 
 // SpendingCategories are the stable per-line-item category codes, in the
-// order of the Python definition.
+// declaration order.
 var SpendingCategories = []string{
 	"unknown", "other", "milk", "cheese", "yogurt", "eggs", "butter_spreads",
 	"bread_bakery", "cereals", "pasta_rice_grains", "vegetables", "fruit",
@@ -75,10 +75,10 @@ func IsSpendingCategory(code string) bool { return categorySet[code] }
 
 var folder = cases.Fold()
 
-// Fold is Unicode case folding (Python's str.casefold).
+// Fold is Unicode case folding (case folding).
 func Fold(s string) string { return folder.String(s) }
 
-// pyFields splits on Unicode whitespace like Python's str.split().
+// pyFields splits on Unicode whitespace (Unicode whitespace).
 func pyFields(s string) []string {
 	return strings.FieldsFunc(s, unicode.IsSpace)
 }

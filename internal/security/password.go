@@ -1,5 +1,6 @@
-// Package security reproduces the Python implementation's password hashing
-// and session tokens byte-for-byte so existing hashes and cookies keep working.
+// Package security implements password hashing (peppered Argon2id) and signed
+// session tokens. The formats are stable so stored hashes and issued cookies
+// keep working across releases.
 package security
 
 import (
@@ -47,7 +48,7 @@ func peppered(pepper, password string) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-// HashPassword returns an Argon2id PHC string compatible with argon2-cffi.
+// HashPassword returns an Argon2id PHC string (standard encoding).
 func HashPassword(pepper, password string) (string, error) {
 	salt := make([]byte, argonSaltLen)
 	if _, err := rand.Read(salt); err != nil {

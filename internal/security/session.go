@@ -10,7 +10,7 @@ import (
 )
 
 // Token is "{user_id}.{exp}.{sig}" with sig = hex(HMAC-SHA256(secret, "{user_id}.{exp}")).
-// It matches the Python session format exactly.
+// The format is stable across releases.
 
 func sign(secret, message string) string {
 	mac := hmac.New(sha256.New, []byte(secret))
@@ -36,8 +36,7 @@ func DecodeToken(token, secret string, now time.Time) (string, bool) {
 	if err != nil || !validUUID(userID) {
 		return "", false
 	}
-	// Python re-serialises the parsed values; require canonical forms so that
-	// the signed message is identical.
+	// Require canonical forms so the signed message is unambiguous.
 	if strconv.FormatInt(exp, 10) != expS || strings.ToLower(userID) != userID {
 		return "", false
 	}

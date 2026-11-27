@@ -1,4 +1,4 @@
--- Baseline schema reproducing Alembic head 0010 (generated from a reference database).
+-- Baseline schema (revision 0010), generated from a reference database.
 CREATE FUNCTION public.vision_bill_check_receipt_image_id() RETURNS trigger
     LANGUAGE plpgsql
     AS $$

@@ -153,7 +153,7 @@ func TestDegradedWithoutDatabase(t *testing.T) {
 	if r := e.do("POST", "/api/v1/auth/login", map[string]string{"username": "a", "password": "b"}); r.Code != 503 {
 		t.Fatalf("login: %d", r.Code)
 	}
-	// Validation runs before the database check, as in FastAPI.
+	// Request validation runs before the database check.
 	if r := e.do("POST", "/api/v1/auth/login", map[string]string{"username": ""}); r.Code != 422 {
 		t.Fatalf("validation first: %d", r.Code)
 	}
@@ -231,8 +231,8 @@ func TestRegistrationValidationAndToggle(t *testing.T) {
 	}
 }
 
-func TestPythonSessionCookieAccepted(t *testing.T) {
-	// A token minted by the Python implementation for a known user id.
+func TestIssuedSessionCookieAccepted(t *testing.T) {
+	// A session cookie issued before this deployment must keep working.
 	e := newEnv(t, true)
 	ctx := context.Background()
 	id := "11111111-2222-3333-4444-555555555555"

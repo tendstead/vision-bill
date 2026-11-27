@@ -414,7 +414,7 @@ func (s *Store) ReceiptDetails(ctx context.Context, id string, sc Scope) (*domai
 			return nil, err
 		}
 		f, _ := strconv.ParseFloat(q, 64)
-		r.Quantity, r.UnitPrice, r.TotalPrice = domain.PyFloat(f), domain.DecimalStr(up), domain.DecimalStr(tp)
+		r.Quantity, r.UnitPrice, r.TotalPrice = f, domain.DecimalStr(up), domain.DecimalStr(tp)
 		if tags == nil {
 			tags = []string{}
 		}
@@ -440,7 +440,7 @@ func (s *Store) ReceiptDetails(ctx context.Context, id string, sc Scope) (*domai
 		}
 		if rate != nil {
 			f, _ := strconv.ParseFloat(*rate, 64)
-			pf := domain.PyFloat(f)
+			pf := f
 			t.Rate = &pf
 		}
 		t.Amount = domain.DecimalStr(amount)

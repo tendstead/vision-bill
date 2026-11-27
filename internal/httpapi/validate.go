@@ -12,7 +12,7 @@ import (
 
 const maxJSONBody = 1 << 20
 
-// fieldError mirrors one entry of FastAPI's 422 "detail" array.
+// fieldError is one entry of the 422 "detail" list.
 type fieldError struct {
 	Type  string         `json:"type"`
 	Loc   []any          `json:"loc"`
@@ -32,7 +32,7 @@ func (v validationErrors) write(w http.ResponseWriter) {
 func bodyLoc(field string) []any { return []any{"body", field} }
 
 // decodeJSON reads a JSON object body into dst. On failure it writes a 422 in
-// FastAPI's format and returns false. Unknown fields are ignored like pydantic.
+// the standard format and returns false. Unknown fields are ignored.
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxJSONBody))
 	if err != nil {
@@ -83,7 +83,7 @@ func typeErrorKind(got, want string) string {
 }
 
 // checkString validates a required string field's presence and length (in
-// characters, like pydantic).
+// characters).
 func checkString(errs *validationErrors, field string, value *string, min, max int) {
 	if value == nil {
 		errs.add(fieldError{Type: "missing", Loc: bodyLoc(field), Msg: "Field required"})

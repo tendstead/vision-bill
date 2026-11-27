@@ -63,9 +63,9 @@ func (s *Server) getReceipt(w http.ResponseWriter, r *http.Request, u userView) 
 	writeJSON(w, http.StatusOK, d)
 }
 
-// updateReceipt reproduces the baseline order of effects: the receipt edit is
-// committed first and the requested collection memberships are validated and
-// applied afterwards (a bad collection yields 404 but the edit persists).
+// updateReceipt commits the receipt edit first; the requested collection
+// memberships are validated and applied afterwards (a bad collection yields
+// 404 but the edit persists).
 func (s *Server) updateReceipt(w http.ResponseWriter, r *http.Request, u userView) {
 	p := newParams(r)
 	id := p.pathUUID("receipt_id")

@@ -1,5 +1,4 @@
-// Package config loads settings with the same sources and precedence as the
-// Python application: process environment > .env/.env.local > persistent YAML.
+// Package config loads settings from, in order of precedence: process environment > .env/.env.local > persistent YAML.
 package config
 
 import (
@@ -223,7 +222,7 @@ func yamlFlat(path string) (flat, error) {
 	out := flat{}
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return out, nil // absent or unreadable: same as Python (empty mapping)
+		return out, nil // absent or unreadable: treated as empty
 	}
 	var doc map[string]any
 	if err := yaml.Unmarshal(b, &doc); err != nil {
@@ -391,7 +390,7 @@ func (r *resolver) boolv(key string, def bool) bool {
 }
 
 // EditableSources reports "environment", "config" or "default" for each
-// admin-editable key, matching the Python semantics.
+// admin-editable key.
 func EditableSources(s Sources) map[string]string {
 	names := map[string]bool{}
 	for _, n := range s.EnvNames() {

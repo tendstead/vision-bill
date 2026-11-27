@@ -111,9 +111,9 @@ func healthcheck() error {
 	return nil
 }
 
-// listenAddr is where the server binds. Like the Python image (uvicorn on a
-// fixed port 8080) it does NOT follow api.port, which only mirrors the host
-// port in Compose; override with VB_LISTEN_ADDR.
+// listenAddr is where the server binds: a fixed container port (8080) that
+// does not follow api.port, which only mirrors the published host port in
+// Compose. Override with VB_LISTEN_ADDR.
 func listenAddr() string {
 	if a := os.Getenv("VB_LISTEN_ADDR"); a != "" {
 		return a

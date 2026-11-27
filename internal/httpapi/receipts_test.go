@@ -67,7 +67,7 @@ func TestReceiptReadEndpoints(t *testing.T) {
 		t.Fatalf("detail %d %s", d.Code, d.Body)
 	}
 	body := d.Body.String()
-	for _, want := range []string{`"subtotal":"3.00"`, `"total":"3.57"`, `"time":"12:30:00"`, `"quantity":2.0`, `"rate":0.19`,
+	for _, want := range []string{`"subtotal":"3.00"`, `"total":"3.57"`, `"time":"12:30:00"`, `"quantity":2`, `"rate":0.19`,
 		`"unit_price":"1.50"`, `"tags":["Dairy"]`, `"collection_ids":[]`, `"image_path":null`, `"original_description":"Milk"`, `"category_source":"llm"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("detail missing %s in %s", want, body)
@@ -125,7 +125,7 @@ func TestUpdateReceiptRoundingAndQuirk(t *testing.T) {
 		t.Fatalf("put: %d %s", r.Code, r.Body)
 	}
 
-	// Baseline quirk: the edit commits before collection validation.
+	// The edit is committed before collection membership is validated.
 	missing := "99999999-9999-9999-9999-999999999999"
 	body = strings.Replace(receiptBody, `"merchant_name": "Shop"`, `"merchant_name": "Renamed", "collection_ids": ["`+missing+`"]`, 1)
 	r = e.do("PUT", "/api/v1/receipts/"+id, body, alice.cookie)

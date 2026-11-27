@@ -1,76 +1,8 @@
 package domain
 
-import (
-	"math"
-	"strconv"
-	"strings"
-)
-
 // DecimalStr carries a NUMERIC value exactly as PostgreSQL printed it
-// (preserving scale, like Python's Decimal) and serialises as a JSON string.
+// (preserving scale) and serialises as a JSON string.
 type DecimalStr string
-
-// PyFloat serialises like Python's repr(float): "2.0", "0.19", "1e-05".
-type PyFloat float64
-
-// MarshalJSON implements json.Marshaler.
-func (f PyFloat) MarshalJSON() ([]byte, error) {
-	v := float64(f)
-	if math.IsNaN(v) || math.IsInf(v, 0) {
-		return []byte("null"), nil
-	}
-	return []byte(pyFloatRepr(v)), nil
-}
-
-func pyFloatRepr(v float64) string {
-	if v == 0 {
-		if math.Signbit(v) {
-			return "-0.0"
-		}
-		return "0.0"
-	}
-	s := strconv.FormatFloat(v, 'e', -1, 64) // d.ddde±XX, shortest digits
-	mant, expS, _ := strings.Cut(s, "e")
-	exp, _ := strconv.Atoi(expS)
-	neg := strings.HasPrefix(mant, "-")
-	mant = strings.TrimPrefix(mant, "-")
-	digits := strings.Replace(mant, ".", "", 1)
-	var out string
-	if exp < -4 || exp >= 16 {
-		m := digits[:1]
-		if len(digits) > 1 {
-			m += "." + digits[1:]
-		}
-		sign := "+"
-		if exp < 0 {
-			sign = "-"
-		}
-		e := exp
-		if e < 0 {
-			e = -e
-		}
-		out = m + "e" + sign + leftPad2(strconv.Itoa(e))
-	} else if exp >= 0 {
-		if len(digits) <= exp+1 {
-			out = digits + strings.Repeat("0", exp+1-len(digits)) + ".0"
-		} else {
-			out = digits[:exp+1] + "." + digits[exp+1:]
-		}
-	} else {
-		out = "0." + strings.Repeat("0", -exp-1) + digits
-	}
-	if neg {
-		out = "-" + out
-	}
-	return out
-}
-
-func leftPad2(s string) string {
-	if len(s) < 2 {
-		return "0" + s
-	}
-	return s
-}
 
 // ReceiptRow mirrors the receipts table as returned by the API.
 type ReceiptRow struct {
@@ -105,7 +37,7 @@ type LineItemRow struct {
 	OriginalDescription *string    `json:"original_description"`
 	SpendingCategory    string     `json:"spending_category"`
 	CategorySource      string     `json:"category_source"`
-	Quantity            PyFloat    `json:"quantity"`
+	Quantity            float64    `json:"quantity"`
 	UnitPrice           DecimalStr `json:"unit_price"`
 	TotalPrice          DecimalStr `json:"total_price"`
 	Tags                []string   `json:"tags"`
@@ -117,7 +49,7 @@ type TaxLineRow struct {
 	ID        string     `json:"id"`
 	ReceiptID string     `json:"receipt_id"`
 	Name      string     `json:"name"`
-	Rate      *PyFloat   `json:"rate"`
+	Rate      *float64   `json:"rate"`
 	Amount    DecimalStr `json:"amount"`
 }
 

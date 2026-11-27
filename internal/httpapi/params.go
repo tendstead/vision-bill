@@ -11,7 +11,7 @@ import (
 )
 
 // params collects request parameter problems so they can be reported together
-// as a single FastAPI-style 422.
+// as a single 422 response.
 type params struct {
 	r    *http.Request
 	errs validationErrors

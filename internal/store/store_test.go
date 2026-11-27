@@ -25,8 +25,8 @@ func TestFreshInstall(t *testing.T) {
 		t.Fatal(err)
 	}
 	var v string
-	if err := pool.QueryRow(ctx, "SELECT version_num FROM alembic_version").Scan(&v); err != nil || v != AlembicHead {
-		t.Fatalf("alembic marker %q %v", v, err)
+	if err := pool.QueryRow(ctx, "SELECT version_num FROM alembic_version").Scan(&v); err != nil || v != LegacyHead {
+		t.Fatalf("legacy marker %q %v", v, err)
 	}
 	var n int
 	if err := pool.QueryRow(ctx, "SELECT count(*) FROM tags").Scan(&n); err != nil || n != 16 {
@@ -37,11 +37,11 @@ func TestFreshInstall(t *testing.T) {
 	}
 }
 
-func TestAdoptAlembicHead(t *testing.T) {
+func TestAdoptExistingDatabase(t *testing.T) {
 	pool := newDB(t)
 	ctx := context.Background()
 	ms, _ := loadMigrations()
-	// Simulate an Alembic-managed database: baseline SQL + marker, no ledger.
+	// Simulate an existing database: schema + legacy marker, no ledger.
 	if _, err := pool.Exec(ctx, ms[0].sql); err != nil {
 		t.Fatal(err)
 	}
