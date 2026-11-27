@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"path"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/tendstead/vision-bill/internal/analysis"
@@ -46,6 +47,7 @@ type Server struct {
 	opts      Options
 	hashSem   chan struct{} // bounds concurrent Argon2 work (64 MiB each)
 	uploadSem chan struct{} // bounds concurrent uploads
+	lastFree  atomic.Int64  // unix nanos of the last memory release
 }
 
 // New returns the application handler.
@@ -59,7 +61,7 @@ func New(opts Options) http.Handler {
 	if opts.Store == nil {
 		opts.Store = func() *store.Store { return nil }
 	}
-	s := &Server{opts: opts, hashSem: make(chan struct{}, 4), uploadSem: make(chan struct{}, 4)}
+	s := &Server{opts: opts, hashSem: make(chan struct{}, 1), uploadSem: make(chan struct{}, 4)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.healthz)
 	mux.HandleFunc("GET /readyz", s.readyz)

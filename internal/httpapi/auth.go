@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"runtime/debug"
 	"time"
 
 	"github.com/tendstead/vision-bill/internal/security"
@@ -52,7 +53,10 @@ func (s *Server) setSessionCookie(w http.ResponseWriter, userID string) {
 func (s *Server) withHashSlot(ctx context.Context, fn func()) bool {
 	select {
 	case s.hashSem <- struct{}{}:
-		defer func() { <-s.hashSem }()
+		defer func() {
+			<-s.hashSem
+			s.releaseHashMemory()
+		}()
 		fn()
 		return true
 	case <-ctx.Done():
@@ -201,4 +205,18 @@ func (s *Server) admin(h func(http.ResponseWriter, *http.Request, userView)) htt
 		}
 		h(w, r, u)
 	})
+}
+
+// releaseHashMemory hands the large Argon2 buffers back to the operating
+// system once the last concurrent hash finished (at most every few seconds).
+func (s *Server) releaseHashMemory() {
+	if len(s.hashSem) != 0 {
+		return
+	}
+	now := time.Now().UnixNano()
+	last := s.lastFree.Load()
+	if now-last < int64(5*time.Second) || !s.lastFree.CompareAndSwap(last, now) {
+		return
+	}
+	go debug.FreeOSMemory()
 }

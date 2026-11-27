@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -23,6 +24,9 @@ import (
 	"github.com/tendstead/vision-bill/internal/httpapi"
 	"github.com/tendstead/vision-bill/internal/llm"
 )
+
+// defaultMemoryLimit is the soft heap target of the server process.
+const defaultMemoryLimit = 192 << 20
 
 //go:embed all:static
 var staticFiles embed.FS
@@ -37,6 +41,12 @@ func main() {
 func run() error {
 	if len(os.Args) > 1 && os.Args[1] == "-healthcheck" {
 		return healthcheck()
+	}
+	// Password hashing and photo uploads allocate large transient buffers. A soft
+	// memory limit makes the collector reclaim them promptly instead of letting
+	// the heap grow to twice its live size (GOMEMLIMIT overrides this default).
+	if os.Getenv("GOMEMLIMIT") == "" {
+		debug.SetMemoryLimit(defaultMemoryLimit)
 	}
 	src := config.OSSources()
 	cfg, err := config.Load(src)
