@@ -2,43 +2,16 @@ package store
 
 import (
 	"context"
-	"fmt"
-	"math/rand"
-	"os"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/tendstead/vision-bill/internal/testdb"
 )
 
-// newDB creates a throwaway database on the server in VB_TEST_DATABASE_URL
-// (a URL for any database; "postgres" is typical) and returns a pool for it.
 func newDB(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	base := os.Getenv("VB_TEST_DATABASE_URL")
-	if base == "" {
-		t.Skip("VB_TEST_DATABASE_URL not set")
-	}
-	ctx := context.Background()
-	admin, err := pgxpool.New(ctx, base)
-	if err != nil {
-		t.Fatal(err)
-	}
-	name := fmt.Sprintf("vbtest_%d", rand.Int63())
-	if _, err := admin.Exec(ctx, "CREATE DATABASE "+name); err != nil {
-		t.Fatal(err)
-	}
-	cfg := admin.Config().ConnConfig.Copy()
-	cfg.Database = name
-	pool, err := pgxpool.New(ctx, fmt.Sprintf("postgres://%s:%s@%s:%d/%s", cfg.User, cfg.Password, cfg.Host, cfg.Port, name))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		pool.Close()
-		_, _ = admin.Exec(ctx, "DROP DATABASE "+name+" WITH (FORCE)")
-		admin.Close()
-	})
+	pool, _ := testdb.New(t)
 	return pool
 }
 

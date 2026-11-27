@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 )
@@ -449,4 +450,45 @@ func Initialize(path string, c *Config) (created bool, err error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// Holder provides concurrency-safe access to the live configuration, which
+// the admin settings endpoint may update at runtime.
+type Holder struct {
+	mu              sync.RWMutex
+	c               Config
+	startupProvider string
+	startupHost     string
+}
+
+// NewHolder wraps c and records the provider/host the process starts with.
+func NewHolder(c *Config) *Holder {
+	return &Holder{c: *c, startupProvider: c.LLM.Provider, startupHost: c.LLM.Host}
+}
+
+// Get returns a snapshot of the current configuration.
+func (h *Holder) Get() Config {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.c
+}
+
+// Update applies fn to a copy and publishes it if fn returns nil.
+func (h *Holder) Update(fn func(*Config) error) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	next := h.c
+	if err := fn(&next); err != nil {
+		return err
+	}
+	h.c = next
+	return nil
+}
+
+// RestartRequired reports whether the editable provider/host differs from the
+// identity the running process initialised with.
+func (h *Holder) RestartRequired() bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.startupProvider != h.c.LLM.Provider || h.startupHost != h.c.LLM.Host
 }

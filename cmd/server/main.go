@@ -5,14 +5,18 @@ import (
 	"context"
 	"embed"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/tendstead/vision-bill/internal/app"
+	"github.com/tendstead/vision-bill/internal/config"
 	"github.com/tendstead/vision-bill/internal/httpapi"
 )
 
@@ -20,31 +24,99 @@ import (
 var staticFiles embed.FS
 
 func main() {
-	port := os.Getenv("API__PORT")
-	if port == "" {
-		port = "8080"
+	if err := run(); err != nil {
+		slog.Error("fatal", "err", err)
+		os.Exit(1)
 	}
+}
+
+func run() error {
+	if len(os.Args) > 1 && os.Args[1] == "-healthcheck" {
+		return healthcheck()
+	}
+	src := config.OSSources()
+	cfg, err := config.Load(src)
+	if err != nil {
+		return err
+	}
+	log := slog.Default()
+	if created, err := config.Initialize(src.YAMLPath, cfg); err != nil {
+		log.Warn("could not create YAML config", "path", src.YAMLPath, "err", err)
+	} else if created {
+		log.Info("created initial YAML config", "path", src.YAMLPath)
+	}
+	holder := config.NewHolder(cfg)
 	static, err := fs.Sub(staticFiles, "static")
 	if err != nil {
-		slog.Error("embedded static", "err", err)
-		os.Exit(1)
+		return err
 	}
-	srv := &http.Server{
-		Addr:              ":" + port,
-		Handler:           httpapi.New(static),
-		ReadHeaderTimeout: 10 * time.Second,
-	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	go func() {
-		<-ctx.Done()
-		shutdown, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(shutdown)
-	}()
-	slog.Info("listening", "addr", srv.Addr)
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		slog.Error("server", "err", err)
-		os.Exit(1)
+
+	db := &app.DB{}
+	dbErr := make(chan error, 1)
+	go func() { dbErr <- db.Connect(ctx, holder.Get(), log) }()
+
+	srv := &http.Server{
+		Addr: listenAddr(),
+		Handler: httpapi.New(httpapi.Options{
+			Config: holder, Store: db.Get, Static: static, Logger: log, ConfigSources: src,
+		}),
+		ReadHeaderTimeout: 10 * time.Second,
 	}
+	serveErr := make(chan error, 1)
+	go func() {
+		log.Info("listening", "addr", srv.Addr)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serveErr <- err
+		}
+	}()
+
+	var runErr error
+	select {
+	case <-ctx.Done():
+	case runErr = <-serveErr:
+	case err := <-dbErr:
+		// Connect only returns for fatal problems (migration/adoption) or shutdown.
+		if err != nil && ctx.Err() == nil {
+			runErr = fmt.Errorf("database setup: %w", err)
+		} else {
+			select {
+			case <-ctx.Done():
+			case runErr = <-serveErr:
+			}
+		}
+	}
+	shutdown, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	_ = srv.Shutdown(shutdown)
+	if st := db.Get(); st != nil {
+		st.Close()
+	}
+	return runErr
+}
+
+// healthcheck probes the local liveness endpoint (used by the container HEALTHCHECK).
+func healthcheck() error {
+	_, port, _ := strings.Cut(listenAddr(), ":")
+	resp, err := http.Get("http://127.0.0.1:" + port + "/healthz")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("healthz returned %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// listenAddr is where the server binds. Like the Python image (uvicorn on a
+// fixed port 8080) it does NOT follow api.port, which only mirrors the host
+// port in Compose; override with VB_LISTEN_ADDR.
+func listenAddr() string {
+	if a := os.Getenv("VB_LISTEN_ADDR"); a != "" {
+		return a
+	}
+	return ":8080"
 }
