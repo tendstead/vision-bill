@@ -120,3 +120,20 @@ fe-verify: fe-check fe-test fe-typecheck-e2e fe-build ## Run frontend checks, un
 fe: ## Run an npm script in web/ (make fe CMD=<script> [ARGS="..."])
 	@test -n "$(CMD)" || { echo "usage: make fe CMD=<npm-script> [ARGS=\"arg1 arg2\"]"; exit 1; }
 	$(NODE) (cd $(FE) && npm run $(CMD) $(ARGS))
+
+# ── Go port (see docs/superpowers/plans/vision-bill-go-migration.md) ──
+GO_PKGS := ./cmd/... ./internal/...
+
+go-test: ## Run Go unit tests with the race detector
+	go test -race -count=1 $(GO_PKGS)
+
+go-vet: ## gofmt check + go vet
+	@test -z "$$(gofmt -l cmd internal)" || { gofmt -l cmd internal; echo "gofmt needed"; exit 1; }
+	go vet $(GO_PKGS)
+
+go-build: ## Build the Go server binary into bin/
+	CGO_ENABLED=0 go build -trimpath -o bin/vision-bill ./cmd/server
+
+go-fe-sync: fe-build ## Copy the built SPA into cmd/server/static for go:embed
+	find cmd/server/static -mindepth 1 ! -name .gitkeep -delete
+	cp -r $(FE)/out/. cmd/server/static/

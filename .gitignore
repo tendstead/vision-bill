@@ -246,3 +246,8 @@ web/.svelte-kit/
 # Built SPA installed into the package via `make fe-build`
 src/vision_bill/static/*
 !src/vision_bill/static/.gitkeep
+
+# Go port
+/bin/
+/cmd/server/static/*
+!/cmd/server/static/.gitkeep
