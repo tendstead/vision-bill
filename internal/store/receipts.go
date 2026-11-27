@@ -330,7 +330,7 @@ type ListFilter struct {
 	CollectionID  *string
 }
 
-// ListReceipts returns receipts ordered by date descending.
+// ListReceipts returns receipts ordered by date descending (id breaks ties so paging is stable).
 func (s *Store) ListReceipts(ctx context.Context, f ListFilter, sc Scope) ([]domain.ReceiptRow, error) {
 	var where []string
 	var args []any
@@ -363,7 +363,7 @@ func (s *Store) ListReceipts(ctx context.Context, f ListFilter, sc Scope) ([]dom
 		sql += " WHERE " + strings.Join(where, " AND ")
 	}
 	args = append(args, f.Limit, f.Offset)
-	sql += " ORDER BY r.date DESC LIMIT $" + strconv.Itoa(len(args)-1) + " OFFSET $" + strconv.Itoa(len(args))
+	sql += " ORDER BY r.date DESC, r.id DESC LIMIT $" + strconv.Itoa(len(args)-1) + " OFFSET $" + strconv.Itoa(len(args))
 	rows, err := s.Pool.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, err

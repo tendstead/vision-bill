@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -113,6 +114,8 @@ func run() error {
 			OnSettingsChanged: func(c config.Config) { provider.SetTemperature(c.LLM.Temperature) },
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
+		// Whole-request read limit, which bounds a (slow) upload of up to 200 MB.
+		ReadTimeout: 5 * time.Minute,
 	}
 	serveErr := make(chan error, 1)
 	go func() {
@@ -150,8 +153,11 @@ func run() error {
 
 // healthcheck probes the local liveness endpoint (used by the container HEALTHCHECK).
 func healthcheck() error {
-	_, port, _ := strings.Cut(listenAddr(), ":")
-	resp, err := http.Get("http://127.0.0.1:" + port + "/healthz")
+	url, err := healthURL(listenAddr())
+	if err != nil {
+		return err
+	}
+	resp, err := http.Get(url)
 	if err != nil {
 		return err
 	}
@@ -160,6 +166,22 @@ func healthcheck() error {
 		return fmt.Errorf("healthz returned %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// healthURL builds the loopback liveness URL for a listen address such as
+// ":8080", "0.0.0.0:8080", "[::]:8080" or "[::1]:8080". A wildcard or empty
+// host is probed on 127.0.0.1; an explicit host (also IPv6) is used as is.
+func healthURL(addr string) (string, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", fmt.Errorf("invalid listen address %q: %w", addr, err)
+	}
+	switch host {
+	case "", "0.0.0.0", "::":
+		// Go's wildcard listeners are dual-stack, so IPv4 loopback always works.
+		host = "127.0.0.1"
+	}
+	return "http://" + net.JoinHostPort(host, port) + "/healthz", nil
 }
 
 // listenAddr is where the server binds: a fixed container port (8080) that
