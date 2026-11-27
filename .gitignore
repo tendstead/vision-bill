@@ -243,11 +243,7 @@ web/.svelte-kit/
 # The global `lib/` above would hide web/src/lib/ — un-ignore it
 !web/src/lib/
 
-# Built SPA installed into the package via `make fe-build`
-src/vision_bill/static/*
-!src/vision_bill/static/.gitkeep
-
-# Go port
+# Built SPA embedded into the Go binary via `make fe-sync`
 /bin/
 /cmd/server/static/*
 !/cmd/server/static/.gitkeep

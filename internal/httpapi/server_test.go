@@ -152,6 +152,7 @@ func TestRouting(t *testing.T) {
 		{"/_app/missing.js", 404, `{"detail":"Not Found"}`},
 		{"/api/v1/nothing", 404, `{"detail":"Not Found"}`},
 		{"/readyz", 503, "database unavailable"},
+		{"/receipts/../etc/passwd", 200, "<html>app</html>"}, // no redirect for unclean paths
 	}
 	for _, c := range cases {
 		rec := e.do("GET", c.path, nil)

@@ -1,6 +1,6 @@
 """E2E: the `deposit` line-item tag is seeded in the global vocabulary (migration 0005).
 
-Requires `make e2e-up` (the e2e stack boots a fresh DB and runs `alembic upgrade head`).
+Requires `make e2e-up` (the e2e stack boots a fresh, migrated DB).
 """
 
 import pytest

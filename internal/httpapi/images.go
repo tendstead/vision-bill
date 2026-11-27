@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"strconv"
@@ -83,7 +85,8 @@ func (s *Server) readUploads(w http.ResponseWriter, r *http.Request) ([]upload, 
 			validationErrors{{Type: "missing", Loc: bodyLoc("receipt"), Msg: "Field required"}}.write(w)
 			return nil, false
 		}
-		if part.FormName() != "receipt" || part.FileName() == "" {
+		filename := rawFileName(part)
+		if part.FormName() != "receipt" || filename == "" {
 			_ = part.Close()
 			continue
 		}
@@ -106,12 +109,23 @@ func (s *Server) readUploads(w http.ResponseWriter, r *http.Request) ([]upload, 
 			writeError(w, http.StatusRequestEntityTooLarge, "Each photo must be at most 20 MB")
 			return nil, false
 		}
-		out = append(out, upload{filename: part.FileName(), content: data})
+		out = append(out, upload{filename: filename, content: data})
 	}
 	if len(out) == 0 {
 		return missing()
 	}
 	return out, true
+}
+
+// rawFileName returns the client-supplied file name unchanged (the standard
+// library reduces it to a base name). It is only stored as metadata: files on
+// disk are always named by generated identifiers.
+func rawFileName(p *multipart.Part) string {
+	_, params, err := mime.ParseMediaType(p.Header.Get("Content-Disposition"))
+	if err != nil {
+		return p.FileName()
+	}
+	return params["filename"]
 }
 
 func (s *Server) uploadImage(w http.ResponseWriter, r *http.Request, u userView) {

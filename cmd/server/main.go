@@ -79,6 +79,21 @@ func run() error {
 	dbErr := make(chan error, 1)
 	go func() { dbErr <- db.Connect(ctx, holder.Get(), log) }()
 
+	// Like a conventional startup, wait briefly for the database before
+	// accepting requests; if it stays unreachable the server starts degraded
+	// and keeps retrying in the background.
+	select {
+	case <-db.Ready():
+	case err := <-dbErr:
+		// Connect only returns for fatal problems (migration/adoption) or shutdown.
+		if err != nil && ctx.Err() == nil {
+			return fmt.Errorf("database setup: %w", err)
+		}
+	case <-time.After(30 * time.Second):
+		log.Warn("database not ready yet, starting in degraded mode")
+	case <-ctx.Done():
+	}
+
 	srv := &http.Server{
 		Addr: listenAddr(),
 		Handler: httpapi.New(httpapi.Options{

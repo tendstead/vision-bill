@@ -21,7 +21,7 @@ Rules:
 
 The stub never parses the image — it maps `sha256(image bytes)` to the JSON —
 so the image content only needs to be a valid image type (for the app's
-python-magic check); the JSON is what the "extraction" returns.
+content-type sniffing); the JSON is what the "extraction" returns.
 
 Example (add your own):
 

@@ -12,10 +12,57 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-from vision_bill.model.receipt import Receipt
+from datetime import date
+from decimal import Decimal
+from typing import Any
 
 DEFAULT_DATA_DIR = Path(__file__).parent / "data"
 IMAGE_EXTS = (".png", ".jpg", ".jpeg")
+
+
+_REQUIRED = ("confidence", "merchant_name", "date", "line_items", "subtotal", "total")
+_MONEY = {"subtotal", "discount_total", "tax_total", "tip", "total", "unit_price", "total_price", "amount"}
+
+
+class _View:
+    """Attribute access over a ground-truth document (money as Decimal, date as date)."""
+
+    def __init__(self, data: dict[str, Any]):
+        self._data = data
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("_") or name not in self._data:
+            raise AttributeError(name)
+        return self._wrap(name, self._data[name])
+
+    @staticmethod
+    def _wrap(name: str, value: Any) -> Any:
+        if value is None:
+            return None
+        if name in _MONEY:
+            return Decimal(str(value))
+        if name == "date":
+            return date.fromisoformat(value)
+        if name in ("line_items", "taxes"):
+            return [_View(item) for item in value]
+        return value
+
+    def model_dump(self, mode: str = "json") -> dict[str, Any]:
+        return json.loads(json.dumps(self._data))
+
+
+def _validated(expected: Any) -> _View:
+    """Structural check of a ground-truth receipt (required fields, parseable values)."""
+    if not isinstance(expected, dict):
+        raise ValueError("ground truth must be a JSON object")
+    missing = [key for key in _REQUIRED if key not in expected]
+    if missing:
+        raise ValueError(f"missing fields: {', '.join(missing)}")
+    view = _View(expected)
+    _ = (view.date, view.total, view.subtotal)
+    for item in view.line_items:
+        _ = (item.description, item.quantity, item.unit_price, item.total_price)
+    return view
 
 
 @dataclass(frozen=True)
@@ -23,7 +70,7 @@ class FixtureCase:
     name: str
     image_path: Path
     expected: dict
-    expected_receipt: Receipt
+    expected_receipt: _View
 
 
 def _warn(name: str, reason: str) -> None:
@@ -61,7 +108,7 @@ def load_fixture_cases(data_dir: Path = DEFAULT_DATA_DIR) -> list[FixtureCase]:
             continue
         try:
             expected = json.loads(json_path.read_text(encoding="utf-8"))
-            expected_receipt = Receipt.model_validate(expected)
+            expected_receipt = _validated(expected)
         except Exception as exc:  # noqa: BLE001 - discovery must never crash the suite
             _warn(name, f"invalid ground truth: {exc}")
             continue

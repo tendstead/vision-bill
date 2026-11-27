@@ -16,16 +16,17 @@ concurrency:
 
 jobs:
   checks:
-    name: Lint + unit tests + frontend
+    name: Go lint + tests + frontend
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-go@v5
         with:
-          enable-cache: true
+          go-version-file: go.mod
+          cache: true
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
@@ -35,9 +36,9 @@ jobs:
         run: make fe-install
       - name: Release driver tests (no publication)
         run: make release-test
-      - name: Lint + type check
+      - name: Lint (gofmt + go vet)
         run: make lint
-      - name: Unit tests
+      - name: Go tests (race detector + PostgreSQL)
         run: make test
       - name: Frontend check + unit tests + build
         run: make fe-verify

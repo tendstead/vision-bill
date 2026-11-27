@@ -24,11 +24,10 @@ extraction schema asks for all line items, their zero-based `source_image`, and
 Only model-proposed, ordered suffix/prefix overlaps between adjacent photos are
 eligible for removal. Repeated purchases elsewhere remain intact.
 
-`src/vision_bill/helper/duplicates.py::verify_duplicate` compares description,
-quantity and total_price. Defaults require equality, with case and whitespace
-normalization for names. Keyword parameters `name_similarity`,
-`quantity_tolerance`, and `total_tolerance` control matching. If any pair in an
-overlap fails verification, that overlap is retained. Visual identification of
+`llm.Reconcile` (`internal/llm`) verifies each proposed pair by description,
+quantity and total_price: all three must be equal, with case and whitespace
+normalization for names. If any pair in an overlap fails verification, that
+overlap is retained. Visual identification of
 overlap still depends on the model; verification cannot recover omitted rows.
 
 The persisted Receipt schema remains unchanged. The model can instead return

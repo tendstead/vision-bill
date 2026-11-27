@@ -1,4 +1,4 @@
-"""The built SPA is served by FastAPI, incl. the client-route fallback."""
+"""The built SPA is served by the app, incl. the client-route fallback."""
 
 import httpx
 import pytest

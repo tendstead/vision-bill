@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -15,7 +16,15 @@ import (
 
 // DB lazily connects to PostgreSQL and exposes the live store (nil while down).
 type DB struct {
-	ptr atomic.Pointer[store.Store]
+	ptr   atomic.Pointer[store.Store]
+	ready chan struct{}
+	once  sync.Once
+}
+
+// Ready is closed once the database is connected and migrated.
+func (d *DB) Ready() <-chan struct{} {
+	d.once.Do(func() { d.ready = make(chan struct{}) })
+	return d.ready
 }
 
 // Get returns the store or nil when the database is unavailable.
@@ -37,6 +46,8 @@ func (d *DB) Connect(ctx context.Context, cfg config.Config, log *slog.Logger) e
 				log.Error("authentication bootstrap failed", "err", err)
 			}
 			d.ptr.Store(st)
+			d.Ready()
+			close(d.ready)
 			return nil
 		}
 		log.Warn("database unavailable, retrying", "err", err, "in", delay)

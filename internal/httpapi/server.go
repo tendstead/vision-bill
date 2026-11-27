@@ -3,8 +3,10 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -60,10 +62,22 @@ func New(opts Options) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.healthz)
 	mux.HandleFunc("GET /readyz", s.readyz)
+	s.docsRoutes(mux)
 	s.routes(mux)
 	mux.HandleFunc("/api/", s.apiNotFound)
-	mux.HandleFunc("/", s.spa)
-	return s.recoverer(mux)
+	// Everything outside the API goes straight to the SPA handler. The mux is
+	// not used for it because it would redirect unclean paths (such as an
+	// encoded "../") instead of letting the client-side router handle them.
+	app := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/api/"), r.URL.Path == "/healthz", r.URL.Path == "/readyz",
+			r.URL.Path == "/openapi.json", r.URL.Path == "/docs", r.URL.Path == "/redoc":
+			mux.ServeHTTP(w, r)
+		default:
+			s.spa(w, r)
+		}
+	})
+	return s.recoverer(app)
 }
 
 func (s *Server) cfg() config.Config { return s.opts.Config.Get() }
@@ -151,5 +165,33 @@ func (s *Server) spa(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "Not Found")
 		return
 	}
-	http.ServeFileFS(w, r, s.opts.Static, name)
+	f, err := s.opts.Static.Open(name)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "Not Found")
+		return
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		writeError(w, http.StatusNotFound, "Not Found")
+		return
+	}
+	var rs io.ReadSeeker
+	if seeker, ok := f.(io.ReadSeeker); ok {
+		rs = seeker
+	} else {
+		data, err := io.ReadAll(f)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "Internal Server Error")
+			return
+		}
+		rs = bytes.NewReader(data)
+	}
+	switch {
+	case strings.HasPrefix(name, "_app/immutable/"):
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	case name == "index.html":
+		w.Header().Set("Cache-Control", "no-cache")
+	}
+	http.ServeContent(w, r, name, info.ModTime(), rs)
 }

@@ -3,20 +3,19 @@
 # Install pre-commit itself on the host with:
 #   pipx install pre-commit
 #
-# All hooks are local and run inside the project's uv-managed environment,
-# so `uv` and Node/nvm (for the frontend hook) must be on PATH and the
-# environment must be synced (see `make setup`).
+# All hooks are local: Go, Docker (for the throwaway PostgreSQL used by the
+# integration tests) and Node/nvm (for the frontend hook) must be on PATH.
 repos:
   - repo: local
     hooks:
       - id: lint
-        name: Lint (ruff + mypy)
+        name: Lint (gofmt + go vet)
         entry: make lint
         language: system
         pass_filenames: false
         always_run: true
       - id: test
-        name: Tests (pytest)
+        name: Go tests (race detector, PostgreSQL)
         entry: make test
         language: system
         pass_filenames: false

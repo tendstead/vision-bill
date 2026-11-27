@@ -1,7 +1,8 @@
-# Operational scripts
+# Operational tools
 
-The supported scripts run through Make so local endpoints and database values
-can live in one ignored `.env.scripts` file.
+The tools are subcommands of `vbctl` (`cmd/vbctl`), which is also shipped inside
+the container image as `/app/vbctl`. Locally they run through Make so endpoints
+and database values can live in one ignored `.env.scripts` file.
 
 ## Setup
 
@@ -9,9 +10,9 @@ can live in one ignored `.env.scripts` file.
 cp .env.scripts.example .env.scripts
 ```
 
-Edit the local file as needed. Make exports its values before invoking a
-script, so they take precedence over values loaded from the application's
-`.env` files. To use another file, pass `SCRIPTS_ENV=/path/to/file`.
+Edit the local file as needed. Make exports its values before invoking a tool,
+so they take precedence over values loaded from the application's `.env` files.
+To use another file, pass `SCRIPTS_ENV=/path/to/file`.
 
 ## Context-budget measurement
 
@@ -20,13 +21,15 @@ read tags from the running application and sample receipt image paths from
 PostgreSQL.
 
 ```bash
-make script-context-budget ARGS="--model glm-ocr:latest"
-make script-context-budget ARGS="--model glm-ocr:latest --image tests/data/lidl.jpg"
-make script-context-budget ARGS="--model glm-ocr:latest --db-sample 24"
+make script-context-budget ARGS="-model glm-ocr:latest"
+make script-context-budget ARGS="-model glm-ocr:latest -image tests/data/lidl.jpg"
+make script-context-budget ARGS="-model glm-ocr:latest -db-sample 24"
 ```
 
 The command sends image content to the configured `OLLAMA_HOST`. Keep that URL
 pointing at the local Ollama instance to preserve Vision Bill's privacy model.
+The live tag list needs an unauthenticated tag endpoint, which the API does not
+offer: pass `-tags-file tags.json` (a JSON array of tag names) to include it.
 
 ## Create a benchmark run
 
@@ -35,48 +38,42 @@ must be UUIDs for verified receipts. Put `VB_USERNAME` and `VB_PASSWORD` in the
 ignored `.env.scripts`, or pass them as arguments.
 
 ```bash
-make script-create-benchmark ARGS="--model glm-ocr:latest --limit 10"
-make script-create-benchmark ARGS="--receipt-id 125b2a52-60ac-4e1f-b9bf-d223f15c8cd1"
+make script-create-benchmark ARGS="-model glm-ocr:latest -limit 10"
+make script-create-benchmark ARGS="-receipt-id 125b2a52-60ac-4e1f-b9bf-d223f15c8cd1"
 ```
+
+The command prints the run id.
 
 ## Generate thumbnails for existing images
 
 Creates a WebP thumbnail (`images.thumbnail_path`) for any image that does not
-have one yet. Configure the database and image directories in `scripts/.env`
-(same directory as the script):
+have one yet. It reads the application's normal configuration (environment,
+`.env`, YAML): the database connection and the image directories matter here.
+It needs the `vips` helper (present in the container image).
 
 ```bash
-PG__HOST=localhost
-PG__PORT=5432
-PG__USER=vision_bill
-PG__PASSWORD=...
-PG__DB=vision_bill
-IMAGES__SAVE_DIR=/path/to/uploads
-IMAGES__TMP_DIR=/path/to/uploads_tmp
-```
-
-Run (directly, not via Make):
-
-```bash
-uv run python scripts/generate_thumbnails.py --dry-run   # preview
-uv run python scripts/generate_thumbnails.py             # do it
-uv run python scripts/generate_thumbnails.py --limit 20  # cap per run
+make script-thumbnails ARGS="-dry-run"   # preview
+make script-thumbnails                   # do it
+make script-thumbnails ARGS="-limit 20"  # cap per run
+# inside the container:
+docker compose exec vision_bill /app/vbctl thumbnails -dry-run
 ```
 
 It is idempotent: only rows with `thumbnail_path IS NULL` are touched, so
 re-running is safe. New uploads create their thumbnails automatically; this
-script is only for backfilling images that predate the feature.
+tool is only for backfilling images that predate the feature.
 
 ## PostgreSQL roles
 
 Use three kinds of database identity in a deployed installation:
 
-- An owner/migration login runs Alembic and owns schema objects. Do not use it
-  for the application process.
+- An owner/migration login runs the schema migrations at application start and
+  owns schema objects. If the application runs as a restricted login instead,
+  run one start with the owner login first so migrations can be applied.
 - A runtime login belongs to the `vision_bill_runtime` group. It can read and
   modify application rows, but cannot create or alter schema objects.
 - A reporting login belongs to `vision_bill_readonly`. Use this for ad-hoc
-  analysis and scripts that only query data.
+  analysis and tools that only query data.
 
 The application itself cannot use the read-only role: uploads, receipt review,
 user authentication, and benchmark processing all require writes. To create or
@@ -101,14 +98,6 @@ ALTER ROLE vision_bill_reports SET statement_timeout = '5s';
 ```
 
 Do not make either login a table owner or superuser: owners bypass ordinary
-table grants. `configure_db_roles.sql` must run as the same owner Alembic uses,
-because PostgreSQL default privileges are scoped to the object-creating role.
-
-## Prototype files
-
-`run_functional_tests.py`, `llm_benchmark_runner.py`, `single_image.py`, and
-`test_external_api.py` are historical placeholders with hard-coded or mock
-behavior. They deliberately have no Make targets. Promote or remove each one
-only after replacing its placeholder behavior; in particular, do not connect
-`test_external_api.py` to receipt data because that would violate the local-only
-inference constraint.
+table grants. `configure_db_roles.sql` must run as the same owner that applies
+the migrations, because PostgreSQL default privileges are scoped to the
+object-creating role.
