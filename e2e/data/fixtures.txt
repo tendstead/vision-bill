@@ -1,0 +1,5 @@
+# Opt-in e2e fixtures: one basename (no extension) per line, naming a
+# <name>.<png|jpg|jpeg> + <name>.json pair in this directory. See README.md.
+# Add your own basenames below (those files stay gitignored).
+seed_receipt
+deposit_refund

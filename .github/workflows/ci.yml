@@ -51,11 +51,12 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-go@v5
         with:
-          enable-cache: true
-      # Builds the multi-stage app image, boots the stack, runs pytest
-      # tests/e2e/, and tears the stack down (all handled by the target).
+          go-version-file: go.mod
+          cache: true
+      # Builds the multi-stage app image, boots the stack, runs the Go e2e suite
+      # (e2e/suite), and tears the stack down (all handled by the target).
       - name: Run backend e2e
         run: make test-e2e
 
@@ -67,9 +68,6 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
       - uses: actions/setup-node@v4
         with:
           node-version: "24"

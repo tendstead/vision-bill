@@ -10,6 +10,8 @@
 !internal/**
 !web
 !web/**
+!e2e/stub
+!e2e/stub/main.go
 
 # Frontend build artifacts are compiled inside the image; never ship host copies.
 web/node_modules

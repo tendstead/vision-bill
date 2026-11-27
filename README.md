@@ -47,4 +47,4 @@ Since different LLMs perform differently at image extraction, the project includ
 - **Inference:** Ollama (local LLM execution; optional OpenAI-compatible endpoint)
 - **Authentication:** Argon2id password hashing, stateless session cookies
 - **Deployment:** Docker (static binary; the image adds `vips` for thumbnails and HEIC/HEIF)
-- **Testing:** Go tests with a real PostgreSQL, black-box API e2e (pytest), Vitest + Playwright (frontend)
+- **Testing:** Go tests with a real PostgreSQL, black-box API e2e (Go), Vitest + Playwright (frontend)

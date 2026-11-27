@@ -9,11 +9,13 @@ deploy/
 
 # E2e test fixtures (real receipts are local + gitignored; a synthetic seed
 # pair is tracked so the suite always has >=1 pipeline case)
-tests/e2e/data/*
-!tests/e2e/data/fixtures.toml
-!tests/e2e/data/README.md
-!tests/e2e/data/seed_receipt.png
-!tests/e2e/data/seed_receipt.json
+e2e/data/*
+!e2e/data/fixtures.txt
+!e2e/data/README.md
+!e2e/data/seed_receipt.png
+!e2e/data/seed_receipt.json
+!e2e/data/deposit_refund.png
+!e2e/data/deposit_refund.json
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -22,11 +22,12 @@ build: ## Build the server and tools into bin/ (CGO disabled)
 	CGO_ENABLED=0 go build -trimpath -o bin/vbctl ./cmd/vbctl
 
 fmt: ## Format Go sources
-	gofmt -w cmd internal
+	gofmt -w cmd internal e2e
 
 lint: ## gofmt check + go vet
-	@test -z "$$(gofmt -l cmd internal)" || { gofmt -l cmd internal; echo "gofmt needed (make fmt)"; exit 1; }
+	@test -z "$$(gofmt -l cmd internal e2e)" || { gofmt -l cmd internal e2e; echo "gofmt needed (make fmt)"; exit 1; }
 	go vet $(GO_PKGS)
+	go vet -tags e2e ./e2e/...
 
 test: ## Go tests with the race detector (starts a throwaway PostgreSQL unless VB_TEST_DATABASE_URL is set)
 	scripts/go-test.sh
@@ -41,7 +42,7 @@ docker-logs: ## Follow vision_bill container logs
 	docker compose logs -f vision_bill
 
 e2e-up: ## Build and start the e2e stack (manual; the test targets manage it)
-	$(E2E_COMPOSE) up -d --build
+	$(E2E_COMPOSE) up -d --build --wait
 
 e2e-down: ## Stop the e2e stack and delete its volumes (manual)
 	$(E2E_COMPOSE) down -v
@@ -49,14 +50,14 @@ e2e-down: ## Stop the e2e stack and delete its volumes (manual)
 # The e2e test targets own the stack lifecycle: start it for the run and
 # always tear it down on exit (the EXIT trap covers failures and Ctrl-C).
 E2E_COMPOSE := docker compose -f docker-compose.e2e.yml
-test-e2e: ## Run backend e2e tests (starts the e2e stack, always tears it down)
+test-e2e: ## Run the black-box API e2e suite (starts the e2e stack, always tears it down)
 	@bash -c 'trap "$(E2E_COMPOSE) down -v" EXIT; \
-		$(E2E_COMPOSE) up -d --build && uv run python e2e/wait_ready.py && \
-		uv run pytest tests/e2e/'
+		$(E2E_COMPOSE) up -d --build --wait && \
+		go test -tags e2e -count=1 -p 1 ./e2e/suite/...'
 
 fe-test-e2e: ## Playwright e2e (starts the e2e stack, always tears it down)
 	@bash -c 'trap "$(E2E_COMPOSE) down -v" EXIT; \
-		$(E2E_COMPOSE) up -d --build && uv run python e2e/wait_ready.py && \
+		$(E2E_COMPOSE) up -d --build --wait && \
 		$(NODE) (cd $(FE) && npm run test:e2e)'
 
 # --- Operational tools (vbctl) -------------------------------------------

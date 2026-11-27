@@ -34,7 +34,7 @@ export default defineConfig({
 		command: 'docker compose -f ../docker-compose.e2e.yml up -d --build',
 		url: `${baseURL}/api/v1/system/ui-config`,
 		reuseExistingServer: true,
-		// First run builds the multi-stage app image (Node SPA + Python) — can
+		// First run builds the multi-stage app image (Node SPA + Go) — can
 		// take several minutes; cached afterwards.
 		timeout: 600_000
 	}
