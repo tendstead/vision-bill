@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/tendstead/vision-bill/internal/analysis"
+	"github.com/tendstead/vision-bill/internal/benchmark"
 	"github.com/tendstead/vision-bill/internal/config"
 	"github.com/tendstead/vision-bill/internal/files"
 	"github.com/tendstead/vision-bill/internal/llm"
@@ -35,6 +36,7 @@ type Options struct {
 	Provider          llm.Provider
 	Analysis          *analysis.Service
 	Scheduler         *analysis.Scheduler
+	Benchmarks        *benchmark.Service
 }
 
 // Server holds the dependencies shared by handlers.
@@ -76,6 +78,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	s.collectionRoutes(mux)
 	s.imageRoutes(mux)
 	s.searchRoutes(mux)
+	s.benchmarkRoutes(mux)
 	s.llmRoutes(mux)
 }
 

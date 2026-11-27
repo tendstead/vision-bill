@@ -58,10 +58,21 @@ func NewOpenAI(host, apiKey string, temperature float64, timeout time.Duration) 
 	return &OpenAI{base: strings.TrimRight(host, "/"), host: host, key: apiKey, timeout: timeout, client: httpClient(), temp: temperature}
 }
 
-func (o *OpenAI) Host() string             { return o.host }
-func (o *OpenAI) Timeout() time.Duration   { return o.timeout }
-func (o *OpenAI) SetTemperature(t float64) { o.mu.Lock(); o.temp = t; o.mu.Unlock() }
-func (o *OpenAI) temperature() float64     { o.mu.RLock(); defer o.mu.RUnlock(); return o.temp }
+func (o *OpenAI) Host() string           { return o.host }
+func (o *OpenAI) SupportsThinking() bool { return false }
+func (o *OpenAI) Kind() string           { return "OpenAIProvider" }
+
+// WithTemperature returns an independent copy with a different temperature.
+func (o *OpenAI) WithTemperature(t float64) Provider {
+	return &OpenAI{base: o.base, host: o.host, key: o.key, timeout: o.timeout, client: o.client, temp: t}
+}
+
+// EndpointFingerprint hashes the base URL.
+func (o *OpenAI) EndpointFingerprint() string { return sha256Hex(o.base) }
+func (o *OpenAI) Timeout() time.Duration      { return o.timeout }
+func (o *OpenAI) SetTemperature(t float64)    { o.mu.Lock(); o.temp = t; o.mu.Unlock() }
+func (o *OpenAI) temperature() float64        { o.mu.RLock(); defer o.mu.RUnlock(); return o.temp }
+func (o *OpenAI) Temperature() float64        { return o.temperature() }
 
 func (o *OpenAI) do(ctx context.Context, method, p string, body any) ([]byte, error) {
 	var rd io.Reader
@@ -242,7 +253,7 @@ func (o *OpenAI) Models(ctx context.Context) ([]ModelInfo, error) {
 }
 
 // Chat sends a chat completion with a capped reasoning effort.
-func (o *OpenAI) Chat(ctx context.Context, model string, msgs []Message, _ ChatOptions) (string, error) {
+func (o *OpenAI) Chat(ctx context.Context, model string, msgs []Message, opts ChatOptions) (string, error) {
 	wire := make([]map[string]any, len(msgs))
 	for i, m := range msgs {
 		if len(m.Images) == 0 {
@@ -261,6 +272,7 @@ func (o *OpenAI) Chat(ctx context.Context, model string, msgs []Message, _ ChatO
 		wire[i] = map[string]any{"role": m.Role, "content": parts}
 	}
 	body := map[string]any{"model": model, "messages": wire, "temperature": o.temperature(), "reasoning_effort": "low"}
+	started := time.Now()
 	data, err := o.do(ctx, http.MethodPost, "/chat/completions", body)
 	if err != nil {
 		return "", err
@@ -271,9 +283,25 @@ func (o *OpenAI) Chat(ctx context.Context, model string, msgs []Message, _ ChatO
 				Content *string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
+		Usage *struct {
+			PromptTokens     *int `json:"prompt_tokens"`
+			CompletionTokens *int `json:"completion_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return "", err
+	}
+	if opts.Trace != nil {
+		tele := telemetry(msgs, time.Since(started))
+		if resp.Usage != nil {
+			if resp.Usage.PromptTokens != nil {
+				tele["prompt_tokens"] = *resp.Usage.PromptTokens
+			}
+			if resp.Usage.CompletionTokens != nil {
+				tele["completion_tokens"] = *resp.Usage.CompletionTokens
+			}
+		}
+		opts.Trace(tele)
 	}
 	if len(resp.Choices) == 0 || resp.Choices[0].Message.Content == nil {
 		return "", nil

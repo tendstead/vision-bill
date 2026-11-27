@@ -13,6 +13,7 @@ import (
 	"testing/fstest"
 
 	"github.com/tendstead/vision-bill/internal/analysis"
+	"github.com/tendstead/vision-bill/internal/benchmark"
 	"github.com/tendstead/vision-bill/internal/config"
 	"github.com/tendstead/vision-bill/internal/files"
 	"github.com/tendstead/vision-bill/internal/store"
@@ -53,6 +54,7 @@ type testEnv struct {
 	st        *store.Store
 	provider  *fakeProvider
 	scheduler *analysis.Scheduler
+	bench     *benchmark.Service
 	files     *files.Service
 	dir       string
 }
@@ -83,6 +85,8 @@ func newEnv(t *testing.T, withDB bool) *testEnv {
 	opts.Analysis = svc
 	e.scheduler = analysis.NewScheduler(svc)
 	opts.Scheduler = e.scheduler
+	e.bench = &benchmark.Service{Store: func() *store.Store { return e.st }, Provider: e.provider, Analysis: svc}
+	opts.Benchmarks = e.bench
 	e.h = New(opts)
 	return e
 }
@@ -304,3 +308,14 @@ func mintToken(id string) string {
 }
 
 func TestMain(m *testing.M) { os.Exit(m.Run()) }
+
+func (r resp) json2(t *testing.T) []map[string]any {
+	t.Helper()
+	var out []map[string]any
+	if err := json.Unmarshal(r.Body.Bytes(), &out); err != nil {
+		t.Fatalf("body %q: %v", r.Body.String(), err)
+	}
+	return out
+}
+
+func writeFile(path string, data []byte) error { return os.WriteFile(path, data, 0o644) }

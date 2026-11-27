@@ -1,7 +1,9 @@
 package llm
 
 import (
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -145,4 +147,14 @@ func BuildPrompt(tags []string, imageCount int, opts PromptOptions) string {
 		"\n" +
 		"    " + schema + "\n" +
 		"    "
+}
+
+// SchemaSHA256 fingerprints the receipt validation schema.
+func SchemaSHA256() string {
+	b, err := json.Marshal(schemaDoc(false))
+	if err != nil {
+		panic(err)
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }

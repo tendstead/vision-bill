@@ -75,15 +75,28 @@ type Provider interface {
 	// Chat sends messages and returns the reply text.
 	Chat(ctx context.Context, model string, msgs []Message, opts ChatOptions) (string, error)
 	SetTemperature(t float64)
+	// Temperature is the temperature currently in use.
+	Temperature() float64
+	// WithTemperature returns an independent copy using temperature t; the
+	// live provider is never mutated by experiments.
+	WithTemperature(t float64) Provider
+	// SupportsThinking reports whether the "think" request option is honoured.
+	SupportsThinking() bool
+	// Kind names the provider implementation ("OllamaProvider", "OpenAIProvider").
+	Kind() string
+	// EndpointFingerprint identifies the configured endpoint without exposing it.
+	EndpointFingerprint() string
 	// Timeout is the complete extraction deadline.
 	Timeout() time.Duration
-	// IdentityKey changes when provider or host changes (restart detection).
+	// Host is the configured host string.
 	Host() string
 }
 
 // ChatOptions are per-request options (experiments).
 type ChatOptions struct {
 	Think *bool
+	// Trace, when set, receives request telemetry after every chat call.
+	Trace func(map[string]any)
 }
 
 var providePattern = regexp.MustCompile(`(?is)provide.*image`)

@@ -3,7 +3,9 @@ package llm
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +17,25 @@ import (
 	"sync"
 	"time"
 )
+
+func sha256Hex(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
+}
+
+// telemetry builds the request-independent part of a call trace entry.
+func telemetry(msgs []Message, elapsed time.Duration) map[string]any {
+	type m struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	}
+	prompt := make([]m, len(msgs))
+	for i, x := range msgs {
+		prompt[i] = m{x.Role, x.Text}
+	}
+	raw, _ := json.Marshal(prompt)
+	return map[string]any{"elapsed_ms": float64(elapsed.Microseconds()) / 1000, "prompt_sha256": sha256Hex(string(raw))}
+}
 
 // httpClient returns a client with a 5s connect timeout and no overall
 // timeout (the caller's context carries the extraction deadline).
@@ -98,6 +119,17 @@ func (o *Ollama) Host() string             { return o.host }
 func (o *Ollama) Timeout() time.Duration   { return o.timeout }
 func (o *Ollama) SetTemperature(t float64) { o.mu.Lock(); o.temp = t; o.mu.Unlock() }
 func (o *Ollama) temperature() float64     { o.mu.RLock(); defer o.mu.RUnlock(); return o.temp }
+func (o *Ollama) Temperature() float64     { return o.temperature() }
+func (o *Ollama) SupportsThinking() bool   { return true }
+func (o *Ollama) Kind() string             { return "OllamaProvider" }
+
+// WithTemperature returns an independent copy with a different temperature.
+func (o *Ollama) WithTemperature(t float64) Provider {
+	return &Ollama{base: o.base, host: o.host, timeout: o.timeout, client: o.client, temp: t}
+}
+
+// EndpointFingerprint hashes the normalised base URL.
+func (o *Ollama) EndpointFingerprint() string { return sha256Hex(o.base) }
 
 func (o *Ollama) do(ctx context.Context, method, path string, body any, out any) error {
 	var rd io.Reader
@@ -214,11 +246,36 @@ func (o *Ollama) Chat(ctx context.Context, model string, msgs []Message, opts Ch
 	}
 	var resp struct {
 		Message struct {
-			Content string `json:"content"`
+			Content  string  `json:"content"`
+			Thinking *string `json:"thinking"`
 		} `json:"message"`
+		LoadDuration       *float64 `json:"load_duration"`
+		PromptEvalDuration *float64 `json:"prompt_eval_duration"`
+		EvalDuration       *float64 `json:"eval_duration"`
+		PromptEvalCount    *int     `json:"prompt_eval_count"`
+		EvalCount          *int     `json:"eval_count"`
 	}
+	started := time.Now()
 	if err := o.do(ctx, http.MethodPost, "/api/chat", body, &resp); err != nil {
 		return "", err
+	}
+	if opts.Trace != nil {
+		tele := telemetry(msgs, time.Since(started))
+		for k, v := range map[string]*float64{"load_ms": resp.LoadDuration, "prompt_eval_ms": resp.PromptEvalDuration, "eval_ms": resp.EvalDuration} {
+			if v != nil {
+				tele[k] = *v / 1_000_000
+			}
+		}
+		if resp.PromptEvalCount != nil {
+			tele["prompt_eval_count"] = *resp.PromptEvalCount
+		}
+		if resp.EvalCount != nil {
+			tele["eval_count"] = *resp.EvalCount
+		}
+		if resp.Message.Thinking != nil {
+			tele["thinking_characters"] = len([]rune(*resp.Message.Thinking))
+		}
+		opts.Trace(tele)
 	}
 	return resp.Message.Content, nil
 }

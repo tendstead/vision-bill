@@ -58,9 +58,14 @@ func (f *fakeProvider) Chat(_ context.Context, _ string, _ []llm.Message, _ llm.
 	}
 	return r, nil
 }
-func (f *fakeProvider) SetTemperature(t float64) { f.mu.Lock(); f.temp = t; f.mu.Unlock() }
-func (f *fakeProvider) Timeout() time.Duration   { return 5 * time.Second }
-func (f *fakeProvider) Host() string             { return "fake" }
+func (f *fakeProvider) SetTemperature(t float64)             { f.mu.Lock(); f.temp = t; f.mu.Unlock() }
+func (f *fakeProvider) Temperature() float64                 { f.mu.Lock(); defer f.mu.Unlock(); return f.temp }
+func (f *fakeProvider) Timeout() time.Duration               { return 5 * time.Second }
+func (f *fakeProvider) Host() string                         { return "fake" }
+func (f *fakeProvider) WithTemperature(float64) llm.Provider { return f }
+func (f *fakeProvider) SupportsThinking() bool               { return true }
+func (f *fakeProvider) Kind() string                         { return "OllamaProvider" }
+func (f *fakeProvider) EndpointFingerprint() string          { return "fake-endpoint" }
 
 func (f *fakeProvider) set(down bool, replies ...string) {
 	f.mu.Lock()

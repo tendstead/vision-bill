@@ -17,6 +17,7 @@ import (
 
 	"github.com/tendstead/vision-bill/internal/analysis"
 	"github.com/tendstead/vision-bill/internal/app"
+	"github.com/tendstead/vision-bill/internal/benchmark"
 	"github.com/tendstead/vision-bill/internal/config"
 	"github.com/tendstead/vision-bill/internal/files"
 	"github.com/tendstead/vision-bill/internal/httpapi"
@@ -73,6 +74,8 @@ func run() error {
 	analysisSvc := &analysis.Service{Store: db.Get, Files: fileSvc, Provider: provider, Config: holder, Log: log}
 	scheduler := analysis.NewScheduler(analysisSvc)
 	scheduler.Start(ctx)
+	benchmarks := &benchmark.Service{Store: db.Get, Provider: provider, Analysis: analysisSvc, Log: log}
+	benchmarks.Start(ctx)
 	dbErr := make(chan error, 1)
 	go func() { dbErr <- db.Connect(ctx, holder.Get(), log) }()
 
@@ -80,7 +83,7 @@ func run() error {
 		Addr: listenAddr(),
 		Handler: httpapi.New(httpapi.Options{
 			Config: holder, Store: db.Get, Static: static, Logger: log, ConfigSources: src,
-			Files: fileSvc, Provider: provider, Analysis: analysisSvc, Scheduler: scheduler,
+			Files: fileSvc, Provider: provider, Analysis: analysisSvc, Scheduler: scheduler, Benchmarks: benchmarks,
 			OnSettingsChanged: func(c config.Config) { provider.SetTemperature(c.LLM.Temperature) },
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
@@ -112,6 +115,7 @@ func run() error {
 	defer cancel()
 	_ = srv.Shutdown(shutdown)
 	scheduler.Stop()
+	benchmarks.Stop()
 	if st := db.Get(); st != nil {
 		st.Close()
 	}
