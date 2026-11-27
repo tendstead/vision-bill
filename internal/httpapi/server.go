@@ -75,6 +75,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	s.tagRoutes(mux)
 	s.collectionRoutes(mux)
 	s.imageRoutes(mux)
+	s.searchRoutes(mux)
 	s.llmRoutes(mux)
 }
 
