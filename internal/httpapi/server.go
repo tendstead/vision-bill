@@ -64,6 +64,9 @@ func (s *Server) db() *store.Store { return s.opts.Store() }
 func (s *Server) routes(mux *http.ServeMux) {
 	s.authRoutes(mux)
 	s.systemRoutes(mux)
+	s.receiptRoutes(mux)
+	s.tagRoutes(mux)
+	s.collectionRoutes(mux)
 }
 
 func (s *Server) recoverer(next http.Handler) http.Handler {

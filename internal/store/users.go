@@ -82,3 +82,11 @@ func (s *Store) AssignOrphans(ctx context.Context, userID string) error {
 	_, err := s.Pool.Exec(ctx, `UPDATE images SET user_id = $1::uuid WHERE user_id IS NULL`, userID)
 	return err
 }
+
+func pgErrCode(err error) string {
+	var pg *pgconn.PgError
+	if errors.As(err, &pg) {
+		return pg.Code
+	}
+	return ""
+}

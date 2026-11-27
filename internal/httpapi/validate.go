@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -104,4 +105,36 @@ func plural(n int) string {
 		return ""
 	}
 	return "s"
+}
+
+// readObject reads the request body as a JSON object (numbers as json.Number)
+// and returns the raw bytes too. Failures are written as 422/413.
+func readObject(w http.ResponseWriter, r *http.Request) (map[string]any, []byte, bool) {
+	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxJSONBody))
+	if err != nil {
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			writeError(w, http.StatusRequestEntityTooLarge, "Request body too large")
+			return nil, nil, false
+		}
+		validationErrors{{Type: "json_invalid", Loc: []any{"body"}, Msg: "JSON decode error"}}.write(w)
+		return nil, nil, false
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		validationErrors{{Type: "missing", Loc: []any{"body"}, Msg: "Field required"}}.write(w)
+		return nil, nil, false
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil || dec.More() {
+		validationErrors{{Type: "json_invalid", Loc: []any{"body"}, Msg: "JSON decode error"}}.write(w)
+		return nil, nil, false
+	}
+	m, ok := v.(map[string]any)
+	if !ok {
+		validationErrors{{Type: "model_attributes_type", Loc: []any{"body"}, Msg: "Input should be a valid dictionary or object to extract fields from", Input: v}}.write(w)
+		return nil, nil, false
+	}
+	return m, data, true
 }
