@@ -49,3 +49,6 @@ Since different LLMs perform differently at image extraction, the project includ
 - **Authentication:** Argon2id password hashing, stateless session cookies
 - **Deployment:** Docker (static binary; the image adds `vips` for thumbnails and HEIC/HEIF)
 - **Testing:** Go tests with a real PostgreSQL, black-box API e2e (Go), Vitest + Playwright (frontend)
+
+### 📄 License
+vision-bill is source-available under the [Elastic License 2.0](LICENSE) (`Elastic-2.0`); see [NOTICE](NOTICE). Self-hosting, internal use and modification are permitted subject to its terms; offering substantial vision-bill functionality to others as a hosted or managed service requires separate permission. This is not an OSI-approved open-source license. Releases up to v0.1.2 were published under AGPL-3.0. Third-party dependencies retain their own licenses.
