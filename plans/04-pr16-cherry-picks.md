@@ -46,14 +46,14 @@ Other features, to decide (adopt / adapt / skip):
 
 ## Database compatibility
 
-PR #16 migrates the database to Alembic revision `0025`; the Go server adopts
-only revision `0010` (`UPGRADING.md`). A database that has run that branch is
-refused at start. Before porting anything, find out which databases (test or
-real) are at `0011` or later. Options: keep them out of Go; or write a one-off
-adoption (Go baseline for the extra tables/columns plus a check of the
-inventory); or recreate from a backup. Ported features get new additive Go
+**`main` is the only source of truth for the schema.** PR #16's Alembic
+revisions `0011`-`0025` are ignored: David works with a test server only, there
+is no production database on that branch, so no adoption path for it is built
+(the Go server keeps adopting revision `0010` only, `UPGRADING.md`). A test
+database that ran his branch is recreated. Ported features get new additive Go
 migrations (`003`, `004`, ... in the order they land), **not** a replay of the
-Alembic files.
+Alembic files; migration numbers in his files are only a reference for what a
+feature needs.
 
 ## Suggested process for the session
 

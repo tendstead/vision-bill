@@ -45,6 +45,7 @@ ported, adapted or used as the model for a change:
 2. Name him and the PR #16 files in the PR description.
 3. If a whole feature is ported, mention it in the release notes.
 
-PR #16 is based on the Python backend. Its Alembic revisions `0011`-`0025`
-exist only there; the Go server adopts databases at exactly `0010`, so
-a database that ran PR #16 cannot be adopted (see plan 4).
+PR #16 is based on the Python backend. `main` is the only source of truth for
+the database schema: its Alembic revisions `0011`-`0025` are not adopted
+(David uses a test server only); ported features get new additive Go migrations
+(see plan 4).

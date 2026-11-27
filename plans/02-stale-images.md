@@ -36,14 +36,14 @@ Credit him (see the README).
 
 What PR #16 does **not** have, so it remains ours: a per-attempt history table
 (`image_attempts`), the explicit "gave up" state with a reason, permanent-error
-classification, and the oversized-image shrink. Ask him why `max_attempts` is
-capped at 3 before fixing our default of 5.
+classification, and the oversized-image shrink. **Decided: `max_attempts`
+defaults to 3, the same as PR #16.**
 
 Plan adjustments that follow from this:
 
 - API field names follow PR #16 (see the table).
 - `POST /images/{id}/retry` takes `expected_generation` and a `request_key`.
-- Decide the default `max_attempts` (3 in PR #16, 5 here) together.
+- `max_attempts` defaults to 3 (decided), configurable as `worker.max_attempts`.
 
 ## Design
 
@@ -64,7 +64,7 @@ Plan adjustments that follow from this:
 
 - One shared retry policy for `failed` and `timed_out`: doubling delay from a
   base (default 5 min, cap 6 h), `retry_after` set after every failed attempt.
-- Maximum attempts (`worker.max_attempts`, default 5; environment and YAML like
+- Maximum attempts (`worker.max_attempts`, default 3; environment and YAML like
   the other worker settings). After the last failed attempt the image gets
   `gave_up_at` and a reason.
 - Permanent errors give up immediately, no retries: image file missing,
@@ -93,7 +93,7 @@ Plan adjustments that follow from this:
 ### UI
 
 - Queue rows show a state line instead of only the error: "Retrying, attempt 2
-  of 5, next try 14:32", "Processing", "Gave up after 5 attempts: too large",
+  of 3, next try 14:32", "Processing", "Gave up after 3 attempts: too large",
   with a button "Retry now" and "Delete".
 - Expandable attempt history per image (time, outcome, error, duration).
 - "Analyze now" shows progress (the queue page already polls) and the header
@@ -117,5 +117,5 @@ Plan adjustments that follow from this:
 
 ## Open questions
 
-- Default maximum of 5 attempts and base delay 5 min: acceptable?
+- Base delay of 5 min (doubling, cap 6 h): acceptable?
 - Should a gave-up image notify (snackbar/badge colour) the owner?
