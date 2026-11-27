@@ -100,11 +100,11 @@
 
 ### Licensing note for the chart code
 
-Roadbook's `web/src/lib/Chart.svelte` and `chart-layout.ts` are under the
-Elastic License 2.0; vision-bill is AGPL-3.0. Both are the owner's own code, but
-do not copy files blindly. Either write the component fresh (it is small and the
-dot plot differs from roadbook's time series anyway), or put a shared chart
-component into `@tendstead/ui` under an explicitly chosen license.
+Both projects are under the Elastic License 2.0 (vision-bill from 0.2.1), so
+roadbook's `web/src/lib/Chart.svelte` and `chart-layout.ts` may be ported with
+their notices kept. The dot plot differs from roadbook's time series, so expect
+a rewrite of the layout parts; a shared component in `@tendstead/ui` is an
+option if more apps need it.
 
 ## Test plan
 
