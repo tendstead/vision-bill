@@ -2,16 +2,16 @@
 # The built frontend is a git-ignored artifact, so a bare `git clone` has no
 # static files. We compile it here at image-build time so the image is
 # self-contained: rebuilding the image always ships the latest UI.
-FROM node:24-slim AS frontend
-WORKDIR /build/frontend
+FROM node:24-slim AS web
+WORKDIR /build/web
 
 # Locked dependencies first so this layer is cached until the lockfile changes.
-COPY frontend/package.json frontend/package-lock.json frontend/.npmrc ./
-COPY frontend/patches/ ./patches/
+COPY web/package.json web/package-lock.json web/.npmrc ./
+COPY web/patches/ ./patches/
 RUN npm ci --no-audit --no-fund
 
-# Full frontend source, then produce the static SPA in /build/frontend/out.
-COPY frontend/ ./
+# Full frontend source, then produce the static SPA in /build/web/out.
+COPY web/ ./
 RUN npm run build
 
 # ── Stage 2: Python API ────────────────────────────────────────────────────
@@ -35,7 +35,7 @@ COPY alembic.ini ./
 COPY ./alembic ./alembic
 
 # Bake the built SPA into the package's static dir (served by FastAPI at /).
-COPY --from=frontend /build/frontend/out/. ./src/vision_bill/static/
+COPY --from=web /build/web/out/. ./src/vision_bill/static/
 
 RUN apt update && apt install -y --no-install-recommends libmagic1 && rm -rf /var/lib/apt/lists/*
 

@@ -89,7 +89,7 @@ NODE :=
 else
 NODE := . "$(NVM_DIR)/nvm.sh" >/dev/null 2>&1 &&
 endif
-FE := frontend
+FE := web
 
 fe-install: ## Install locked frontend npm dependencies
 	$(NODE) (cd $(FE) && npm ci)
@@ -97,7 +97,7 @@ fe-install: ## Install locked frontend npm dependencies
 fe-dev: ## Run the Vite dev server on :5173 (proxies /api -> :8080)
 	$(NODE) (cd $(FE) && npm run dev)
 
-fe-build: ## Build the SPA into frontend/out (run fe-install once after dependency changes)
+fe-build: ## Build the SPA into web/out (run fe-install once after dependency changes)
 	$(NODE) (cd $(FE) && npm run build)
 
 fe-sync: fe-build ## Copy the built SPA into src/vision_bill/static for FastAPI/Docker
@@ -117,6 +117,6 @@ fe-typecheck-e2e: ## Type-check the Playwright e2e suite
 
 fe-verify: fe-check fe-test fe-typecheck-e2e fe-build ## Run frontend checks, unit tests, and a production build
 
-fe: ## Run an npm script in frontend/ (make fe CMD=<script> [ARGS="..."])
+fe: ## Run an npm script in web/ (make fe CMD=<script> [ARGS="..."])
 	@test -n "$(CMD)" || { echo "usage: make fe CMD=<npm-script> [ARGS=\"arg1 arg2\"]"; exit 1; }
 	$(NODE) (cd $(FE) && npm run $(CMD) $(ARGS))

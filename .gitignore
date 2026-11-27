@@ -237,11 +237,11 @@ __marimo__/
 .streamlit/secrets.toml
 
 # Frontend (SvelteKit)
-frontend/node_modules/
-frontend/out/
-frontend/.svelte-kit/
-# The global `lib/` above would hide frontend/src/lib/ — un-ignore it
-!frontend/src/lib/
+web/node_modules/
+web/out/
+web/.svelte-kit/
+# The global `lib/` above would hide web/src/lib/ — un-ignore it
+!web/src/lib/
 
 # Built SPA installed into the package via `make fe-build`
 src/vision_bill/static/*

@@ -8,7 +8,7 @@ This document provides technical context for agents working on the vision-bill p
 ## Technology Stack
 - **Language**: Python 3.12+
 - **Web Framework**: FastAPI, Uvicorn
-- **Frontend**: SvelteKit SPA (TypeScript, Tailwind CSS, Vitest unit tests, Playwright E2E) in `frontend/`
+- **Frontend**: SvelteKit SPA (TypeScript, Tailwind CSS, Vitest unit tests, Playwright E2E) in `web/`
 - **LLM Engines**:
     - Ollama (default, local inference, `ollama` Python SDK)
     - OpenAI-compatible providers (optional, `openai` Python SDK; host and API key are user-configured — see Privacy constraint)
@@ -21,12 +21,12 @@ This document provides technical context for agents working on the vision-bill p
     - `python-magic`: File type identification (requires system `libmagic`).
     - `python-multipart`: Multipart form uploads.
     - `PyYAML`: Persistent application config file.
-- **Package Managers**: `uv` (lockfile: `uv.lock`) for Python; npm (lockfile: `frontend/package-lock.json`) for the frontend.
+- **Package Managers**: `uv` (lockfile: `uv.lock`) for Python; npm (lockfile: `web/package-lock.json`) for the frontend.
 
 ## Repository Layout
 - `src/vision_bill/` — Application package (API, services, providers, models, security, config).
 - `src/vision_bill/static/` — Built SPA (gitignored except `.gitkeep`); produced by `make fe-sync` or baked in at Docker image build time.
-- `frontend/` — SvelteKit SPA source (routes: login, receipts, queue, search, statistics, benchmarks, settings, upload; i18n in `en`/`de`).
+- `web/` — SvelteKit SPA source (routes: login, receipts, queue, search, statistics, benchmarks, settings, upload; i18n in `en`/`de`).
 - `alembic/` — Migration tooling; versions `0001`–`0003` in `alembic/versions/`.
 - `tests/` — Pytest suite (`asyncio_mode = "auto"`). `tests/data/` (gitignored) holds local ground-truth fixtures: receipt images + expected JSON pairs.
 - `scripts/` — Operational scripts; see `scripts/README.md` for setup (`.env.scripts`) and usage.
@@ -186,9 +186,9 @@ A `Makefile` defines the canonical workflow (`make help` lists targets):
     - `make script-context-budget ARGS="..."` — measure Ollama prompt token usage.
     - `make script-create-benchmark ARGS="..."` — queue a benchmark run against the running API (admin account).
     - `make db-configure-roles` — create the PostgreSQL runtime/read-only privilege groups.
-- Frontend (`frontend/`, Node via nvm; run `make fe-install` once after dependency changes):
+- Frontend (`web/`, Node via nvm; run `make fe-install` once after dependency changes):
     - `make fe-dev` — Vite dev server on :5173 (proxies `/api` → :8080).
-    - `make fe-build` / `fe-sync` — build the SPA into `frontend/out` and copy it into `src/vision_bill/static`.
+    - `make fe-build` / `fe-sync` — build the SPA into `web/out` and copy it into `src/vision_bill/static`.
     - `make fe-check` (svelte-check + eslint + prettier), `make fe-test` (Vitest), `make fe-test-e2e` (Playwright), `make fe-verify` (check + test + build).
 
 Additional notes:
@@ -197,8 +197,8 @@ Additional notes:
 - **Test data**: `tests/data/` (gitignored) holds real receipt images alongside ground-truth JSON used to evaluate model extraction quality locally.
 
 ## Frontend
-- SvelteKit SPA in `frontend/` (static adapter; built output is a plain SPA with an index fallback). Routes cover login, receipt review/editing, the pending queue, product search, statistics, benchmark runs, settings, and upload.
-- i18n in `frontend/src/lib/i18n/` (`en.json`, `de.json`) with a parity test; API client and auth session handling in `frontend/src/lib/`.
+- SvelteKit SPA in `web/` (static adapter; built output is a plain SPA with an index fallback). Routes cover login, receipt review/editing, the pending queue, product search, statistics, benchmark runs, settings, and upload.
+- i18n in `web/src/lib/i18n/` (`en.json`, `de.json`) with a parity test; API client and auth session handling in `web/src/lib/`.
 - The built SPA is served by FastAPI from `src/vision_bill/static` (see App Lifecycle). In Docker the image build compiles the SPA itself (multi-stage), so a fresh clone always ships a current UI; locally use `make fe-sync` after building.
 
 ## Docker & Deployment

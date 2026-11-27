@@ -25,7 +25,7 @@ SECRET_KEY = "e2e-secret-do-not-use"  # docker-compose.e2e.yml
 PG = dict(
     user="vision_bill", password="vision_bill", host="localhost", port=5433, database="vision_bill"
 )
-# 1x1 PNG (same bytes as frontend/src/lib/e2e/uploadPng.ts)
+# 1x1 PNG (same bytes as web/src/lib/e2e/uploadPng.ts)
 GENERIC_PNG_B64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII="
 )

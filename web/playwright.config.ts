@@ -30,7 +30,7 @@ export default defineConfig({
 		// starts the stack itself and tears it down after the run, in which
 		// case this only reuses it. Running bare `playwright test` leaves the
 		// stack up (stop it with `make e2e-down`).
-		// Runs from rootDir (frontend/), so ../ = repo root.
+		// Runs from rootDir (web/), so ../ = repo root.
 		command: 'docker compose -f ../docker-compose.e2e.yml up -d --build',
 		url: `${baseURL}/api/v1/system/ui-config`,
 		reuseExistingServer: true,
