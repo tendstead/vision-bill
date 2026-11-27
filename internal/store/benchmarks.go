@@ -221,10 +221,18 @@ func (s *Store) LeaseBenchmarkTask(ctx context.Context, now time.Time) (*Benchma
 	var t *BenchmarkTask
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		var task BenchmarkTask
-		err := tx.QueryRow(ctx, `SELECT run_id::text, model_id, receipt_id::text, attempts FROM benchmark_tasks
-			WHERE (status IN ('queued','retrying','waiting_for_model') AND (retry_at IS NULL OR retry_at <= $1))
-			   OR (status = 'running' AND leased_until < $1)
-			ORDER BY run_id, receipt_id FOR UPDATE SKIP LOCKED LIMIT 1`, now).Scan(&task.RunID, &task.ModelID, &task.ReceiptID, &task.Attempts)
+		// Model-major order: runs first-come-first-served, then every receipt of
+		// one model (in the order the models were requested) before the next
+		// model starts, so the inference server loads each model once per run
+		// instead of swapping models for every receipt.
+		err := tx.QueryRow(ctx, `SELECT t.run_id::text, t.model_id, t.receipt_id::text, t.attempts
+			FROM benchmark_tasks t JOIN benchmark_runs r ON r.id = t.run_id
+			WHERE (t.status IN ('queued','retrying','waiting_for_model') AND (t.retry_at IS NULL OR t.retry_at <= $1))
+			   OR (t.status = 'running' AND t.leased_until < $1)
+			ORDER BY r.created_at, t.run_id,
+			         (SELECT e.pos FROM jsonb_array_elements_text(r.model_ids) WITH ORDINALITY AS e(v, pos) WHERE e.v = t.model_id),
+			         t.receipt_id
+			FOR UPDATE OF t SKIP LOCKED LIMIT 1`, now).Scan(&task.RunID, &task.ModelID, &task.ReceiptID, &task.Attempts)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}

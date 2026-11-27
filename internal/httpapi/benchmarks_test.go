@@ -294,3 +294,35 @@ func TestLegacyRunWithoutManifestStillRuns(t *testing.T) {
 		t.Fatalf("diff %v", diff)
 	}
 }
+
+// Tasks run model by model, so the inference server never swaps models between
+// receipts of the same run.
+func TestBenchmarkTasksRunModelByModel(t *testing.T) {
+	e := newEnv(t, true)
+	admin, user := e.user(t, "admin", true), e.user(t, "user", false)
+	for i := 0; i < 3; i++ {
+		e.verifiedReceiptWithPhoto(t, user, append(append([]byte{}, pngData...), byte(i)))
+	}
+	e.provider.set(false, modelReceipt)
+	// Requested order (vis:2 before vis:1) is kept, not sorted alphabetically.
+	r := e.do("POST", "/api/v1/benchmarks", `{"model_ids": ["vis:2", "vis:1"]}`, admin.cookie)
+	if r.Code != 202 {
+		t.Fatalf("create: %d %s", r.Code, r.Body)
+	}
+	ctx := context.Background()
+	var order []string
+	for {
+		task, err := e.st.LeaseBenchmarkTask(ctx, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if task == nil {
+			break
+		}
+		order = append(order, task.ModelID)
+		e.bench.Execute(ctx, e.st, *task)
+	}
+	if got := strings.Join(order, ","); got != "vis:2,vis:2,vis:2,vis:1,vis:1,vis:1" {
+		t.Fatalf("model order %s", got)
+	}
+}
