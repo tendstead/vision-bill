@@ -251,8 +251,12 @@ func (o *OpenAI) Chat(ctx context.Context, model string, msgs []Message, _ ChatO
 		}
 		parts := []map[string]any{{"type": "text", "text": m.Text}}
 		for _, img := range m.Images {
+			mime := img.MediaType
+			if mime == "" {
+				mime = guessMime(img.Name)
+			}
 			parts = append(parts, map[string]any{"type": "image_url", "image_url": map[string]string{
-				"url": "data:" + guessMime(img.Name) + ";base64," + base64.StdEncoding.EncodeToString(img.Data)}})
+				"url": "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(img.Data)}})
 		}
 		wire[i] = map[string]any{"role": m.Role, "content": parts}
 	}

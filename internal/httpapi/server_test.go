@@ -12,7 +12,9 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"github.com/tendstead/vision-bill/internal/analysis"
 	"github.com/tendstead/vision-bill/internal/config"
+	"github.com/tendstead/vision-bill/internal/files"
 	"github.com/tendstead/vision-bill/internal/store"
 	"github.com/tendstead/vision-bill/internal/testdb"
 )
@@ -46,18 +48,27 @@ func testConfig(t *testing.T) (*config.Holder, config.Sources) {
 }
 
 type testEnv struct {
-	h   http.Handler
-	cfg *config.Holder
-	st  *store.Store
+	h         http.Handler
+	cfg       *config.Holder
+	st        *store.Store
+	provider  *fakeProvider
+	scheduler *analysis.Scheduler
+	files     *files.Service
+	dir       string
 }
 
 // newEnv builds a server. When withDB is true it uses a migrated throwaway DB.
 func newEnv(t *testing.T, withDB bool) *testEnv {
 	t.Helper()
 	holder, src := testConfig(t)
-	e := &testEnv{cfg: holder}
+	dir := t.TempDir()
+	fileSvc, err := files.New(files.Options{TmpDir: filepath.Join(dir, "tmp"), SaveDir: filepath.Join(dir, "save"), ThumbMaxEdge: 512, ThumbQuality: 80})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := &testEnv{cfg: holder, provider: &fakeProvider{}, files: fileSvc, dir: dir}
 	opts := Options{
-		Config: holder, ConfigSources: src,
+		Config: holder, ConfigSources: src, Files: fileSvc, Provider: e.provider,
 		Static: fstest.MapFS{"index.html": {Data: []byte("<html>app</html>")}, "_app/main.js": {Data: []byte("js")}},
 	}
 	if withDB {
@@ -68,6 +79,10 @@ func newEnv(t *testing.T, withDB bool) *testEnv {
 		e.st = &store.Store{Pool: pool}
 		opts.Store = func() *store.Store { return e.st }
 	}
+	svc := &analysis.Service{Store: func() *store.Store { return e.st }, Files: fileSvc, Provider: e.provider, Config: holder}
+	opts.Analysis = svc
+	e.scheduler = analysis.NewScheduler(svc)
+	opts.Scheduler = e.scheduler
 	e.h = New(opts)
 	return e
 }

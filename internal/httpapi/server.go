@@ -12,7 +12,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tendstead/vision-bill/internal/analysis"
 	"github.com/tendstead/vision-bill/internal/config"
+	"github.com/tendstead/vision-bill/internal/files"
+	"github.com/tendstead/vision-bill/internal/llm"
 	"github.com/tendstead/vision-bill/internal/store"
 )
 
@@ -28,6 +31,10 @@ type Options struct {
 	ConfigSources config.Sources
 	// OnSettingsChanged is called after an admin updates runtime settings.
 	OnSettingsChanged func(config.Config)
+	Files             *files.Service
+	Provider          llm.Provider
+	Analysis          *analysis.Service
+	Scheduler         *analysis.Scheduler
 }
 
 // Server holds the dependencies shared by handlers.
@@ -67,6 +74,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	s.receiptRoutes(mux)
 	s.tagRoutes(mux)
 	s.collectionRoutes(mux)
+	s.imageRoutes(mux)
+	s.llmRoutes(mux)
 }
 
 func (s *Server) recoverer(next http.Handler) http.Handler {

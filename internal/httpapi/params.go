@@ -142,3 +142,22 @@ func writeIssues(w http.ResponseWriter, issues domain.Issues, prefix ...any) {
 }
 
 func scopeOf(u userView) store.Scope { return store.Scope{UserID: u.ID, CanSeeAll: u.CanSeeAll} }
+
+// boolParam reads an optional boolean query parameter.
+func (p *params) boolParam(name string) *bool {
+	v, ok := p.has(name)
+	if !ok {
+		return nil
+	}
+	var b bool
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "t", "yes", "y", "on":
+		b = true
+	case "0", "false", "f", "no", "n", "off":
+		b = false
+	default:
+		p.fail("query", name, "bool_parsing", "Input should be a valid boolean, unable to interpret input", v, nil)
+		return nil
+	}
+	return &b
+}

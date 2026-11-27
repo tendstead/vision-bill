@@ -6,8 +6,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -72,12 +70,8 @@ func (s *ollamaStub) handler() http.Handler {
 	return mux
 }
 
-func writeImage(t *testing.T, name string) string {
-	p := filepath.Join(t.TempDir(), name)
-	if err := os.WriteFile(p, []byte("\x89PNGfake"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return p
+func testImages(name string) []Image {
+	return []Image{{Name: name, Data: []byte("\x89PNGfake")}}
 }
 
 func TestOllamaModelsAndAnalyse(t *testing.T) {
@@ -93,7 +87,7 @@ func TestOllamaModelsAndAnalyse(t *testing.T) {
 	if err != nil || len(models) != 1 || models[0].ID != "vis:1" || *models[0].ParameterSize != "7B" || *models[0].Digest != "abc" {
 		t.Fatalf("models %+v %v", models, err)
 	}
-	a, err := Analyse(ctx, p, "vis:1", []string{writeImage(t, "temp_x.png")}, []string{"food"}, PromptOptions{}, ChatOptions{})
+	a, err := Analyse(ctx, p, "vis:1", testImages("temp_x.png"), []string{"food"}, PromptOptions{}, ChatOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +109,7 @@ func TestOllamaModelsAndAnalyse(t *testing.T) {
 	}
 	p.SetTemperature(0.9)
 	stub.replies = []string{goodReceipt}
-	if _, err := Analyse(ctx, p, "vis:1", []string{writeImage(t, "a.png")}, nil, PromptOptions{}, ChatOptions{}); err != nil {
+	if _, err := Analyse(ctx, p, "vis:1", testImages("a.png"), nil, PromptOptions{}, ChatOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if stub.chats[len(stub.chats)-1]["options"].(map[string]any)["temperature"] != 0.9 {
@@ -129,7 +123,7 @@ func TestAnalyseFailureModes(t *testing.T) {
 		stub := &ollamaStub{replies: replies}
 		srv := httptest.NewServer(stub.handler())
 		defer srv.Close()
-		_, err := Analyse(ctx, NewOllama(srv.URL, 0, time.Second), "m", []string{writeImage(t, "a.png")}, nil, PromptOptions{}, ChatOptions{})
+		_, err := Analyse(ctx, NewOllama(srv.URL, 0, time.Second), "m", testImages("a.png"), nil, PromptOptions{}, ChatOptions{})
 		return err
 	}
 	var unreadable *UnreadableError
@@ -146,11 +140,7 @@ func TestAnalyseFailureModes(t *testing.T) {
 	if err := run("", "", ""); err == nil || !strings.Contains(err.Error(), "after 3 attempts") {
 		t.Fatalf("empty: %v", err)
 	}
-	if _, err := Analyse(ctx, NewOllama("http://127.0.0.1:1", 0, time.Second), "m", []string{"/nonexistent.png"}, nil, PromptOptions{}, ChatOptions{}); err == nil ||
-		!strings.Contains(err.Error(), "Image not found at") {
-		t.Fatalf("missing file: %v", err)
-	}
-	if _, err := Analyse(ctx, NewOllama("http://127.0.0.1:1", 0, 300*time.Millisecond), "m", []string{writeImage(t, "a.png")}, nil, PromptOptions{}, ChatOptions{}); err == nil {
+	if _, err := Analyse(ctx, NewOllama("http://127.0.0.1:1", 0, 300*time.Millisecond), "m", testImages("a.png"), nil, PromptOptions{}, ChatOptions{}); err == nil {
 		t.Fatal("expected connection error")
 	}
 }
@@ -180,7 +170,7 @@ func TestOpenAIProvider(t *testing.T) {
 	if gotAuth != "Bearer secret" {
 		t.Fatalf("auth %q", gotAuth)
 	}
-	a, err := Analyse(ctx, p, "gemma", []string{writeImage(t, "temp_x.png")}, nil, PromptOptions{}, ChatOptions{})
+	a, err := Analyse(ctx, p, "gemma", testImages("temp_x.png"), nil, PromptOptions{}, ChatOptions{})
 	if err != nil || a.Receipt.MerchantName != "Shop" {
 		t.Fatalf("%v %+v", err, a)
 	}

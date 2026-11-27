@@ -13,6 +13,8 @@ func (s *Server) receiptRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/receipts", s.authed(s.listReceipts))
 	mux.HandleFunc("GET /api/v1/receipts/{receipt_id}", s.authed(s.getReceipt))
 	mux.HandleFunc("PUT /api/v1/receipts/{receipt_id}", s.authed(s.updateReceipt))
+	mux.HandleFunc("POST /api/v1/receipts/{receipt_id}/verify", s.authed(s.verifyReceipt))
+	mux.HandleFunc("DELETE /api/v1/receipts/{receipt_id}", s.authed(s.deleteReceipt))
 }
 
 func (s *Server) listReceipts(w http.ResponseWriter, r *http.Request, u userView) {
@@ -107,4 +109,89 @@ func (s *Server) updateReceipt(w http.ResponseWriter, r *http.Request, u userVie
 		}
 	}
 	writeJSON(w, http.StatusOK, row)
+}
+
+// verifyReceipt marks a receipt verified after moving its photos to permanent
+// storage. The move is repeatable, so a retry after an interruption recovers.
+func (s *Server) verifyReceipt(w http.ResponseWriter, r *http.Request, u userView) {
+	p := newParams(r)
+	id := p.pathUUID("receipt_id")
+	if !p.ok(w) {
+		return
+	}
+	st, sc := s.db(), scopeOf(u)
+	row, err := st.ReceiptByID(r.Context(), id, sc)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	if row == nil {
+		writeError(w, http.StatusNotFound, "Receipt not found")
+		return
+	}
+	if row.Status == "verified" {
+		writeError(w, http.StatusConflict, "Receipt already verified")
+		return
+	}
+	if row.ImageID != nil {
+		img, err := st.ImageByID(r.Context(), *row.ImageID, sc)
+		if err != nil {
+			s.internalError(w, r, err)
+			return
+		}
+		if img != nil && img.ImagePath != nil && *img.ImagePath != "" {
+			if err := s.opts.Analysis.MovePermanent(r.Context(), st, img, id); err != nil {
+				s.internalError(w, r, err)
+				return
+			}
+		}
+	}
+	verified, err := st.VerifyReceipt(r.Context(), id, sc)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	if verified == nil {
+		writeError(w, http.StatusNotFound, "Receipt not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, verified)
+}
+
+// deleteReceipt removes a receipt (line items and taxes cascade) and its photos.
+func (s *Server) deleteReceipt(w http.ResponseWriter, r *http.Request, u userView) {
+	p := newParams(r)
+	id := p.pathUUID("receipt_id")
+	if !p.ok(w) {
+		return
+	}
+	st, sc := s.db(), scopeOf(u)
+	row, err := st.DeleteReceipt(r.Context(), id, sc)
+	if errors.Is(err, store.ErrReceiptReferenced) {
+		writeError(w, http.StatusConflict, "Receipt is referenced by a benchmark run and cannot be deleted")
+		return
+	}
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	if row == nil {
+		writeError(w, http.StatusNotFound, "Receipt not found")
+		return
+	}
+	if row.ImageID != nil {
+		img, err := st.ImageByID(r.Context(), *row.ImageID, sc)
+		if err != nil {
+			s.internalError(w, r, err)
+			return
+		}
+		if img != nil {
+			if err := st.DeleteImage(r.Context(), img.ID); err != nil {
+				s.internalError(w, r, err)
+				return
+			}
+			s.opts.Analysis.DeleteFiles(img)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"deleted": id})
 }

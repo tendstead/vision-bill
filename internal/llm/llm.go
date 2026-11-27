@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -57,8 +56,9 @@ func (e *ValidationFailure) Error() string { return "LLM output failed validatio
 
 // Image is one input photo.
 type Image struct {
-	Name string // original file name (used for MIME guessing)
-	Data []byte
+	Name      string // file name (MIME fallback when MediaType is empty)
+	MediaType string
+	Data      []byte
 }
 
 // Message is a chat message; user messages may carry images.
@@ -88,20 +88,10 @@ type ChatOptions struct {
 
 var providePattern = regexp.MustCompile(`(?is)provide.*image`)
 
-// Analyse runs the extraction with up to RetryLimit self-correcting attempts.
-func Analyse(ctx context.Context, p Provider, model string, paths []string, tags []string, popts PromptOptions, copts ChatOptions) (*Analysis, error) {
+// Analyse runs the extraction on the ordered photos with up to RetryLimit
+// self-correcting attempts.
+func Analyse(ctx context.Context, p Provider, model string, images []Image, tags []string, popts PromptOptions, copts ChatOptions) (*Analysis, error) {
 	started := time.Now()
-	images := make([]Image, 0, len(paths))
-	for _, path := range paths {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				return nil, fmt.Errorf("Image not found at: %s", path)
-			}
-			return nil, err
-		}
-		images = append(images, Image{Name: baseName(path), Data: data})
-	}
 	msgs := []Message{{Role: "user", Text: BuildPrompt(tags, len(images), popts), Images: images}}
 
 	var last error
@@ -134,13 +124,6 @@ func Analyse(ctx context.Context, p Provider, model string, paths []string, tags
 				"Error: " + perr.Error() + "\n\nPlease respond again with ONLY corrected JSON."})
 	}
 	return nil, fmt.Errorf("Failed to get a valid response from model '%s' after %d attempts: %w", model, RetryLimit, last)
-}
-
-func baseName(p string) string {
-	if i := strings.LastIndexAny(p, `/\`); i >= 0 {
-		return p[i+1:]
-	}
-	return p
 }
 
 // ParseResponse validates a model reply (JSON, optionally fenced) into a Receipt.

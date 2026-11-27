@@ -15,9 +15,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/tendstead/vision-bill/internal/analysis"
 	"github.com/tendstead/vision-bill/internal/app"
 	"github.com/tendstead/vision-bill/internal/config"
+	"github.com/tendstead/vision-bill/internal/files"
 	"github.com/tendstead/vision-bill/internal/httpapi"
+	"github.com/tendstead/vision-bill/internal/llm"
 )
 
 //go:embed all:static
@@ -54,7 +57,22 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	fileSvc, err := files.New(files.Options{
+		TmpDir: cfg.Images.TmpDir, SaveDir: cfg.Images.SaveDir,
+		ThumbMaxEdge: cfg.Images.ThumbnailMaxEdge, ThumbQuality: cfg.Images.ThumbnailQuality, Logger: log,
+	})
+	if err != nil {
+		return fmt.Errorf("image storage: %w", err)
+	}
+	provider, err := llm.New(cfg.LLM)
+	if err != nil {
+		return err
+	}
+
 	db := &app.DB{}
+	analysisSvc := &analysis.Service{Store: db.Get, Files: fileSvc, Provider: provider, Config: holder, Log: log}
+	scheduler := analysis.NewScheduler(analysisSvc)
+	scheduler.Start(ctx)
 	dbErr := make(chan error, 1)
 	go func() { dbErr <- db.Connect(ctx, holder.Get(), log) }()
 
@@ -62,6 +80,8 @@ func run() error {
 		Addr: listenAddr(),
 		Handler: httpapi.New(httpapi.Options{
 			Config: holder, Store: db.Get, Static: static, Logger: log, ConfigSources: src,
+			Files: fileSvc, Provider: provider, Analysis: analysisSvc, Scheduler: scheduler,
+			OnSettingsChanged: func(c config.Config) { provider.SetTemperature(c.LLM.Temperature) },
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
@@ -91,6 +111,7 @@ func run() error {
 	shutdown, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shutdown)
+	scheduler.Stop()
 	if st := db.Get(); st != nil {
 		st.Close()
 	}

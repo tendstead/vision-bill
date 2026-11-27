@@ -103,7 +103,11 @@ func (is Issues) Error() string {
 		for n, l := range i.Loc {
 			loc[n] = fmt.Sprint(l)
 		}
-		parts = append(parts, strings.Join(loc, ".")+": "+i.Msg+" ["+i.Type+"]")
+		prefix := ""
+		if len(loc) > 0 {
+			prefix = strings.Join(loc, ".") + ": "
+		}
+		parts = append(parts, prefix+i.Msg+" ["+i.Type+"]")
 	}
 	return strings.Join(parts, "; ")
 }

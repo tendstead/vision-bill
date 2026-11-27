@@ -32,10 +32,14 @@ func (s *Server) systemRoutes(mux *http.ServeMux) {
 // uiConfig is public and available even while the database is down.
 func (s *Server) uiConfig(w http.ResponseWriter, _ *http.Request) {
 	c := s.cfg()
-	writeJSON(w, http.StatusOK, map[string]bool{
+	out := map[string]bool{
 		"bypass_review_default": c.Images.BypassReviewDefault,
 		"registration_open":     c.Auth.AllowRegistration,
-	})
+	}
+	if s.opts.Files != nil {
+		out["heic_supported"] = s.opts.Files.HEICSupported()
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) settingsView() settingsView {

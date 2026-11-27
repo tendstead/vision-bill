@@ -276,7 +276,21 @@ func (s *Store) PersistReceipt(ctx context.Context, r *domain.Receipt, imageID *
 	if err != nil {
 		return nil, err
 	}
+	s.captureToActive(ctx, id, userID)
 	return s.ReceiptByID(ctx, id, Scope{CanSeeAll: true})
+}
+
+// captureToActive assigns a freshly persisted receipt to its owner's active
+// collection. It is best effort: a failure never breaks persistence.
+func (s *Store) captureToActive(ctx context.Context, receiptID string, userID *string) {
+	if userID == nil {
+		return
+	}
+	active, err := s.ActiveCollection(ctx, Scope{UserID: *userID})
+	if err != nil || active == nil {
+		return
+	}
+	_ = s.AssignReceipt(ctx, active.ID, receiptID)
 }
 
 func (s *Store) inTx(ctx context.Context, fn func(pgx.Tx) error) error {
