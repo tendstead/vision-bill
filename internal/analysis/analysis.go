@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sync"
 
 	"github.com/tendstead/vision-bill/internal/config"
 	"github.com/tendstead/vision-bill/internal/domain"
@@ -16,6 +17,10 @@ import (
 	"github.com/tendstead/vision-bill/internal/store"
 )
 
+// DefaultInferenceSlots bounds concurrent model calls (uploads, the worker and
+// benchmarks share the same slots) so a busy server cannot flood the model host.
+const DefaultInferenceSlots = 2
+
 // Service wires extraction to storage.
 type Service struct {
 	Store    func() *store.Store
@@ -23,6 +28,22 @@ type Service struct {
 	Provider llm.Provider
 	Config   *config.Holder
 	Log      *slog.Logger
+
+	gateOnce sync.Once
+	gate     chan struct{}
+}
+
+// Inference runs fn while holding an inference slot; it returns ctx.Err()
+// when no slot becomes free before ctx ends.
+func (s *Service) Inference(ctx context.Context, fn func(context.Context) error) error {
+	s.gateOnce.Do(func() { s.gate = make(chan struct{}, DefaultInferenceSlots) })
+	select {
+	case s.gate <- struct{}{}:
+		defer func() { <-s.gate }()
+		return fn(ctx)
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (s *Service) log() *slog.Logger {
@@ -69,17 +90,26 @@ func (s *Service) LoadImages(ctx context.Context, parts []domain.ImagePart) ([]l
 // Analyse extracts a receipt from the photos within the configured deadline.
 // Deadline expiry is reported as *llm.TimeoutError.
 func (s *Service) Analyse(ctx context.Context, model string, parts []domain.ImagePart) (*domain.Receipt, error) {
+	// The deadline covers waiting for a slot, loading and the model calls.
 	ctx, cancel := context.WithTimeout(ctx, s.Provider.Timeout())
 	defer cancel()
-	images, err := s.LoadImages(ctx, parts)
+	var receipt *domain.Receipt
+	err := s.Inference(ctx, func(ctx context.Context) error {
+		images, err := s.LoadImages(ctx, parts)
+		if err != nil {
+			return err
+		}
+		a, err := llm.Analyse(ctx, s.Provider, model, images, s.Tags(ctx), llm.PromptOptions{}, llm.ChatOptions{})
+		if err != nil {
+			return err
+		}
+		receipt = a.Receipt
+		return nil
+	})
 	if err != nil {
 		return nil, s.mapErr(err)
 	}
-	a, err := llm.Analyse(ctx, s.Provider, model, images, s.Tags(ctx), llm.PromptOptions{}, llm.ChatOptions{})
-	if err != nil {
-		return nil, s.mapErr(err)
-	}
-	return a.Receipt, nil
+	return receipt, nil
 }
 
 func (s *Service) mapErr(err error) error {

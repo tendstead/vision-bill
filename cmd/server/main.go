@@ -43,7 +43,8 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	log := slog.Default()
+	log := newLogger(cfg.API.LogLevel)
+	slog.SetDefault(log)
 	if created, err := config.Initialize(src.YAMLPath, cfg); err != nil {
 		log.Warn("could not create YAML config", "path", src.YAMLPath, "err", err)
 	} else if created {
@@ -159,4 +160,20 @@ func listenAddr() string {
 		return a
 	}
 	return ":8080"
+}
+
+// newLogger builds the stdout logger honouring api.log_level.
+func newLogger(level string) *slog.Logger {
+	var l slog.Level
+	switch strings.ToUpper(level) {
+	case "DEBUG":
+		l = slog.LevelDebug
+	case "WARNING", "WARN":
+		l = slog.LevelWarn
+	case "ERROR", "CRITICAL":
+		l = slog.LevelError
+	default:
+		l = slog.LevelInfo
+	}
+	return slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: l}))
 }

@@ -669,11 +669,15 @@ func (s *Service) runExperiment(ctx context.Context, m *manifest, receiptID, mod
 	}}
 	actx, cancel := context.WithTimeout(ctx, provider.Timeout())
 	defer cancel()
-	images, err := s.Analysis.LoadImages(actx, parts)
 	var a *llm.Analysis
-	if err == nil {
-		a, err = llm.Analyse(actx, provider, modelID, images, m.Tags, promptOptions(m.Options), copts)
-	}
+	err := s.Analysis.Inference(actx, func(c context.Context) error {
+		images, err := s.Analysis.LoadImages(c, parts)
+		if err != nil {
+			return err
+		}
+		a, err = llm.Analyse(c, provider, modelID, images, m.Tags, promptOptions(m.Options), copts)
+		return err
+	})
 	callsOrEmpty := func() []map[string]any {
 		callsMu.Lock()
 		defer callsMu.Unlock()

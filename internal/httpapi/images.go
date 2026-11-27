@@ -129,6 +129,13 @@ func rawFileName(p *multipart.Part) string {
 }
 
 func (s *Server) uploadImage(w http.ResponseWriter, r *http.Request, u userView) {
+	// Bound concurrent uploads: each may hold up to 10 x 20 MiB in memory.
+	select {
+	case s.uploadSem <- struct{}{}:
+		defer func() { <-s.uploadSem }()
+	case <-r.Context().Done():
+		return
+	}
 	p := newParams(r)
 	modelParam, hasModel := p.optString("model_id")
 	bypassParam := p.boolParam("bypass_review")
