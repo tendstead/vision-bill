@@ -8,7 +8,7 @@ status:
 | 1 | [Comparable benchmarks](01-benchmark-compare.md) | model-major ordering done (`feat/benchmark-compare`); rest planned |
 | 2 | [Stale and failing queued images](02-stale-images.md) | planned |
 | 3 | [Optional integrations (shopping list, roadbook)](03-integrations.md) | planned, blocked on the other services |
-| 4 | [Cherry-picks from PR #16 (OCR)](04-pr16-cherry-picks.md) | to be scoped in its own session |
+| 4 | [Cherry-picks from PR #16 (OCR and more)](04-pr16-cherry-picks.md) | inventory done, picks to be decided |
 
 ## Rules for every task
 
@@ -28,3 +28,23 @@ status:
 - **Releases:** the project is still in the 0.x phase. Releases are minor bumps
   (`0.2.0` for the Go port); fixes may go out as patches. Pick `1.0.0` when the
   project is considered stable.
+
+## Credit: work from PR #16
+
+PR #16 (David Hupperich, 188 commits; GitHub identities `David Hupperich
+<d.hupperich@web.de>` and `Davidoo`) already contains work that overlaps with
+plans 1-3. These plans stay the priority, but every place where PR #16 has the
+same idea is marked **PR #16 overlap** (with the files to look at) so nothing is
+re-invented or forgotten.
+
+Whenever code, schema, tests, wording of a contract or a design from PR #16 is
+ported, adapted or used as the model for a change:
+
+1. Add `Co-authored-by: David Hupperich <d.hupperich@web.de>` to the commit
+   message of every commit that contains it.
+2. Name him and the PR #16 files in the PR description.
+3. If a whole feature is ported, mention it in the release notes.
+
+PR #16 is based on the Python backend. Its Alembic revisions `0011`-`0025`
+exist only there; the Go server adopts databases at exactly `0010`, so
+a database that ran PR #16 cannot be adopted (see plan 4).

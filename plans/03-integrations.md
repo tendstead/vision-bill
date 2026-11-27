@@ -19,6 +19,24 @@ already agreed most of the boundary; where this plan differs it says so.
 - **Everything optional and off by default**, easy to enable by configuration.
   With nothing configured: no routes, no UI, no outbound calls.
 
+## PR #16 overlap (David Hupperich) - reuse for the contract
+
+Three parts of PR #16 are building blocks for the integration API. Credit him
+(see the README).
+
+| PR #16 feature | Where | Use here |
+| --- | --- | --- |
+| **`Idempotency-Key` on upload**, scoped per user, with a payload-conflict error when the same key is used with different content | `src/vision_bill/api/images.py`, `ux_images_owner_upload_key` (`0011`) | The duplicate-safe retry required by roadbook's plan. Port as is and expose it on the integration upload. |
+| **`SubmissionStatus`**: an explicit public projection of an upload (status, `terminal`, `draft_available`, `latest_extraction_id`, attempts, `retry_at`, `result_code`, `wait_reason`) | `src/vision_bill/model/workflow.py` | Basis of the integration status shape; internal fields never leave the server. |
+| **Review drafts**: extraction ends in a draft that a human finalizes (`DraftPatch` with `expected_revision`, `DraftFinalize` with a `request_key`); status `needs_review` | `src/vision_bill/api/drafts.py`, `src/vision_bill/service/receipt_review.py`, migrations `0012`, `0013`, `0015`, `0018` | Matches the `review` state in roadbook's plan (extracted values are proposals until reviewed). Decide in plan 4 whether to port the draft flow; if yes, the integration status exposes it. |
+
+Plan adjustments that follow from this:
+
+- Step 0 (contract document) starts from his status projection and upload
+  idempotency.
+- Roadbook's status list (`queued`, `processing`, `review`, `completed`,
+  `failed`) maps to his statuses; align the names in the contract.
+
 ## Principles (agreed in roadbook's plan)
 
 - Each app stays independently deployable and fully usable without the others.

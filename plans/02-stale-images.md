@@ -20,6 +20,31 @@
 - `unreadable` is the only final status.
 - The queue page polls every 15 s and after "Analyze now".
 
+## PR #16 overlap (David Hupperich) - align before building
+
+PR #16 reworked the analysis queue (Python, Alembic `0011`, `0019`, `0020`).
+It is the closest match to this plan, so names and semantics should line up.
+Credit him (see the README).
+
+| PR #16 feature | Where | Relation to this plan |
+| --- | --- | --- |
+| Per-image `attempt_count`, `max_attempts` (1-3, default 3), `retry_at`, `result_code`, `wait_reason`, `generation`, lease (`claim_token`, `lease_expires_at`) | migration `0011_durable_analysis_jobs`, `SubmissionStatus` in `src/vision_bill/model/workflow.py` | Same data we plan (`attempts`, `max_attempts`, retry time). **Use his field names in the API: `attempt_count`, `max_attempts`, `retry_at`, `result_code`, `wait_reason`.** Our 0.2.1 columns `analysis_attempts`/`retry_after` stay as the storage names and are mapped in the API (or renamed by a later additive migration). |
+| Queue UI: "attempt N of M", "next try at ...", the wait reason, a result code with a "previous attempt" label | `frontend/src/routes/queue/+page.svelte`, `frontend/src/lib/diagnostics.ts`, `queue.test.ts` | This is exactly the state line we planned. Port the labels and diagnostic code lists instead of inventing new ones. |
+| **Retry request**: `RetryRequest{expected_generation, request_key, policy: preserve|current}`, stored in `image_retry_requests` so a repeated request is idempotent | migration `0011`, `0019_execution_policy_retry_identity`, `src/vision_bill/api/images.py` | Our `POST /images/{id}/retry`. Adopt `expected_generation` (optimistic concurrency, the UI cannot retry an image that changed meanwhile) and the idempotent `request_key`. `policy` (retry with the frozen or the current settings) belongs to the OCR/execution-policy part; decide in plan 4. |
+| Statuses: adds `needs_review` (draft awaiting human review) | `images_status_check` in `0011` | Our "gave up" is a timestamp, not a status, so the constraint stays untouched. Adding `needs_review` (plan 4) means relaxing the constraint: safe for old code (it never writes it) but an explicit decision. |
+| Upload `Idempotency-Key` per user | `ux_images_owner_upload_key` in `0011`, `src/vision_bill/api/images.py` | Needed for plan 3 as well. |
+
+What PR #16 does **not** have, so it remains ours: a per-attempt history table
+(`image_attempts`), the explicit "gave up" state with a reason, permanent-error
+classification, and the oversized-image shrink. Ask him why `max_attempts` is
+capped at 3 before fixing our default of 5.
+
+Plan adjustments that follow from this:
+
+- API field names follow PR #16 (see the table).
+- `POST /images/{id}/retry` takes `expected_generation` and a `request_key`.
+- Decide the default `max_attempts` (3 in PR #16, 5 here) together.
+
 ## Design
 
 ### Data (migration `004_image_attempts.sql`, additive)

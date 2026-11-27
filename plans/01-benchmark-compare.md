@@ -31,6 +31,30 @@
   `prompt_eval_ms`, `eval_ms`, token counts).
 - Transient re-evaluation of a single receipt.
 
+## PR #16 overlap (David Hupperich) - check before building
+
+PR #16 has a considerable benchmark rework. None of it is in `main` (it is
+Python, Alembic `0016`-`0017`, `0022`-`0023`). Reuse the ideas, port to Go, credit
+him (see the README).
+
+| PR #16 feature | Where | Relation to this plan |
+| --- | --- | --- |
+| **Paired comparison**: two runs share `comparison_id` and a `comparison_arm` (`direct_vision` / `ocr`); `GET /benchmarks?comparison_id=`; the results page compares arms and shows deltas in percentage points | migration `0023_benchmark_comparisons`, `src/vision_bill/api/benchmarks.py`, `frontend/src/lib/ui/BenchmarkComparison.svelte`, `frontend/src/routes/benchmarks/results/comparison.test.ts` | Same idea as our sweep/rerun. **Decision: use his column names `comparison_id` and `comparison_arm` instead of `sweep_id`/`variant_label`**, with `comparison_arm` a free-form text label (his CHECK only allows the two OCR arms). Then the OCR port later fits without a rename. His comparable rule (same `dataset_fingerprint`, `scoring_version`, same case count) is a subset of the rule above. |
+| **Benchmark references**: immutable, qualified "gold" snapshots of a verified receipt (review revision, document and expected SHA-256, scored fields, findings, who qualified it and when) with a trigger that forbids edits | migration `0016_benchmark_references`, `GET/POST /benchmarks/references/{receipt_id}` | Answers our open question "rerun with old expected values": runs point at immutable references, so a changed or deleted receipt cannot change an old run. Candidate to adopt (second step). |
+| **Benchmark cases**: human-authored cases independent of live receipts (1-10 source photos, expected values, confirmation); tasks have `input_kind` receipt or case | migration `0022_benchmark_cases`, `src/vision_bill/api/benchmark_cases.py`, `frontend/src/routes/benchmarks/cases/*` | Removes the dependency on receipts that may later be deleted. Candidate to adopt together with references. |
+| **Fenced task claims**: `claim_token`, `inference_attempt_count` (max 3), `inference_started` | migration `0017_benchmark_claims` | Crash-safe leasing for several workers. Our lease (`leased_until`) is enough for one worker; only adopt if a second worker is ever wanted. |
+| **Deadlines for benchmark tasks** | `src/vision_bill/provider/db/deadline.py`, `tests/e2e/test_benchmark_deadline_e2e.py` | Compare with our change "deadline starts after the inference slot"; keep whichever semantics is stricter. |
+| **Method and baseline results**: ten verified receipts (14 photos), identical prepared photos for both paths (EXIF applied, **2000 px maximum edge**), temperature 0, backends used sequentially, 180 s deadline | `scripts/ocr_harness/BENCHMARK_RESULTS.md`, `scripts/standalone_benchmark.py` | Use as the first reference dataset and method. His 2000 px cap vs. our model-input cap of 3072 px (plan 2): pick one value together. |
+| **Execution policy**: frozen snapshot of the settings a job was accepted with (temperature, max output tokens, inference identity) | `src/vision_bill/service/execution_policy.py` | Related to our "provider options in the manifest and fingerprint". |
+| Charts | none | PR #16 shows tables and percentage-point deltas only; the SVG charts remain ours. |
+
+Plan adjustments that follow from this:
+
+- Phase A of the design uses `comparison_id`/`comparison_arm` (see above).
+- Add a step "references and cases" after rerun/compare, as the answer to
+  stale or deleted expected data.
+- The first dataset for comparing models is the one from his benchmark results.
+
 ## Design
 
 ### A. Data (migration `003_benchmark_compare.sql`, additive)
@@ -38,11 +62,12 @@
 - `benchmark_runs.parent_run_id uuid NULL REFERENCES benchmark_runs(id) ON DELETE SET NULL`
   (the run this one was derived from).
 - `benchmark_runs.label text NULL` (free text, e.g. "ngl 20, ctx 8k, GPU only").
-- `benchmark_runs.sweep_id uuid NULL`, `variant_label text NULL`,
-  `variant_index int NULL` (runs created together by a sweep).
+- `benchmark_runs.comparison_id uuid NULL`, `comparison_arm text NULL`,
+  `variant_index int NULL` (runs created together by a sweep; names follow
+  PR #16, see the overlap table; `comparison_arm` is a free-form label here).
 - No change to the task primary key. A sweep is a set of runs that share the
   frozen inputs and differ in options; the lease order becomes
-  *sweep (or run) first, then model position, then variant index, then receipt*,
+  *comparison (or run) first, then model position, then variant index, then receipt*,
   so each model is still loaded once per sweep.
 
 ### B. API
@@ -125,6 +150,6 @@ option if more apps need it.
 ## Open questions
 
 - Is a sweep one object in the UI or just several linked runs? (Plan assumes
-  linked runs sharing `sweep_id`.)
+  linked runs sharing `comparison_id`.)
 - Should rerun keep the *old expected values* (fair comparison) or re-read the
   receipts as they are now (the plan keeps the old ones and reports changes)?
