@@ -158,15 +158,20 @@ func (s *Server) uploadImage(w http.ResponseWriter, r *http.Request, u userView)
 		}
 	}
 	for _, up := range uploads {
-		mt, err := fs.Inspect(up.content)
+		mt, err := fs.Validate(ctx, up.content)
 		if err != nil {
 			cleanup()
 			var heic files.HEICUnavailableError
-			if errors.As(err, &heic) {
+			var undecodable *files.UndecodableError
+			switch {
+			case errors.As(err, &heic):
 				writeError(w, http.StatusUnsupportedMediaType, heic.Error())
-				return
+			case errors.As(err, &undecodable):
+				s.opts.Logger.Warn("image could not be decoded", "file", up.filename, "err", undecodable.Err)
+				writeError(w, http.StatusUnprocessableEntity, undecodable.Error())
+			default:
+				writeError(w, http.StatusUnsupportedMediaType, "Unsupported image type")
 			}
-			writeError(w, http.StatusUnsupportedMediaType, "Unsupported image type")
 			return
 		}
 		path, err := fs.StoreTmp(up.content)

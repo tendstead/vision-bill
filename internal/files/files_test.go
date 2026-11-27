@@ -160,3 +160,24 @@ func TestForModel(t *testing.T) {
 		t.Fatal("heic without helper must fail")
 	}
 }
+
+func TestValidateRejectsUndecodableHEIC(t *testing.T) {
+	ctx := context.Background()
+	s := newService(t, fakeHelper(t))
+	if mt, err := s.Validate(ctx, heicBytes); err != nil || mt != HEIC {
+		t.Fatalf("decodable heic: %v %v", mt, err)
+	}
+	if _, err := s.Validate(ctx, pngBytes); err != nil {
+		t.Fatalf("png needs no helper: %v", err)
+	}
+	failing := filepath.Join(t.TempDir(), "vips")
+	_ = os.WriteFile(failing, []byte("#!/bin/sh\nexit 1\n"), 0o755)
+	var undecodable *UndecodableError
+	if _, err := newService(t, failing).Validate(ctx, heicBytes); !errors.As(err, &undecodable) {
+		t.Fatalf("broken heic must be rejected: %v", err)
+	}
+	// Formats the helper is not needed for are never sent through it.
+	if _, err := newService(t, failing).Validate(ctx, jpegBytes); err != nil {
+		t.Fatal(err)
+	}
+}

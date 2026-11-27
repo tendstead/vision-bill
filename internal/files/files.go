@@ -134,6 +134,28 @@ func (s *Service) Inspect(content []byte) (string, error) {
 	return mt, &UnsupportedTypeError{Detected: mt}
 }
 
+// UndecodableError reports an image whose content cannot be decoded.
+type UndecodableError struct{ Err error }
+
+func (e *UndecodableError) Error() string { return "The image could not be decoded" }
+func (e *UndecodableError) Unwrap() error { return e.Err }
+
+// Validate inspects content and, for HEIC/HEIF (which only the helper can
+// read), proves that it decodes so a broken file is rejected at upload time
+// instead of failing later during analysis.
+func (s *Service) Validate(ctx context.Context, content []byte) (string, error) {
+	mt, err := s.Inspect(content)
+	if err != nil {
+		return mt, err
+	}
+	if mt == HEIC || mt == HEIF {
+		if _, _, err := s.ForModel(ctx, content); err != nil {
+			return mt, &UndecodableError{Err: err}
+		}
+	}
+	return mt, nil
+}
+
 // StoreTmp writes content to a unique temporary file and returns its path.
 func (s *Service) StoreTmp(content []byte) (string, error) {
 	p := filepath.Join(s.tmp, "temp_"+ids.UUID()+".png")
