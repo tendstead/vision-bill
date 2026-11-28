@@ -697,3 +697,37 @@ func TestBenchmarkSweepAndLeaseOrder(t *testing.T) {
 		t.Fatalf("rejected sweeps created runs: %d -> %d", before, after)
 	}
 }
+
+func TestBenchmarkCellsSplitLoadFromGeneration(t *testing.T) {
+	e := newEnv(t, true)
+	user := e.user(t, "user", false)
+	rid := e.verifiedReceiptWithPhoto(t, user, pngData)
+	ctx := context.Background()
+	run, err := e.st.CreateBenchmarkRun(ctx, store.NewBenchmarkRun{
+		ModelIDs: []string{"vis:1", "vis:2"}, ReceiptIDs: []string{rid}, Fingerprint: "f", ModelDigests: map[string]*string{},
+		TimeoutSeconds: 30, Policy: "all", PromptVersion: "4", ScoringVersion: "3",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	insert := func(model, payload string) {
+		if _, err := e.st.Pool.Exec(ctx, `INSERT INTO benchmark_results (run_id, model_id, receipt_id, success, payload) VALUES ($1::uuid,$2,$3::uuid,true,$4::jsonb)`,
+			run.ID, model, rid, payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insert("vis:1", `{"scores": {"normalized": 0.5}, "metadata": {"elapsed_ms": 900, "calls": [
+		{"load_ms": 400, "prompt_eval_ms": 100, "eval_ms": 200}, {"load_ms": 1, "prompt_eval_ms": 50, "eval_ms": 150}]}}`)
+	insert("vis:2", `{"scores": {"normalized": 1}, "metadata": {"elapsed_ms": 70, "calls": [{"elapsed_ms": 70}]}}`) // no Ollama telemetry
+	cells, err := e.st.BenchmarkCells(ctx, run.ID)
+	if err != nil || len(cells) != 2 {
+		t.Fatalf("%v %v", cells, err)
+	}
+	a, b := cells[0], cells[1]
+	if a.ModelID != "vis:1" || a.LoadMS == nil || *a.LoadMS != 401 || a.GenMS == nil || *a.GenMS != 500 || a.Calls != 2 || *a.ElapsedMS != 900 {
+		t.Fatalf("telemetry cell %+v", a)
+	}
+	if b.LoadMS != nil || b.GenMS != nil || b.Calls != 1 {
+		t.Fatalf("cell without telemetry %+v", b)
+	}
+}

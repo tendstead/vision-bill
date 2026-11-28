@@ -198,16 +198,18 @@ type CompareRun struct {
 
 // CompareCell is one model's outcome for one receipt in one run.
 type CompareCell struct {
-	RunID       string         `json:"run_id"`
-	ModelID     string         `json:"model_id"`
-	ModelDigest *string        `json:"model_digest"`
-	Success     bool           `json:"success"`
-	Score       *float64       `json:"score"`
-	Scores      map[string]any `json:"scores"`
-	ScoreDelta  *float64       `json:"score_delta"`
-	LatencyMS   *float64       `json:"latency_ms"`
-	Attempts    int            `json:"attempts"`
-	Error       *string        `json:"error"`
+	RunID        string         `json:"run_id"`
+	ModelID      string         `json:"model_id"`
+	ModelDigest  *string        `json:"model_digest"`
+	Success      bool           `json:"success"`
+	Score        *float64       `json:"score"`
+	Scores       map[string]any `json:"scores"`
+	ScoreDelta   *float64       `json:"score_delta"`
+	LatencyMS    *float64       `json:"latency_ms"`
+	LoadMS       *float64       `json:"load_ms"`       // model load time, when the server reports it
+	GenerationMS *float64       `json:"generation_ms"` // prompt evaluation plus generation, when reported
+	Attempts     int            `json:"attempts"`
+	Error        *string        `json:"error"`
 }
 
 // CompareReceipt lists the cells of every run for one receipt.
@@ -347,7 +349,7 @@ func (s *Service) Compare(ctx context.Context, ids []string) (*CompareResult, er
 					continue
 				}
 				cell := CompareCell{RunID: in.run.ID, ModelID: model, ModelDigest: in.digests[model], Success: c.Success, Scores: c.Scores,
-					LatencyMS: c.ElapsedMS, Attempts: max(c.Calls, 1), Error: c.Error}
+					LatencyMS: c.ElapsedMS, LoadMS: c.LoadMS, GenerationMS: c.GenMS, Attempts: max(c.Calls, 1), Error: c.Error}
 				if v, ok := c.Scores["normalized"].(float64); ok && c.Success {
 					cell.Score = &v
 				}

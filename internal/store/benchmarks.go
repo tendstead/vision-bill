@@ -407,6 +407,8 @@ type BenchmarkCell struct {
 	Success   bool
 	Scores    map[string]any
 	ElapsedMS *float64
+	LoadMS    *float64 // model load time summed over the calls (Ollama telemetry)
+	GenMS     *float64 // prompt evaluation plus generation time summed over the calls
 	Calls     int
 	Error     *string
 }
@@ -415,6 +417,10 @@ type BenchmarkCell struct {
 func (s *Store) BenchmarkCells(ctx context.Context, id string) ([]BenchmarkCell, error) {
 	rows, err := s.Pool.Query(ctx, `SELECT model_id, receipt_id::text, success, payload->'scores',
 		(payload->'metadata'->>'elapsed_ms')::float8,
+		(SELECT sum((c->>'load_ms')::float8) FROM jsonb_array_elements(CASE WHEN jsonb_typeof(payload->'metadata'->'calls') = 'array' THEN payload->'metadata'->'calls' ELSE '[]'::jsonb END) c),
+		(SELECT sum(COALESCE((c->>'prompt_eval_ms')::float8, 0) + COALESCE((c->>'eval_ms')::float8, 0))
+		   FROM jsonb_array_elements(CASE WHEN jsonb_typeof(payload->'metadata'->'calls') = 'array' THEN payload->'metadata'->'calls' ELSE '[]'::jsonb END) c
+		  WHERE c ? 'eval_ms' OR c ? 'prompt_eval_ms'),
 		CASE WHEN jsonb_typeof(payload->'metadata'->'calls') = 'array' THEN jsonb_array_length(payload->'metadata'->'calls') ELSE 0 END,
 		payload->>'error'
 		FROM benchmark_results WHERE run_id = $1::uuid ORDER BY model_id, receipt_id`, id)
@@ -426,7 +432,7 @@ func (s *Store) BenchmarkCells(ctx context.Context, id string) ([]BenchmarkCell,
 	for rows.Next() {
 		var c BenchmarkCell
 		var scores []byte
-		if err := rows.Scan(&c.ModelID, &c.ReceiptID, &c.Success, &scores, &c.ElapsedMS, &c.Calls, &c.Error); err != nil {
+		if err := rows.Scan(&c.ModelID, &c.ReceiptID, &c.Success, &scores, &c.ElapsedMS, &c.LoadMS, &c.GenMS, &c.Calls, &c.Error); err != nil {
 			return nil, err
 		}
 		if len(scores) > 0 && string(scores) != "null" {
