@@ -20,6 +20,8 @@ func (s *Server) benchmarkRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET "+base+"/capabilities", s.admin(func(w http.ResponseWriter, _ *http.Request, _ userView) {
 		writeJSON(w, http.StatusOK, s.opts.Benchmarks.Capabilities())
 	}))
+	mux.HandleFunc("GET "+base+"/compare", s.admin(s.compareBenchmarks))
+	mux.HandleFunc("POST "+base+"/{run_id}/rerun", s.admin(s.rerunBenchmark))
 	mux.HandleFunc("GET "+base+"/{run_id}/results", s.admin(s.benchmarkResults))
 	mux.HandleFunc("GET "+base+"/{run_id}", s.admin(s.benchmarkStatus))
 	mux.HandleFunc("POST "+base+"/{run_id}/reevaluate", s.admin(s.reevaluateBenchmark))
@@ -47,6 +49,23 @@ func (b *bodyReader) optString(key string) *string {
 		return nil
 	}
 	return &s
+}
+
+// label reads the optional free-text run label (1-200 characters).
+func (b *bodyReader) label() *string {
+	l := b.optString("label")
+	if l == nil {
+		return nil
+	}
+	if n := len([]rune(*l)); n < 1 || n > 200 {
+		typ, msg, ctx := "string_too_short", "String should have at least 1 character", map[string]any{"min_length": 1}
+		if n > 200 {
+			typ, msg, ctx = "string_too_long", "String should have at most 200 characters", map[string]any{"max_length": 200}
+		}
+		b.fail("label", typ, msg, *l, ctx)
+		return nil
+	}
+	return l
 }
 
 func (b *bodyReader) optInt(key string, lo, hi int) *int {
@@ -179,36 +198,58 @@ func (b *bodyReader) stringList(key string, uuids bool) []string {
 	return out
 }
 
+// parseExperiment reads the experiment options; only keys that are present
+// are set, the caller applies them to its defaults.
+func parseExperiment(raw any) (benchmark.ExperimentOverride, validationErrors) {
+	var ov benchmark.ExperimentOverride
+	em, isObj := raw.(map[string]any)
+	if !isObj {
+		var errs validationErrors
+		errs.add(fieldError{Type: "model_attributes_type", Loc: []any{"body", "experiment"}, Msg: "Input should be a valid dictionary or object to extract fields from", Input: raw})
+		return ov, errs
+	}
+	eb := &bodyReader{m: em, loc: []any{"body", "experiment"}}
+	if _, ok := em["pipeline"]; ok {
+		v := eb.enum("pipeline", "upload", "upload", "direct_vision", "ocr")
+		ov.Pipeline = &v
+	}
+	if v, ok := em["temperature"]; ok && v != nil {
+		n, isNum := v.(json.Number)
+		f, err := strconv.ParseFloat(string(n), 64)
+		switch {
+		case !isNum || err != nil:
+			eb.fail("temperature", "float_type", "Input should be a valid number", v, nil)
+		case f < 0:
+			eb.fail("temperature", "greater_than_equal", "Input should be greater than or equal to 0", v, map[string]any{"ge": 0})
+		case f > 2:
+			eb.fail("temperature", "less_than_equal", "Input should be less than or equal to 2", v, map[string]any{"le": 2})
+		default:
+			ov.Temperature = &f
+		}
+	}
+	if _, ok := em["think"]; ok {
+		ov.ThinkSet, ov.Think = true, eb.optBoolPtr("think")
+	}
+	if _, ok := em["include_classification"]; ok {
+		v := eb.optBool("include_classification", true)
+		ov.IncludeClassification = &v
+	}
+	if _, ok := em["allow_ocr_fallback"]; ok {
+		v := eb.optBool("allow_ocr_fallback", false)
+		ov.AllowOCRFallback = &v
+	}
+	return ov, eb.errs
+}
+
 func parseBenchmarkCreate(m map[string]any) (benchmark.CreateRequest, validationErrors) {
 	b := &bodyReader{m: m, loc: []any{"body"}}
 	req := benchmark.CreateRequest{Experiment: benchmark.ExperimentOptions{Pipeline: "upload", IncludeClassification: true}}
 	if raw, ok := m["experiment"]; ok {
-		em, isObj := raw.(map[string]any)
-		if !isObj {
-			b.fail("experiment", "model_attributes_type", "Input should be a valid dictionary or object to extract fields from", raw, nil)
-		} else {
-			eb := &bodyReader{m: em, loc: []any{"body", "experiment"}}
-			req.Experiment.Pipeline = eb.enum("pipeline", "upload", "upload", "direct_vision", "ocr")
-			if v, ok := em["temperature"]; ok && v != nil {
-				n, isNum := v.(json.Number)
-				f, err := strconv.ParseFloat(string(n), 64)
-				switch {
-				case !isNum || err != nil:
-					eb.fail("temperature", "float_type", "Input should be a valid number", v, nil)
-				case f < 0:
-					eb.fail("temperature", "greater_than_equal", "Input should be greater than or equal to 0", v, map[string]any{"ge": 0})
-				case f > 2:
-					eb.fail("temperature", "less_than_equal", "Input should be less than or equal to 2", v, map[string]any{"le": 2})
-				default:
-					req.Experiment.Temperature = &f
-				}
-			}
-			req.Experiment.Think = eb.optBoolPtr("think")
-			req.Experiment.IncludeClassification = eb.optBool("include_classification", true)
-			req.Experiment.AllowOCRFallback = eb.optBool("allow_ocr_fallback", false)
-			b.errs = append(b.errs, eb.errs...)
-		}
+		ov, errs := parseExperiment(raw)
+		req.Experiment = ov.Apply(req.Experiment)
+		b.errs = append(b.errs, errs...)
 	}
+	req.Label = b.label()
 	req.ModelIDs = b.stringList("model_ids", false)
 	req.ReceiptIDs = b.stringList("receipt_ids", true)
 	req.Category = b.optString("category")
@@ -343,6 +384,82 @@ func (s *Server) reevaluateBenchmark(w http.ResponseWriter, r *http.Request, _ u
 		writeError(w, http.StatusNotFound, ue.Msg)
 	case errors.Is(err, benchmark.ErrTimeout):
 		writeError(w, http.StatusGatewayTimeout, err.Error())
+	case err != nil:
+		s.internalError(w, r, err)
+	default:
+		writeJSON(w, http.StatusOK, res)
+	}
+}
+
+func (s *Server) rerunBenchmark(w http.ResponseWriter, r *http.Request, _ userView) {
+	p := newParams(r)
+	id := p.pathUUID("run_id")
+	m, _, ok := readObject(w, r)
+	if !ok {
+		return
+	}
+	b := &bodyReader{m: m, loc: []any{"body"}}
+	b.errs = append(b.errs, p.errs...)
+	var req benchmark.RerunRequest
+	req.ModelIDs = b.stringList("model_ids", false)
+	if raw, ok := m["experiment"]; ok {
+		ov, errs := parseExperiment(raw)
+		req.Experiment = ov
+		b.errs = append(b.errs, errs...)
+	}
+	req.Label = b.label()
+	if len(b.errs) > 0 {
+		b.errs.write(w)
+		return
+	}
+	res, err := s.opts.Benchmarks.Rerun(r.Context(), id, req)
+	var ue *benchmark.UserError
+	switch {
+	case errors.Is(err, benchmark.ErrRunNotFound):
+		writeError(w, http.StatusNotFound, err.Error())
+	case errors.As(err, &ue):
+		writeError(w, http.StatusUnprocessableEntity, ue.Msg)
+	case err != nil:
+		s.internalError(w, r, err)
+	default:
+		w.Header().Set("Location", "/api/v1/benchmarks/"+res.ID)
+		writeJSON(w, http.StatusAccepted, res)
+	}
+}
+
+func (s *Server) compareBenchmarks(w http.ResponseWriter, r *http.Request, _ userView) {
+	var ids []string
+	var errs validationErrors
+	seen := map[string]bool{}
+	raw := r.URL.Query().Get("runs")
+	if raw == "" {
+		errs.add(fieldError{Type: "missing", Loc: []any{"query", "runs"}, Msg: "Field required"})
+	}
+	for _, part := range strings.Split(raw, ",") {
+		if raw == "" {
+			break
+		}
+		u, ok := domain.CanonicalUUID(strings.TrimSpace(part))
+		if !ok {
+			errs.add(fieldError{Type: "uuid_parsing", Loc: []any{"query", "runs"}, Msg: "Input should be a valid UUID", Input: part})
+			continue
+		}
+		if !seen[u] {
+			seen[u] = true
+			ids = append(ids, u)
+		}
+	}
+	if len(errs) == 0 && (len(ids) < 2 || len(ids) > 10) {
+		errs.add(fieldError{Type: "value_error", Loc: []any{"query", "runs"}, Msg: "Value error, runs must list 2 to 10 distinct run ids", Input: raw})
+	}
+	if len(errs) > 0 {
+		errs.write(w)
+		return
+	}
+	res, err := s.opts.Benchmarks.Compare(r.Context(), ids)
+	switch {
+	case errors.Is(err, benchmark.ErrRunNotFound):
+		writeError(w, http.StatusNotFound, err.Error())
 	case err != nil:
 		s.internalError(w, r, err)
 	default:

@@ -86,3 +86,43 @@ func TestBenchmarkReevaluateIsTransient(t *testing.T) {
 	}
 	a.Post("/benchmarks/"+ids.UUID()+"/reevaluate", map[string]string{"receipt_id": rid, "model_id": "e2e-vision"}).Is(404)
 }
+
+func TestBenchmarkRerunAndCompare(t *testing.T) {
+	newEnv(t)
+	a := admin(t)
+	rid, fc := adminVerifiedReceipt(t, a)
+	first := a.Post("/benchmarks", map[string]any{"model_ids": []string{"e2e-vision"}, "receipt_ids": []string{rid},
+		"label": "baseline", "experiment": map[string]any{"temperature": 0}}).Is(202).M()
+	firstID := str(first, "id")
+	finished := func(id string) func() bool {
+		return func() bool { return a.Get("/benchmarks/" + id).Is(200).M()["terminal"] == float64(1) }
+	}
+	waitUntil(t, 30*time.Second, "the first benchmark run", finished(firstID))
+
+	// The receipt is edited afterwards: the rerun keeps the frozen expected values and reports it.
+	var edited map[string]any
+	if err := json.Unmarshal(fc.Raw, &edited); err != nil {
+		t.Fatal(err)
+	}
+	edited["merchant_name"] = "Edited after benchmark creation"
+	a.Put("/receipts/"+rid, edited).Is(200)
+
+	second := a.Post("/benchmarks/"+firstID+"/rerun", map[string]any{"label": "warmer", "experiment": map[string]any{"temperature": 0.1}}).Is(202).M()
+	secondID := str(second, "id")
+	if second["parent_run_id"] != firstID || second["label"] != "warmer" || mp(second, "experiment", "options")["temperature"] != 0.1 ||
+		len(list(second, "changes")) != 1 || str(list(second, "changes")[0], "change") != "expected_changed" {
+		t.Fatalf("%v", second)
+	}
+	waitUntil(t, 30*time.Second, "the rerun", finished(secondID))
+
+	cmp := a.Get("/benchmarks/compare?runs=" + firstID + "," + secondID).Is(200).M()
+	if cmp["baseline_run_id"] != firstID || mp(cmp, "comparable")["comparable"] == nil || len(list(cmp, "receipts")) != 1 {
+		t.Fatalf("%v", cmp)
+	}
+	cells := list(list(cmp, "receipts")[0], "cells")
+	if len(cells) != 2 || str(cells[1], "run_id") != secondID || mp(cells[1])["score"] != float64(1) || mp(cells[1])["score_delta"] != float64(0) {
+		t.Fatalf("%v", cells)
+	}
+	a.Get("/benchmarks/compare?runs=" + firstID).Is(422)
+	a.Post("/benchmarks/"+ids.UUID()+"/rerun", map[string]any{}).Is(404)
+}

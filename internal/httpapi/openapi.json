@@ -1132,6 +1132,53 @@
     }
    }
   },
+  "/api/v1/benchmarks/compare": {
+   "get": {
+    "tags": [
+     "Benchmarks"
+    ],
+    "summary": "Compare Benchmark Runs",
+    "description": "Compare 2-10 runs. The first run is the baseline unless a run's parent is part of the comparison. Runs are directly comparable only when dataset fingerprint, model digest, prompt/schema version, scoring version and council policy match; otherwise the reasons say which part differs.",
+    "operationId": "compare_benchmark_runs_api_v1_benchmarks_compare_get",
+    "parameters": [
+     {
+      "name": "runs",
+      "in": "query",
+      "required": true,
+      "description": "Comma-separated run ids (2-10).",
+      "schema": {
+       "type": "string",
+       "title": "Runs"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/BenchmarkComparison"
+        }
+       }
+      }
+     },
+     "404": {
+      "description": "Run not found"
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "/api/v1/benchmarks/{run_id}/results": {
    "get": {
     "tags": [
@@ -1289,6 +1336,63 @@
         }
        }
       }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/benchmarks/{run_id}/rerun": {
+   "post": {
+    "tags": [
+     "Benchmarks"
+    ],
+    "summary": "Rerun Benchmark",
+    "description": "Queue a new run that reuses the frozen receipts and expected values of the parent (for example after a model update or with another temperature) and records parent_run_id. Receipts deleted since are left out; deleted or changed receipts and photos are listed in `changes`.",
+    "operationId": "rerun_benchmark_api_v1_benchmarks__run_id__rerun_post",
+    "parameters": [
+     {
+      "name": "run_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "format": "uuid",
+       "title": "Run Id"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/BenchmarkRerun"
+       }
+      }
+     }
+    },
+    "responses": {
+     "202": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/BenchmarkRerunResult"
+        }
+       }
+      }
+     },
+     "404": {
+      "description": "Run not found"
      },
      "422": {
       "description": "Validation Error",
@@ -2101,6 +2205,19 @@
       "type": "boolean",
       "title": "Apply Council Flags",
       "default": false
+     },
+     "label": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 200,
+        "minLength": 1
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Label"
      }
     },
     "type": "object",
@@ -2201,6 +2318,63 @@
        }
       ],
       "title": "Experiment"
+     },
+     "parent_run_id": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "uuid"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Parent Run Id"
+     },
+     "label": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Label"
+     },
+     "comparison_id": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "uuid"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Comparison Id"
+     },
+     "comparison_arm": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Comparison Arm"
+     },
+     "variant_index": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Variant Index"
      }
     },
     "type": "object",
@@ -4477,6 +4651,325 @@
      "average"
     ],
     "title": "WeeklyStatistics"
+   },
+   "BenchmarkRerun": {
+    "properties": {
+     "model_ids": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Model Ids"
+     },
+     "experiment": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/ExperimentOverride"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "label": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 200,
+        "minLength": 1
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Label"
+     }
+    },
+    "type": "object",
+    "title": "BenchmarkRerun",
+    "description": "Overrides for a rerun; absent fields keep the parent run's values."
+   },
+   "ExperimentOverride": {
+    "properties": {
+     "pipeline": {
+      "enum": [
+       "upload",
+       "direct_vision",
+       "ocr"
+      ],
+      "type": "string",
+      "title": "Pipeline"
+     },
+     "temperature": {
+      "type": "number",
+      "maximum": 2.0,
+      "minimum": 0.0,
+      "title": "Temperature"
+     },
+     "think": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Think"
+     },
+     "include_classification": {
+      "type": "boolean",
+      "title": "Include Classification"
+     },
+     "allow_ocr_fallback": {
+      "type": "boolean",
+      "title": "Allow Ocr Fallback"
+     }
+    },
+    "type": "object",
+    "title": "ExperimentOverride"
+   },
+   "BenchmarkRerunChange": {
+    "properties": {
+     "receipt_id": {
+      "type": "string",
+      "format": "uuid",
+      "title": "Receipt Id"
+     },
+     "change": {
+      "enum": [
+       "deleted",
+       "unverified",
+       "expected_changed",
+       "image_changed",
+       "image_missing"
+      ],
+      "type": "string",
+      "title": "Change"
+     },
+     "detail": {
+      "type": "string",
+      "title": "Detail"
+     }
+    },
+    "type": "object",
+    "required": [
+     "receipt_id",
+     "change",
+     "detail"
+    ],
+    "title": "BenchmarkRerunChange"
+   },
+   "BenchmarkRerunResult": {
+    "properties": {
+     "id": {
+      "type": "string",
+      "format": "uuid",
+      "title": "Id"
+     },
+     "status": {
+      "type": "string",
+      "title": "Status"
+     },
+     "model_ids": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "title": "Model Ids"
+     },
+     "receipt_ids": {
+      "items": {
+       "type": "string",
+       "format": "uuid"
+      },
+      "type": "array",
+      "title": "Receipt Ids"
+     },
+     "dataset_fingerprint": {
+      "type": "string",
+      "title": "Dataset Fingerprint"
+     },
+     "prompt_version": {
+      "type": "string",
+      "title": "Prompt Version"
+     },
+     "scoring_version": {
+      "type": "string",
+      "title": "Scoring Version"
+     },
+     "council_policy": {
+      "$ref": "#/components/schemas/CouncilPolicy"
+     },
+     "apply_council_flags": {
+      "type": "boolean",
+      "title": "Apply Council Flags"
+     },
+     "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "title": "Created At"
+     },
+     "completed_at": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "date-time"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Completed At"
+     },
+     "experiment": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Experiment"
+     },
+     "parent_run_id": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "uuid"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Parent Run Id"
+     },
+     "label": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Label"
+     },
+     "comparison_id": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "uuid"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Comparison Id"
+     },
+     "comparison_arm": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Comparison Arm"
+     },
+     "variant_index": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Variant Index"
+     },
+     "changes": {
+      "items": {
+       "$ref": "#/components/schemas/BenchmarkRerunChange"
+      },
+      "type": "array",
+      "title": "Changes"
+     }
+    },
+    "type": "object",
+    "required": [
+     "id",
+     "status",
+     "model_ids",
+     "receipt_ids",
+     "dataset_fingerprint",
+     "prompt_version",
+     "scoring_version",
+     "council_policy",
+     "apply_council_flags",
+     "created_at",
+     "changes"
+    ],
+    "title": "BenchmarkRerunResult"
+   },
+   "BenchmarkComparison": {
+    "type": "object",
+    "title": "BenchmarkComparison",
+    "description": "Side-by-side comparison of runs: comparability verdict with reasons, settings that vary, per-run summaries with deltas against the baseline run and per-receipt cells (every receipt id is a link target).",
+    "required": [
+     "baseline_run_id",
+     "comparable",
+     "varied",
+     "runs",
+     "receipts"
+    ],
+    "properties": {
+     "baseline_run_id": {
+      "type": "string",
+      "format": "uuid",
+      "title": "Baseline Run Id"
+     },
+     "comparable": {
+      "type": "object",
+      "additionalProperties": true,
+      "title": "Comparable",
+      "description": "{comparable: bool, reasons: [{code, message, run_ids, model_id?}]}; codes: run_incomplete, legacy_run, dataset_changed, scoring_changed, council_policy_changed, prompt_changed, schema_changed, model_digest_changed"
+     },
+     "varied": {
+      "items": {
+       "type": "object",
+       "additionalProperties": true
+      },
+      "type": "array",
+      "title": "Varied"
+     },
+     "runs": {
+      "items": {
+       "type": "object",
+       "additionalProperties": true
+      },
+      "type": "array",
+      "title": "Runs"
+     },
+     "receipts": {
+      "items": {
+       "type": "object",
+       "additionalProperties": true
+      },
+      "type": "array",
+      "title": "Receipts"
+     }
+    }
    }
   }
  }

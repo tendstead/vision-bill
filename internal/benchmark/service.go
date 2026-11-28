@@ -59,6 +59,7 @@ type CreateRequest struct {
 	AbsoluteThreshold   *string
 	RelativeThreshold   *string
 	ApplyCouncilFlags   bool
+	Label               *string
 }
 
 // Service creates runs and executes their tasks.
@@ -317,13 +318,12 @@ func (s *Service) captureInput(ctx context.Context, st *store.Store, receiptID s
 	return in, expected, nil
 }
 
-// CreateRun validates the request, freezes the inputs and queues all
-// (model x receipt) tasks.
-func (s *Service) CreateRun(ctx context.Context, req CreateRequest) (*domain.BenchmarkRun, error) {
-	st := s.Store()
+// resolveModels validates the requested model ids (all available models when
+// none are requested) and returns them with the provider's model list.
+func (s *Service) resolveModels(ctx context.Context, requested []string) ([]string, map[string]llm.ModelInfo, error) {
 	models, err := s.Provider.Models(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	available := map[string]llm.ModelInfo{}
 	var order []string
@@ -331,12 +331,12 @@ func (s *Service) CreateRun(ctx context.Context, req CreateRequest) (*domain.Ben
 		available[m.ID] = m
 		order = append(order, m.ID)
 	}
-	selected := req.ModelIDs
+	selected := requested
 	if len(selected) == 0 {
 		selected = order
 	}
 	if len(selected) == 0 {
-		return nil, userErr("No vision models are available")
+		return nil, nil, userErr("No vision models are available")
 	}
 	var unknown []string
 	for _, id := range selected {
@@ -346,7 +346,28 @@ func (s *Service) CreateRun(ctx context.Context, req CreateRequest) (*domain.Ben
 	}
 	if len(unknown) > 0 {
 		sort.Strings(unknown)
-		return nil, userErr("Selected model(s) unavailable: %s", strings.Join(dedupe(unknown), ", "))
+		return nil, nil, userErr("Selected model(s) unavailable: %s", strings.Join(dedupe(unknown), ", "))
+	}
+	return selected, available, nil
+}
+
+func (s *Service) checkOptions(o ExperimentOptions) error {
+	if o.Think != nil && !s.Provider.SupportsThinking() {
+		return userErr("Thinking override is supported only by the Ollama provider")
+	}
+	if o.Pipeline == "ocr" {
+		return userErr("OCR extension is not configured; choose normal upload or direct vision")
+	}
+	return nil
+}
+
+// CreateRun validates the request, freezes the inputs and queues all
+// (model x receipt) tasks.
+func (s *Service) CreateRun(ctx context.Context, req CreateRequest) (*domain.BenchmarkRun, error) {
+	st := s.Store()
+	selected, available, err := s.resolveModels(ctx, req.ModelIDs)
+	if err != nil {
+		return nil, err
 	}
 	receiptIDs, err := s.selectReceipts(ctx, st, req)
 	if err != nil {
@@ -355,14 +376,7 @@ func (s *Service) CreateRun(ctx context.Context, req CreateRequest) (*domain.Ben
 	if len(receiptIDs) == 0 {
 		return nil, userErr("No verified receipts match the selection")
 	}
-	if req.Experiment.Think != nil && !s.Provider.SupportsThinking() {
-		return nil, userErr("Thinking override is supported only by the Ollama provider")
-	}
-	if req.Experiment.Pipeline == "ocr" {
-		return nil, userErr("OCR extension is not configured; choose normal upload or direct vision")
-	}
-	tags, err := st.ListTags(ctx)
-	if err != nil {
+	if err := s.checkOptions(req.Experiment); err != nil {
 		return nil, err
 	}
 	var inputs []manifestInput
@@ -375,14 +389,41 @@ func (s *Service) CreateRun(ctx context.Context, req CreateRequest) (*domain.Ben
 		inputs = append(inputs, in)
 		expected = append(expected, exp)
 	}
+	return s.queueRun(ctx, st, queueParams{
+		Options: req.Experiment, Selected: selected, Available: available, ReceiptIDs: receiptIDs, Inputs: inputs, Expected: expected,
+		Settings: store.BenchmarkRunSettings{TimeoutSeconds: req.TimeoutSeconds, Policy: req.CouncilPolicy,
+			AbsoluteThreshold: req.AbsoluteThreshold, RelativeThreshold: req.RelativeThreshold, ApplyFlags: req.ApplyCouncilFlags},
+		Label: req.Label,
+	})
+}
 
-	options := req.Experiment
+// queueParams is a fully validated run with frozen inputs, ready to be stored.
+type queueParams struct {
+	Options    ExperimentOptions
+	Selected   []string
+	Available  map[string]llm.ModelInfo
+	ReceiptIDs []string
+	Inputs     []manifestInput
+	Expected   []*domain.Receipt
+	Settings   store.BenchmarkRunSettings
+	Label      *string
+	Parent     *string
+}
+
+// queueRun records the manifest (current prompt, schema and endpoint) and
+// queues the run.
+func (s *Service) queueRun(ctx context.Context, st *store.Store, p queueParams) (*domain.BenchmarkRun, error) {
+	tags, err := st.ListTags(ctx)
+	if err != nil {
+		return nil, err
+	}
+	options := p.Options
 	if options.Temperature == nil {
 		t := s.Provider.Temperature()
 		options.Temperature = &t
 	}
 	counts := map[int]bool{}
-	for _, in := range inputs {
+	for _, in := range p.Inputs {
 		counts[len(in.Images)] = true
 	}
 	hashes := map[string]string{}
@@ -394,21 +435,22 @@ func (s *Service) CreateRun(ctx context.Context, req CreateRequest) (*domain.Ben
 		thinking = "explicit"
 	}
 	endpoint := s.Provider.EndpointFingerprint()
-	m := manifest{Engine: "go", Options: options, Tags: orEmpty(tags), Inputs: inputs, Provider: s.Provider.Kind(),
+	m := manifest{Engine: "go", Options: options, Tags: orEmpty(tags), Inputs: p.Inputs, Provider: s.Provider.Kind(),
 		EndpointFingerprint: &endpoint, PromptHashes: hashes, ValidationSchemaSHA: llm.SchemaSHA256(), ThinkingDefault: thinking}
 	raw, err := json.Marshal(m)
 	if err != nil {
 		return nil, err
 	}
 	digests := map[string]*string{}
-	for _, id := range selected {
-		digests[id] = available[id].Digest
+	for _, id := range p.Selected {
+		digests[id] = p.Available[id].Digest
 	}
 	return st.CreateBenchmarkRun(ctx, store.NewBenchmarkRun{
-		ModelIDs: dedupe(selected), ReceiptIDs: receiptIDs, Fingerprint: DatasetFingerprint(expected), ModelDigests: digests,
-		TimeoutSeconds: req.TimeoutSeconds, Policy: req.CouncilPolicy, AbsoluteThreshold: req.AbsoluteThreshold,
-		RelativeThreshold: req.RelativeThreshold, ApplyFlags: req.ApplyCouncilFlags,
+		ModelIDs: dedupe(p.Selected), ReceiptIDs: p.ReceiptIDs, Fingerprint: DatasetFingerprint(p.Expected), ModelDigests: digests,
+		TimeoutSeconds: p.Settings.TimeoutSeconds, Policy: p.Settings.Policy, AbsoluteThreshold: p.Settings.AbsoluteThreshold,
+		RelativeThreshold: p.Settings.RelativeThreshold, ApplyFlags: p.Settings.ApplyFlags,
 		PromptVersion: PromptVersion, ScoringVersion: DetailScoringVersion, Manifest: raw,
+		ParentRunID: p.Parent, Label: p.Label,
 	})
 }
 

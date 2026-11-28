@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tendstead/vision-bill/internal/llm"
 	"github.com/tendstead/vision-bill/internal/store"
 )
 
@@ -324,5 +325,191 @@ func TestBenchmarkTasksRunModelByModel(t *testing.T) {
 	}
 	if got := strings.Join(order, ","); got != "vis:2,vis:2,vis:2,vis:1,vis:1,vis:1" {
 		t.Fatalf("model order %s", got)
+	}
+}
+
+// setDigests re-publishes the fake models with a digest (set resets them).
+func (e *testEnv) setDigests(digest string) {
+	e.provider.mu.Lock()
+	defer e.provider.mu.Unlock()
+	d := digest
+	e.provider.models = []llm.ModelInfo{{ID: "vis:1", Digest: &d}, {ID: "vis:2", Digest: &d}}
+}
+
+func TestBenchmarkRerunAndCompare(t *testing.T) {
+	e := newEnv(t, true)
+	admin, user := e.user(t, "admin", true), e.user(t, "user", false)
+	r1 := e.verifiedReceiptWithPhoto(t, user, pngData)
+	r2 := e.verifiedReceiptWithPhoto(t, user, append(append([]byte{}, pngData...), 9))
+	ctx := context.Background()
+
+	e.provider.set(false, modelReceipt)
+	e.setDigests("sha-a")
+	a := e.do("POST", "/api/v1/benchmarks", `{"model_ids": ["vis:1"], "label": "baseline", "experiment": {"temperature": 0.2}}`, admin.cookie).json(t)
+	runA := a["id"].(string)
+	if a["label"] != "baseline" || a["parent_run_id"] != nil || a["comparison_id"] != nil {
+		t.Fatalf("run %v", a)
+	}
+	e.drain(t)
+
+	// Rerun with a changed setting: same frozen receipts, parent recorded.
+	rr := e.do("POST", "/api/v1/benchmarks/"+runA+"/rerun", `{"label": "warm", "experiment": {"temperature": 0.7}}`, admin.cookie)
+	if rr.Code != 202 {
+		t.Fatalf("rerun: %d %s", rr.Code, rr.Body)
+	}
+	c := rr.json(t)
+	runC := c["id"].(string)
+	opts := c["experiment"].(map[string]any)["options"].(map[string]any)
+	if rr.Header().Get("Location") != "/api/v1/benchmarks/"+runC || c["parent_run_id"] != runA || c["label"] != "warm" ||
+		opts["temperature"] != 0.7 || opts["include_classification"] != true || len(c["receipt_ids"].([]any)) != 2 ||
+		c["dataset_fingerprint"] != a["dataset_fingerprint"] || len(c["changes"].([]any)) != 0 || c["model_ids"].([]any)[0] != "vis:1" {
+		t.Fatalf("rerun body %v", c)
+	}
+	e.drain(t)
+
+	cmp := e.do("GET", "/api/v1/benchmarks/compare?runs="+runA+","+runC, nil, admin.cookie)
+	if cmp.Code != 200 {
+		t.Fatalf("compare: %d %s", cmp.Code, cmp.Body)
+	}
+	cj := cmp.json(t)
+	comparable := cj["comparable"].(map[string]any)
+	varied := map[string]bool{}
+	for _, v := range cj["varied"].([]any) {
+		varied[v.(map[string]any)["field"].(string)] = true
+	}
+	runs := cj["runs"].([]any)
+	if cj["baseline_run_id"] != runA || comparable["comparable"] != true || len(comparable["reasons"].([]any)) != 0 ||
+		!varied["temperature"] || !varied["label"] || varied["think"] || len(runs) != 2 || len(cj["receipts"].([]any)) != 2 {
+		t.Fatalf("compare body %s", cmp.Body)
+	}
+	if runs[0].(map[string]any)["baseline_run_id"] != nil || runs[1].(map[string]any)["baseline_run_id"] != runA ||
+		len(runs[1].(map[string]any)["deltas"].([]any)) != 1 {
+		t.Fatalf("baselines %v", runs)
+	}
+	for _, rc := range cj["receipts"].([]any) {
+		cells := rc.(map[string]any)["cells"].([]any)
+		if len(cells) != 2 {
+			t.Fatalf("cells %v", cells)
+		}
+		cell := cells[1].(map[string]any)
+		if cell["run_id"] != runC || cell["success"] != true || cell["score"] != 1.0 || cell["score_delta"] != 0.0 ||
+			cell["model_digest"] != "sha-a" || cell["latency_ms"] == nil || cell["attempts"] != 1.0 {
+			t.Fatalf("cell %v", cell)
+		}
+	}
+
+	// The model is updated, one receipt is deleted and another edited since.
+	e.setDigests("sha-b")
+	if r := e.do("DELETE", "/api/v1/receipts/"+r2, nil, user.cookie); r.Code != 200 {
+		t.Fatalf("delete: %d %s", r.Code, r.Body)
+	}
+	if _, err := e.st.Pool.Exec(ctx, `UPDATE receipts SET merchant_name = 'Edited' WHERE id = $1::uuid`, r1); err != nil {
+		t.Fatal(err)
+	}
+	rd := e.do("POST", "/api/v1/benchmarks/"+runA+"/rerun", `{}`, admin.cookie)
+	if rd.Code != 202 {
+		t.Fatalf("rerun after changes: %d %s", rd.Code, rd.Body)
+	}
+	d := rd.json(t)
+	runD := d["id"].(string)
+	got := map[string]string{}
+	for _, ch := range d["changes"].([]any) {
+		m := ch.(map[string]any)
+		got[m["receipt_id"].(string)] = m["change"].(string)
+	}
+	if len(got) != 2 || got[r1] != "expected_changed" || got[r2] != "deleted" || len(d["receipt_ids"].([]any)) != 1 ||
+		d["dataset_fingerprint"] == a["dataset_fingerprint"] || d["experiment"].(map[string]any)["options"].(map[string]any)["temperature"] != 0.2 {
+		t.Fatalf("changes %v", d)
+	}
+	e.drain(t)
+	// The frozen expected value is kept, so the edit does not change the score.
+	items := e.do("GET", "/api/v1/benchmarks/"+runD+"/results", nil, admin.cookie).json2(t)
+	if len(items) != 1 || items[0]["success"] != true || items[0]["scores"].(map[string]any)["normalized"] != 1.0 {
+		t.Fatalf("rerun results %v", items)
+	}
+
+	cmp = e.do("GET", "/api/v1/benchmarks/compare?runs="+runA+","+runD, nil, admin.cookie)
+	cj = cmp.json(t)
+	codes := map[string]bool{}
+	for _, r := range cj["comparable"].(map[string]any)["reasons"].([]any) {
+		m := r.(map[string]any)
+		codes[m["code"].(string)] = true
+		if m["code"] == "model_digest_changed" && (m["model_id"] != "vis:1" || m["run_ids"].([]any)[0] != runD) {
+			t.Fatalf("reason %v", m)
+		}
+	}
+	if cmp.Code != 200 || cj["comparable"].(map[string]any)["comparable"] != false || !codes["model_digest_changed"] ||
+		!codes["dataset_changed"] || len(codes) != 2 {
+		t.Fatalf("not comparable: %s", cmp.Body)
+	}
+
+	// An unfinished run is reported as partial.
+	runE := e.do("POST", "/api/v1/benchmarks/"+runD+"/rerun", `{"model_ids": ["vis:2"]}`, admin.cookie).json(t)["id"].(string)
+	cj = e.do("GET", "/api/v1/benchmarks/compare?runs="+runD+","+runE, nil, admin.cookie).json(t)
+	if cj["comparable"].(map[string]any)["comparable"] != false || cj["comparable"].(map[string]any)["reasons"].([]any)[0].(map[string]any)["code"] != "run_incomplete" {
+		t.Fatalf("incomplete: %v", cj["comparable"])
+	}
+}
+
+func TestBenchmarkRerunAndCompareValidation(t *testing.T) {
+	e := newEnv(t, true)
+	admin, user := e.user(t, "admin", true), e.user(t, "user", false)
+	rid := e.verifiedReceiptWithPhoto(t, user, pngData)
+	e.provider.set(false, modelReceipt)
+	run := e.do("POST", "/api/v1/benchmarks", `{"model_ids": ["vis:1"]}`, admin.cookie).json(t)["id"].(string)
+	const unknown = "99999999-9999-9999-9999-999999999999"
+
+	if r := e.do("POST", "/api/v1/benchmarks/"+run+"/rerun", `{}`, user.cookie); r.Code != 403 {
+		t.Fatalf("non-admin rerun: %d", r.Code)
+	}
+	if r := e.do("GET", "/api/v1/benchmarks/compare?runs="+run+","+run, nil, user.cookie); r.Code != 403 {
+		t.Fatalf("non-admin compare: %d", r.Code)
+	}
+	for url, want := range map[string]int{
+		"/api/v1/benchmarks/compare":                             422,
+		"/api/v1/benchmarks/compare?runs=" + run:                 422,
+		"/api/v1/benchmarks/compare?runs=" + run + "," + run:     422,
+		"/api/v1/benchmarks/compare?runs=" + run + ",nope":       422,
+		"/api/v1/benchmarks/compare?runs=" + run + "," + unknown: 404,
+	} {
+		if r := e.do("GET", url, nil, admin.cookie); r.Code != want {
+			t.Errorf("%s: %d %s", url, r.Code, r.Body)
+		}
+	}
+	for body, want := range map[string]int{
+		`{"model_ids": ["nope"]}`:             422,
+		`{"label": ""}`:                       422,
+		`{"label": 5}`:                        422,
+		`{"experiment": {"temperature": 5}}`:  422,
+		`{"experiment": {"pipeline": "ocr"}}`: 422,
+		`{"model_ids": "vis:1"}`:              422,
+	} {
+		if r := e.do("POST", "/api/v1/benchmarks/"+run+"/rerun", body, admin.cookie); r.Code != want {
+			t.Errorf("%s: %d %s", body, r.Code, r.Body)
+		}
+	}
+	if r := e.do("POST", "/api/v1/benchmarks/"+unknown+"/rerun", `{}`, admin.cookie); r.Code != 404 {
+		t.Fatalf("unknown parent: %d", r.Code)
+	}
+
+	// Runs without frozen inputs cannot be rerun.
+	legacy, err := e.st.CreateBenchmarkRun(context.Background(), store.NewBenchmarkRun{
+		ModelIDs: []string{"vis:1"}, ReceiptIDs: []string{rid}, Fingerprint: "legacy", ModelDigests: map[string]*string{"vis:1": nil},
+		TimeoutSeconds: 30, Policy: "all", PromptVersion: "3", ScoringVersion: "2",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := e.do("POST", "/api/v1/benchmarks/"+legacy.ID+"/rerun", `{}`, admin.cookie); r.Code != 422 ||
+		!strings.Contains(r.Body.String(), "cannot be rerun") {
+		t.Fatalf("legacy rerun: %d %s", r.Code, r.Body)
+	}
+	cj := e.do("GET", "/api/v1/benchmarks/compare?runs="+run+","+legacy.ID, nil, admin.cookie).json(t)
+	codes := map[string]bool{}
+	for _, r := range cj["comparable"].(map[string]any)["reasons"].([]any) {
+		codes[r.(map[string]any)["code"].(string)] = true
+	}
+	if !codes["legacy_run"] || !codes["dataset_changed"] || !codes["scoring_changed"] {
+		t.Fatalf("legacy compare: %v", cj["comparable"])
 	}
 }

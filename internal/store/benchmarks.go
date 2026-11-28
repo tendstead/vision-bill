@@ -25,10 +25,16 @@ type NewBenchmarkRun struct {
 	PromptVersion     string
 	ScoringVersion    string
 	Manifest          json.RawMessage // nil for legacy runs
+	ParentRunID       *string
+	Label             *string
+	ComparisonID      *string
+	ComparisonArm     *string
+	VariantIndex      *int
 }
 
 const runCols = `id::text, status, model_ids, receipt_ids, dataset_fingerprint, prompt_version, scoring_version,
-	council_policy, apply_council_flags, created_at, completed_at, experiment_manifest`
+	council_policy, apply_council_flags, created_at, completed_at, experiment_manifest,
+	parent_run_id::text, label, comparison_id::text, comparison_arm, variant_index`
 
 func scanRun(row pgx.Row) (*domain.BenchmarkRun, error) {
 	var r domain.BenchmarkRun
@@ -36,7 +42,8 @@ func scanRun(row pgx.Row) (*domain.BenchmarkRun, error) {
 	var created time.Time
 	var completed *time.Time
 	if err := row.Scan(&r.ID, &r.Status, &models, &receipts, &r.DatasetFingerprint, &r.PromptVersion, &r.ScoringVersion,
-		&r.CouncilPolicy, &r.ApplyCouncilFlags, &created, &completed, &manifest); err != nil {
+		&r.CouncilPolicy, &r.ApplyCouncilFlags, &created, &completed, &manifest,
+		&r.ParentRunID, &r.Label, &r.ComparisonID, &r.ComparisonArm, &r.VariantIndex); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
@@ -77,10 +84,13 @@ func (s *Store) CreateBenchmarkRun(ctx context.Context, n NewBenchmarkRun) (*dom
 		var id string
 		if err := tx.QueryRow(ctx, `INSERT INTO benchmark_runs
 			(model_ids, receipt_ids, dataset_fingerprint, model_digests, request_timeout_seconds, council_policy,
-			 council_absolute_threshold, council_relative_threshold, apply_council_flags, prompt_version, scoring_version, experiment_manifest)
-			VALUES ($1::jsonb,$2::jsonb,$3,$4::jsonb,$5,$6,$7::numeric,$8::numeric,$9,$10,$11,$12::jsonb) RETURNING id::text`,
+			 council_absolute_threshold, council_relative_threshold, apply_council_flags, prompt_version, scoring_version, experiment_manifest,
+			 parent_run_id, label, comparison_id, comparison_arm, variant_index)
+			VALUES ($1::jsonb,$2::jsonb,$3,$4::jsonb,$5,$6,$7::numeric,$8::numeric,$9,$10,$11,$12::jsonb,
+			        $13::uuid,$14,$15::uuid,$16,$17) RETURNING id::text`,
 			string(models), string(receipts), n.Fingerprint, string(digests), n.TimeoutSeconds, n.Policy,
-			n.AbsoluteThreshold, n.RelativeThreshold, n.ApplyFlags, n.PromptVersion, n.ScoringVersion, manifest).Scan(&id); err != nil {
+			n.AbsoluteThreshold, n.RelativeThreshold, n.ApplyFlags, n.PromptVersion, n.ScoringVersion, manifest,
+			n.ParentRunID, n.Label, n.ComparisonID, n.ComparisonArm, n.VariantIndex).Scan(&id); err != nil {
 			return err
 		}
 		for _, m := range n.ModelIDs {
@@ -343,4 +353,62 @@ func (s *Store) BenchmarkResults(ctx context.Context, id string, limit, offset i
 // extraction together with the path of its first photo.
 func (s *Store) ReceiptForBenchmark(ctx context.Context, receiptID string) (*domain.ReceiptWithDetails, error) {
 	return s.ReceiptDetails(ctx, receiptID, Scope{CanSeeAll: true})
+}
+
+// BenchmarkRunSettings are the run-level settings a rerun inherits.
+type BenchmarkRunSettings struct {
+	TimeoutSeconds    int
+	Policy            string
+	AbsoluteThreshold *string
+	RelativeThreshold *string
+	ApplyFlags        bool
+}
+
+// BenchmarkSettings returns the timeout and council settings of a run.
+func (s *Store) BenchmarkSettings(ctx context.Context, id string) (BenchmarkRunSettings, error) {
+	var b BenchmarkRunSettings
+	err := s.Pool.QueryRow(ctx, `SELECT request_timeout_seconds, council_policy, council_absolute_threshold::text,
+		council_relative_threshold::text, apply_council_flags FROM benchmark_runs WHERE id = $1::uuid`, id).
+		Scan(&b.TimeoutSeconds, &b.Policy, &b.AbsoluteThreshold, &b.RelativeThreshold, &b.ApplyFlags)
+	return b, err
+}
+
+// BenchmarkCell is the compact outcome of one (model, receipt) task, without
+// the bulky expected/actual payloads.
+type BenchmarkCell struct {
+	ModelID   string
+	ReceiptID string
+	Success   bool
+	Scores    map[string]any
+	ElapsedMS *float64
+	Calls     int
+	Error     *string
+}
+
+// BenchmarkCells returns every stored task outcome of a run.
+func (s *Store) BenchmarkCells(ctx context.Context, id string) ([]BenchmarkCell, error) {
+	rows, err := s.Pool.Query(ctx, `SELECT model_id, receipt_id::text, success, payload->'scores',
+		(payload->'metadata'->>'elapsed_ms')::float8,
+		CASE WHEN jsonb_typeof(payload->'metadata'->'calls') = 'array' THEN jsonb_array_length(payload->'metadata'->'calls') ELSE 0 END,
+		payload->>'error'
+		FROM benchmark_results WHERE run_id = $1::uuid ORDER BY model_id, receipt_id`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []BenchmarkCell{}
+	for rows.Next() {
+		var c BenchmarkCell
+		var scores []byte
+		if err := rows.Scan(&c.ModelID, &c.ReceiptID, &c.Success, &scores, &c.ElapsedMS, &c.Calls, &c.Error); err != nil {
+			return nil, err
+		}
+		if len(scores) > 0 && string(scores) != "null" {
+			if err := json.Unmarshal(scores, &c.Scores); err != nil {
+				return nil, err
+			}
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }

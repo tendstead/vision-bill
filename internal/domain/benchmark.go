@@ -14,6 +14,11 @@ type BenchmarkRun struct {
 	CreatedAt          Timestamp      `json:"created_at"`
 	CompletedAt        *Timestamp     `json:"completed_at"`
 	Experiment         map[string]any `json:"experiment"`
+	ParentRunID        *string        `json:"parent_run_id"`
+	Label              *string        `json:"label"`
+	ComparisonID       *string        `json:"comparison_id"`
+	ComparisonArm      *string        `json:"comparison_arm"`
+	VariantIndex       *int           `json:"variant_index"`
 }
 
 // BenchmarkSummary aggregates one model's results within a run.
