@@ -28,6 +28,7 @@ const cell = (
 	generation_ms: null,
 	attempts: 1,
 	error: null,
+	error_kind: null,
 	...extra
 });
 const info = (id: string, label: string) => ({
@@ -48,6 +49,8 @@ const summary = (score: number, failed: number) => [
 		succeeded: 2 - failed,
 		failed,
 		average_score: score,
+		average_confidence: 90,
+		council_findings: 0,
 		average_latency_ms: 1200
 	}
 ];

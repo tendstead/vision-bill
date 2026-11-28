@@ -2,6 +2,7 @@
 	import { resolve } from '$app/paths';
 	import {
 		cellFor,
+		failureLabel,
 		formatMs,
 		formatPercent,
 		formatPoints,
@@ -100,7 +101,7 @@
 						<title
 							>{shortId(receipt.receipt_id)} · {s.label}: {cell.success
 								? formatPercent(cell.score)
-								: `failed${cell.error ? ` (${cell.error})` : ''}`}</title
+								: `failed (${failureLabel(cell.error_kind)}${cell.error ? `: ${cell.error}` : ''})`}</title
 						>
 					</a>
 				{/if}
@@ -124,7 +125,9 @@
 	>
 		{#if pinned}
 			Receipt {shortId(pinned.receiptId)} · {pinned.series.label}:
-			{pinned.cell.success ? formatPercent(pinned.cell.score) : 'failed'}
+			{pinned.cell.success
+				? formatPercent(pinned.cell.score)
+				: `failed (${failureLabel(pinned.cell.error_kind)}${pinned.cell.error ? `: ${pinned.cell.error}` : ''})`}
 			{#if pinned.cell.score_delta != null}
 				({formatPoints(pinned.cell.score_delta)} vs. baseline){/if}
 			· {formatMs(pinned.cell.latency_ms)} · {pinned.cell.attempts} attempt(s)

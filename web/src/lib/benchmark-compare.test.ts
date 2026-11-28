@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
 	buildSeries,
+	candidateHint,
+	candidateTooltip,
+	failureLabel,
+	orderForCompare,
 	defaultSelection,
 	deltaTone,
 	dumbbellRows,
@@ -25,7 +29,8 @@ const cell = (run: string, model: string, score: number | null): CompareCell => 
 	load_ms: null,
 	generation_ms: null,
 	attempts: 1,
-	error: null
+	error: null,
+	error_kind: null
 });
 const run = (
 	id: string,
@@ -140,5 +145,33 @@ describe('defaultSelection', () => {
 		).toEqual(['o', 'n']);
 		expect(defaultSelection([{ id: 'only', parent_run_id: null }])).toEqual(['only']);
 		expect(defaultSelection([])).toEqual([]);
+	});
+});
+
+describe('failures and candidates', () => {
+	it('labels failure kinds', () => {
+		expect(failureLabel('timeout')).toBe('Timed out');
+		expect(failureLabel('invalid_response')).toBe('Invalid response');
+		expect(failureLabel(null)).toBe('Error');
+	});
+	it('explains a blocked run', () => {
+		const c = {
+			run_id: 'x',
+			comparable: false,
+			selectable: false,
+			reasons: [
+				{ code: 'dataset_changed', message: 'The expected receipts differ', run_ids: ['x'] },
+				{ code: 'model_digest_changed', message: 'updated', run_ids: ['x'], model_id: 'm1' }
+			]
+		};
+		expect(candidateHint(c)).toBe('Different receipts or expected values, Model updated');
+		expect(candidateTooltip(c)).toContain(
+			'Different receipts or expected values: The expected receipts differ'
+		);
+		expect(candidateTooltip(c)).toContain('Model updated (m1): updated');
+	});
+	it('orders the selection oldest first', () => {
+		const runs = [{ id: 'new' }, { id: 'mid' }, { id: 'old' }];
+		expect(orderForCompare(runs, ['new', 'old', 'mid', 'new'])).toEqual(['old', 'mid', 'new']);
 	});
 });

@@ -13,7 +13,10 @@ export type CompareCell = {
 	generation_ms: number | null;
 	attempts: number;
 	error: string | null;
+	error_kind: FailureKind | null;
 };
+export type FailureKind =
+	'timeout' | 'unreadable' | 'invalid_response' | 'inputs_changed' | 'error';
 export type CompareSummary = {
 	model_id: string;
 	model_digest: string | null;
@@ -21,7 +24,9 @@ export type CompareSummary = {
 	succeeded: number;
 	failed: number;
 	average_score: number | null;
+	average_confidence: number | null;
 	average_latency_ms: number | null;
+	council_findings: number;
 };
 export type CompareRunInfo = {
 	id: string;
@@ -30,6 +35,7 @@ export type CompareRunInfo = {
 	receipt_ids: string[];
 	label: string | null;
 	parent_run_id: string | null;
+	comparison_id?: string | null;
 	comparison_arm: string | null;
 	created_at: string;
 };
@@ -225,4 +231,51 @@ export function defaultSelection(
 	if (chain.length < 2 && runs.length > 1) chain.push(runs[1].id);
 	// The oldest run is the baseline (compare treats the first id as baseline).
 	return chain.reverse();
+}
+
+export type Candidate = {
+	run_id: string;
+	comparable: boolean;
+	selectable: boolean;
+	reasons: { code: string; message: string; run_ids: string[]; model_id?: string }[];
+};
+export type Issue = {
+	model_id: string;
+	receipt_id: string;
+	status: string;
+	attempts: number;
+	retry_at: string | null;
+	reason: string;
+};
+
+const FAILURE_TEXT: Record<FailureKind, string> = {
+	timeout: 'Timed out',
+	unreadable: 'Unreadable',
+	invalid_response: 'Invalid response',
+	inputs_changed: 'Inputs changed',
+	error: 'Error'
+};
+const FAILURE_HELP: Record<FailureKind, string> = {
+	timeout: 'The model did not finish within the run timeout.',
+	unreadable: 'The model reported that the photo is not readable as a receipt.',
+	invalid_response: 'The model kept answering with output that is not a valid receipt.',
+	inputs_changed: 'The photo, prompt or schema changed after the run was created.',
+	error: 'The request failed.'
+};
+export const failureLabel = (kind: FailureKind | null | undefined) => FAILURE_TEXT[kind ?? 'error'];
+export const failureHelp = (kind: FailureKind | null | undefined) => FAILURE_HELP[kind ?? 'error'];
+
+/** Tooltip text for a run that cannot be selected next to the main run. */
+export const candidateTooltip = (c: Candidate) =>
+	c.reasons
+		.map((r) => `${reasonTitle(r.code)}${r.model_id ? ` (${r.model_id})` : ''}: ${r.message}`)
+		.join('\n');
+/** Short visible hint next to a run in the picker. */
+export const candidateHint = (c: Candidate) =>
+	[...new Set(c.reasons.map((r) => reasonTitle(r.code)))].join(', ');
+
+/** Selected runs in baseline-first order (oldest first). `runs` is newest first. */
+export function orderForCompare(runs: { id: string }[], ids: string[]): string[] {
+	const age = (id: string) => runs.findIndex((r) => r.id === id);
+	return [...new Set(ids)].sort((a, b) => age(b) - age(a));
 }
