@@ -142,10 +142,25 @@ option if more apps need it.
 
 ## Order of work
 
-1. Migration + rerun + compare API (no UI) with tests.
-2. Provider options + sweeps.
-3. Frontend: tables with links, then charts, then the compare page.
-4. Connections (D), if still wanted.
+**One branch and one PR for the whole topic** (`feat/benchmark-compare`),
+built as a series of separate, individually reviewable commits in this order
+(review commit by commit):
+
+1. [done] Model-major task ordering (`90921adc`).
+2. Migration `003` + `rerun` + `compare` API with tests (started: `5c68048c`).
+3. Provider options + variants/comparison groups (API).
+4. Frontend: tables with receipt links in results/compare/re-evaluation.
+5. Frontend: SVG charts (score per receipt, summary bars, run difference,
+   latency strip) and the compare page.
+6. Connections (D), only if still wanted when we get there; otherwise a
+   follow-up PR.
+7. References and cases (PR #16 overlap), also only if wanted; otherwise a
+   follow-up PR.
+
+Every commit keeps `make lint`, `make test` (and the e2e/Playwright suites
+where it touches the API or UI) green, so the PR can also be merged in pieces
+if it grows too large. Commits that use PR #16 ideas carry the
+`Co-authored-by: David Hupperich` trailer (see the README).
 
 ## Open questions
 

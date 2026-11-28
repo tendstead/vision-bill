@@ -5,14 +5,14 @@ status:
 
 | # | Plan | Status |
 | - | ---- | ------ |
-| 1 | [Comparable benchmarks](01-benchmark-compare.md) | model-major ordering done (`feat/benchmark-compare`); rest planned |
+| 1 | [Comparable benchmarks](01-benchmark-compare.md) | one PR for the whole topic (`feat/benchmark-compare`); ordering done, rerun/compare started |
 | 2 | [Stale and failing queued images](02-stale-images.md) | planned |
 | 3 | [Optional integrations (shopping list, roadbook)](03-integrations.md) | planned, blocked on the other services |
 | 4 | [Cherry-picks from PR #16 (OCR and more)](04-pr16-cherry-picks.md) | inventory done, picks to be decided |
 
 ## Rules for every task
 
-- **Branch and PR per task.** Do not mix tasks; do not start a task before its
+- **Branch and PR per task** (a task may be one PR made of several commits, as for plan 1). Do not mix tasks; do not start a task before its
   open questions are answered.
 - **Additive migrations only** (new nullable/defaulted columns, new tables).
   The `alembic_version` marker stays at `0010`, so anything else breaks the
