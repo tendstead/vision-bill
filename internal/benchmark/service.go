@@ -20,6 +20,7 @@ import (
 
 	"github.com/tendstead/vision-bill/internal/analysis"
 	"github.com/tendstead/vision-bill/internal/domain"
+	"github.com/tendstead/vision-bill/internal/ids"
 	"github.com/tendstead/vision-bill/internal/llm"
 	"github.com/tendstead/vision-bill/internal/store"
 )
@@ -44,6 +45,10 @@ type ExperimentOptions struct {
 	Think                 *bool    `json:"think"`
 	IncludeClassification bool     `json:"include_classification"`
 	AllowOCRFallback      bool     `json:"allow_ocr_fallback"`
+	// ProviderOptions are whitelisted per-request inference options (num_ctx,
+	// num_gpu, seed, ...). They are part of the manifest, so runs show them
+	// as varied settings.
+	ProviderOptions map[string]any `json:"provider_options,omitempty"`
 }
 
 // CreateRequest is a validated run request.
@@ -59,6 +64,17 @@ type CreateRequest struct {
 	AbsoluteThreshold   *string
 	RelativeThreshold   *string
 	ApplyCouncilFlags   bool
+	Label               *string
+	// Variants turn the request into a sweep: one run per variant, all with the
+	// same frozen inputs and a shared comparison_id. Each variant's experiment
+	// overrides Experiment.
+	Variants []Variant
+}
+
+// Variant is one arm of a sweep.
+type Variant struct {
+	Label      *string
+	Experiment ExperimentOverride
 }
 
 // Service creates runs and executes their tasks.
@@ -92,6 +108,18 @@ func (s *Service) log() *slog.Logger {
 // extension that is not part of this build.
 func (s *Service) Capabilities() map[string]bool {
 	return map[string]bool{"ocr_available": false, "thinking_control": s.Provider.SupportsThinking()}
+}
+
+// ProviderOptionInfo lists the per-request inference options the configured
+// provider accepts in experiments.
+type ProviderOptionInfo struct {
+	Provider string           `json:"provider"`
+	Options  []llm.OptionSpec `json:"options"`
+}
+
+// ProviderOptions reports the whitelist of the configured provider.
+func (s *Service) ProviderOptions() ProviderOptionInfo {
+	return ProviderOptionInfo{Provider: s.Provider.Kind(), Options: llm.ProviderOptionSpecs(s.Provider.Kind())}
 }
 
 // Start launches the background worker.
@@ -317,13 +345,12 @@ func (s *Service) captureInput(ctx context.Context, st *store.Store, receiptID s
 	return in, expected, nil
 }
 
-// CreateRun validates the request, freezes the inputs and queues all
-// (model x receipt) tasks.
-func (s *Service) CreateRun(ctx context.Context, req CreateRequest) (*domain.BenchmarkRun, error) {
-	st := s.Store()
+// resolveModels validates the requested model ids (all available models when
+// none are requested) and returns them with the provider's model list.
+func (s *Service) resolveModels(ctx context.Context, requested []string) ([]string, map[string]llm.ModelInfo, error) {
 	models, err := s.Provider.Models(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	available := map[string]llm.ModelInfo{}
 	var order []string
@@ -331,12 +358,12 @@ func (s *Service) CreateRun(ctx context.Context, req CreateRequest) (*domain.Ben
 		available[m.ID] = m
 		order = append(order, m.ID)
 	}
-	selected := req.ModelIDs
+	selected := requested
 	if len(selected) == 0 {
 		selected = order
 	}
 	if len(selected) == 0 {
-		return nil, userErr("No vision models are available")
+		return nil, nil, userErr("No vision models are available")
 	}
 	var unknown []string
 	for _, id := range selected {
@@ -346,7 +373,36 @@ func (s *Service) CreateRun(ctx context.Context, req CreateRequest) (*domain.Ben
 	}
 	if len(unknown) > 0 {
 		sort.Strings(unknown)
-		return nil, userErr("Selected model(s) unavailable: %s", strings.Join(dedupe(unknown), ", "))
+		return nil, nil, userErr("Selected model(s) unavailable: %s", strings.Join(dedupe(unknown), ", "))
+	}
+	return selected, available, nil
+}
+
+// prepareOptions validates the experiment against the provider and
+// normalises its provider options.
+func (s *Service) prepareOptions(o ExperimentOptions) (ExperimentOptions, error) {
+	if o.Think != nil && !s.Provider.SupportsThinking() {
+		return o, userErr("Thinking override is supported only by the Ollama provider")
+	}
+	if o.Pipeline == "ocr" {
+		return o, userErr("OCR extension is not configured; choose normal upload or direct vision")
+	}
+	clean, err := llm.SanitizeProviderOptions(s.Provider.Kind(), o.ProviderOptions)
+	if err != nil {
+		return o, &UserError{err.Error()}
+	}
+	o.ProviderOptions = clean
+	return o, nil
+}
+
+// CreateRun validates the request, freezes the inputs and queues all
+// (model x receipt) tasks. With variants it creates one run per variant (a
+// sweep sharing one comparison_id); otherwise exactly one run.
+func (s *Service) CreateRun(ctx context.Context, req CreateRequest) ([]domain.BenchmarkRun, error) {
+	st := s.Store()
+	selected, available, err := s.resolveModels(ctx, req.ModelIDs)
+	if err != nil {
+		return nil, err
 	}
 	receiptIDs, err := s.selectReceipts(ctx, st, req)
 	if err != nil {
@@ -355,15 +411,33 @@ func (s *Service) CreateRun(ctx context.Context, req CreateRequest) (*domain.Ben
 	if len(receiptIDs) == 0 {
 		return nil, userErr("No verified receipts match the selection")
 	}
-	if req.Experiment.Think != nil && !s.Provider.SupportsThinking() {
-		return nil, userErr("Thinking override is supported only by the Ollama provider")
+	type arm struct {
+		options ExperimentOptions
+		label   *string
+		arm     *string
 	}
-	if req.Experiment.Pipeline == "ocr" {
-		return nil, userErr("OCR extension is not configured; choose normal upload or direct vision")
+	var arms []arm
+	if len(req.Variants) == 0 {
+		o, err := s.prepareOptions(req.Experiment)
+		if err != nil {
+			return nil, err
+		}
+		arms = []arm{{options: o, label: req.Label}}
 	}
-	tags, err := st.ListTags(ctx)
-	if err != nil {
-		return nil, err
+	for i, v := range req.Variants {
+		o, err := s.prepareOptions(v.Experiment.Apply(req.Experiment))
+		if err != nil {
+			return nil, err
+		}
+		name := fmt.Sprintf("variant %d", i+1)
+		if v.Label != nil {
+			name = *v.Label
+		}
+		label := v.Label
+		if label == nil && req.Label != nil {
+			label = req.Label
+		}
+		arms = append(arms, arm{options: o, label: label, arm: &name})
 	}
 	var inputs []manifestInput
 	var expected []*domain.Receipt
@@ -375,14 +449,71 @@ func (s *Service) CreateRun(ctx context.Context, req CreateRequest) (*domain.Ben
 		inputs = append(inputs, in)
 		expected = append(expected, exp)
 	}
+	settings := store.BenchmarkRunSettings{TimeoutSeconds: req.TimeoutSeconds, Policy: req.CouncilPolicy,
+		AbsoluteThreshold: req.AbsoluteThreshold, RelativeThreshold: req.RelativeThreshold, ApplyFlags: req.ApplyCouncilFlags}
+	var comparison *string
+	if len(req.Variants) > 0 {
+		id := ids.UUID()
+		comparison = &id
+	}
+	var news []store.NewBenchmarkRun
+	for i, a := range arms {
+		n, err := s.buildRun(ctx, st, queueParams{
+			Options: a.options, Selected: selected, Available: available, ReceiptIDs: receiptIDs, Inputs: inputs, Expected: expected,
+			Settings: settings, Label: a.label,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if comparison != nil {
+			idx := i
+			n.ComparisonID, n.ComparisonArm, n.VariantIndex = comparison, a.arm, &idx
+		}
+		news = append(news, n)
+	}
+	return st.CreateBenchmarkRuns(ctx, news)
+}
 
-	options := req.Experiment
+// queueParams is a fully validated run with frozen inputs, ready to be stored.
+type queueParams struct {
+	Options    ExperimentOptions
+	Selected   []string
+	Available  map[string]llm.ModelInfo
+	ReceiptIDs []string
+	Inputs     []manifestInput
+	Expected   []*domain.Receipt
+	Settings   store.BenchmarkRunSettings
+	Label      *string
+	Parent     *string
+}
+
+// queueRun builds and stores one run.
+func (s *Service) queueRun(ctx context.Context, st *store.Store, p queueParams) (*domain.BenchmarkRun, error) {
+	n, err := s.buildRun(ctx, st, p)
+	if err != nil {
+		return nil, err
+	}
+	runs, err := st.CreateBenchmarkRuns(ctx, []store.NewBenchmarkRun{n})
+	if err != nil {
+		return nil, err
+	}
+	return &runs[0], nil
+}
+
+// buildRun records the manifest (current prompt, schema and endpoint) of a run.
+func (s *Service) buildRun(ctx context.Context, st *store.Store, p queueParams) (store.NewBenchmarkRun, error) {
+	var zero store.NewBenchmarkRun
+	tags, err := st.ListTags(ctx)
+	if err != nil {
+		return zero, err
+	}
+	options := p.Options
 	if options.Temperature == nil {
 		t := s.Provider.Temperature()
 		options.Temperature = &t
 	}
 	counts := map[int]bool{}
-	for _, in := range inputs {
+	for _, in := range p.Inputs {
 		counts[len(in.Images)] = true
 	}
 	hashes := map[string]string{}
@@ -394,22 +525,23 @@ func (s *Service) CreateRun(ctx context.Context, req CreateRequest) (*domain.Ben
 		thinking = "explicit"
 	}
 	endpoint := s.Provider.EndpointFingerprint()
-	m := manifest{Engine: "go", Options: options, Tags: orEmpty(tags), Inputs: inputs, Provider: s.Provider.Kind(),
+	m := manifest{Engine: "go", Options: options, Tags: orEmpty(tags), Inputs: p.Inputs, Provider: s.Provider.Kind(),
 		EndpointFingerprint: &endpoint, PromptHashes: hashes, ValidationSchemaSHA: llm.SchemaSHA256(), ThinkingDefault: thinking}
 	raw, err := json.Marshal(m)
 	if err != nil {
-		return nil, err
+		return zero, err
 	}
 	digests := map[string]*string{}
-	for _, id := range selected {
-		digests[id] = available[id].Digest
+	for _, id := range p.Selected {
+		digests[id] = p.Available[id].Digest
 	}
-	return st.CreateBenchmarkRun(ctx, store.NewBenchmarkRun{
-		ModelIDs: dedupe(selected), ReceiptIDs: receiptIDs, Fingerprint: DatasetFingerprint(expected), ModelDigests: digests,
-		TimeoutSeconds: req.TimeoutSeconds, Policy: req.CouncilPolicy, AbsoluteThreshold: req.AbsoluteThreshold,
-		RelativeThreshold: req.RelativeThreshold, ApplyFlags: req.ApplyCouncilFlags,
+	return store.NewBenchmarkRun{
+		ModelIDs: dedupe(p.Selected), ReceiptIDs: p.ReceiptIDs, Fingerprint: DatasetFingerprint(p.Expected), ModelDigests: digests,
+		TimeoutSeconds: p.Settings.TimeoutSeconds, Policy: p.Settings.Policy, AbsoluteThreshold: p.Settings.AbsoluteThreshold,
+		RelativeThreshold: p.Settings.RelativeThreshold, ApplyFlags: p.Settings.ApplyFlags,
 		PromptVersion: PromptVersion, ScoringVersion: DetailScoringVersion, Manifest: raw,
-	})
+		ParentRunID: p.Parent, Label: p.Label,
+	}, nil
 }
 
 func orEmpty(s []string) []string {
@@ -448,7 +580,11 @@ func (s *Service) Status(ctx context.Context, id string) (*domain.BenchmarkStatu
 	if err != nil {
 		return nil, err
 	}
-	return &domain.BenchmarkStatus{Run: *run, Queued: q, Running: r, WaitingForModel: w, Retrying: rt, Terminal: term, Summaries: sums}, nil
+	issues, err := st.BenchmarkIssues(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return &domain.BenchmarkStatus{Run: *run, Queued: q, Running: r, WaitingForModel: w, Retrying: rt, Terminal: term, Summaries: sums, Issues: issues}, nil
 }
 
 // Results pages stored task results.
@@ -477,8 +613,8 @@ func parseManifest(raw json.RawMessage) (*manifest, error) {
 // Execute runs one leased task to a terminal outcome or schedules a retry.
 func (s *Service) Execute(ctx context.Context, st *store.Store, task store.BenchmarkTask) {
 	rec := context.WithoutCancel(ctx)
-	retry := func(waiting bool) {
-		if err := st.RetryBenchmarkTask(rec, task, waiting, s.now()); err != nil {
+	retry := func(waiting bool, reason string) {
+		if err := st.RetryBenchmarkTask(rec, task, waiting, s.now(), reason); err != nil {
 			s.log().Error("could not schedule benchmark retry", "err", err)
 		}
 	}
@@ -486,7 +622,7 @@ func (s *Service) Execute(ctx context.Context, st *store.Store, task store.Bench
 	models, err := s.Provider.Models(mctx)
 	cancel()
 	if err != nil {
-		retry(false)
+		retry(false, "The inference server could not be reached to list its models: "+err.Error())
 		return
 	}
 	run, err := st.BenchmarkRun(rec, task.RunID)
@@ -495,7 +631,7 @@ func (s *Service) Execute(ctx context.Context, st *store.Store, task store.Bench
 	}
 	digests, timeout, err := st.BenchmarkMeta(rec, task.RunID)
 	if err != nil {
-		retry(false)
+		retry(false, "Database error while loading the run: "+err.Error())
 		return
 	}
 	var model *llm.ModelInfo
@@ -505,16 +641,16 @@ func (s *Service) Execute(ctx context.Context, st *store.Store, task store.Bench
 		}
 	}
 	if model == nil {
-		retry(true)
+		retry(true, fmt.Sprintf("Model '%s' is not available on the inference server; the task waits until it is back", task.ModelID))
 		return
 	}
 	if want := digests[task.ModelID]; want != nil && *want != "" && model.Digest != nil && *model.Digest != "" && *want != *model.Digest {
-		retry(true)
+		retry(true, fmt.Sprintf("Model '%s' was updated since this run was created (digest differs); the task waits for the original version. Create a new run (rerun) to test the new version.", task.ModelID))
 		return
 	}
 	raw, err := st.BenchmarkManifest(rec, task.RunID)
 	if err != nil {
-		retry(false)
+		retry(false, "Database error while loading the run inputs: "+err.Error())
 		return
 	}
 	deadline := time.Duration(timeout) * time.Second
@@ -525,20 +661,23 @@ func (s *Service) Execute(ctx context.Context, st *store.Store, task store.Bench
 	s.executeLegacy(ctx, rec, st, task, deadline, retry)
 }
 
-func (s *Service) executeLegacy(ctx, rec context.Context, st *store.Store, task store.BenchmarkTask, deadline time.Duration, retry func(bool)) {
-	fail := func() { _ = st.FinishBenchmarkTask(rec, task, store.FinishBenchmark{Success: false, Attempts: 0}) }
+func (s *Service) executeLegacy(ctx, rec context.Context, st *store.Store, task store.BenchmarkTask, deadline time.Duration, retry func(bool, string)) {
+	fail := func(reason string) {
+		payload, _ := json.Marshal(map[string]any{"error": reason, "metadata": map[string]any{}})
+		_ = st.FinishBenchmarkTask(rec, task, store.FinishBenchmark{Success: false, Attempts: 0, Result: payload})
+	}
 	expected, details, err := s.expected(rec, st, task.ReceiptID)
 	if err != nil {
 		var ue *UserError
 		if errors.As(err, &ue) {
-			fail()
+			fail(ue.Msg)
 		} else {
-			retry(false)
+			retry(false, "Database error while loading the receipt: "+err.Error())
 		}
 		return
 	}
 	if details.ImagePath == nil || !fileExists(*details.ImagePath) {
-		fail()
+		fail("Receipt image is unavailable")
 		return
 	}
 	// The deadline starts once an inference slot is held: waiting for a slot
@@ -557,7 +696,7 @@ func (s *Service) executeLegacy(ctx, rec context.Context, st *store.Store, task 
 		return err
 	})
 	if loadFailed {
-		fail()
+		fail("The receipt image could not be prepared for the model: " + err.Error())
 		return
 	}
 	if err != nil {
@@ -565,10 +704,10 @@ func (s *Service) executeLegacy(ctx, rec context.Context, st *store.Store, task 
 		var vf *llm.ValidationFailure
 		switch {
 		case errors.As(err, &unreadable), errors.As(err, &vf), strings.HasPrefix(err.Error(), "Failed to get a valid response"):
-			fail()
+			fail(errKind(err) + ": " + err.Error())
 		default:
 			s.log().Warn("transient benchmark failure", "run", task.RunID, "model", task.ModelID, "receipt", task.ReceiptID, "err", err)
-			retry(false)
+			retry(false, "Transient failure, retrying with backoff: "+err.Error())
 		}
 		return
 	}
@@ -689,7 +828,7 @@ func (s *Service) runExperiment(ctx context.Context, m *manifest, receiptID, mod
 	}
 	var calls []map[string]any
 	var callsMu sync.Mutex
-	copts := llm.ChatOptions{Think: m.Options.Think, Trace: func(t map[string]any) {
+	copts := llm.ChatOptions{Think: m.Options.Think, Options: m.Options.ProviderOptions, Trace: func(t map[string]any) {
 		callsMu.Lock()
 		calls = append(calls, t)
 		callsMu.Unlock()
@@ -746,14 +885,14 @@ func (s *Service) runExperiment(ctx context.Context, m *manifest, receiptID, mod
 	return expected, &experimentResult{Receipt: a.Receipt, Attempts: n, Elapsed: elapsed, Metadata: metadata}, nil
 }
 
-func (s *Service) executeExperiment(ctx, rec context.Context, st *store.Store, task store.BenchmarkTask, raw json.RawMessage, deadline time.Duration, retry func(bool)) {
+func (s *Service) executeExperiment(ctx, rec context.Context, st *store.Store, task store.BenchmarkTask, raw json.RawMessage, deadline time.Duration, retry func(bool, string)) {
 	started := time.Now()
 	m, err := parseManifest(raw)
 	if err == nil {
 		expected, result, timedOut, runErr, waited := s.runInSlot(ctx, deadline, m, task.ReceiptID, task.ModelID)
 		if waited != nil {
 			// Shutting down before a slot was free: nothing ran, try again later.
-			retry(false)
+			retry(false, "Interrupted before an inference slot was free; will retry")
 			return
 		}
 		err = runErr
@@ -770,7 +909,7 @@ func (s *Service) executeExperiment(ctx, rec context.Context, st *store.Store, t
 			return
 		}
 		if timedOut {
-			err = errors.New("TimeoutError")
+			err = fmt.Errorf("TimeoutError: the model did not finish within the run timeout of %d s", int(deadline.Seconds()))
 		}
 	}
 	metadata := map[string]any{}

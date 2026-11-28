@@ -272,6 +272,11 @@ func (o *OpenAI) Chat(ctx context.Context, model string, msgs []Message, opts Ch
 		wire[i] = map[string]any{"role": m.Role, "content": parts}
 	}
 	body := map[string]any{"model": model, "messages": wire, "temperature": o.temperature(), "reasoning_effort": "low"}
+	for _, k := range []string{"seed", "top_p"} {
+		if v, ok := opts.Options[k]; ok {
+			body[k] = v
+		}
+	}
 	started := time.Now()
 	data, err := o.do(ctx, http.MethodPost, "/chat/completions", body)
 	if err != nil {

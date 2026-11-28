@@ -19,13 +19,14 @@ test.describe('admin: benchmarks', () => {
 		// The confirmation dialog is rendered inline (not role="dialog"),
 		// so click the second "Create benchmark" button directly.
 		await page.getByRole('button', { name: 'Create benchmark' }).nth(1).click();
-		await expect(page).toHaveURL(/\/benchmarks\/results$/);
+		await expect(page).toHaveURL(/\/benchmarks\/results/);
 
 		// The run is picked up by the benchmark worker and finishes fast
 		// (the stub answers instantly; ground truth = the verified receipt).
 		await expect(page.getByText('Completed', { exact: true })).toBeVisible();
 		await expect(page.getByText('1 / 1')).toBeVisible({ timeout: 60_000 });
-		await expect(page.getByText('e2e-vision')).toBeVisible();
+		await expect(page.getByTestId('run-picker')).toContainText('e2e-vision');
+		await expect(page.getByTestId('summary-table')).toBeVisible();
 		await page.getByRole('button', { name: 'Load individual results' }).click();
 		const individual = page.locator('summary').filter({ hasText: receiptId });
 		await expect(individual).toContainText('Extraction 100.0%');

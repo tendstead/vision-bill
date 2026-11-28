@@ -727,3 +727,27 @@ func (s *Store) CategorySuggestion(ctx context.Context, userID, merchant, descri
 	}
 	return nil, nil
 }
+
+// ReceiptImageIDs maps the given receipt ids to their image id (nil when the
+// receipt has none). Receipts that do not exist are absent from the map.
+// It ignores ownership: it is meant for admin-only views.
+func (s *Store) ReceiptImageIDs(ctx context.Context, ids []string) (map[string]*string, error) {
+	out := map[string]*string{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := s.Pool.Query(ctx, `SELECT id::text, image_id::text FROM receipts WHERE id = ANY($1::uuid[])`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var image *string
+		if err := rows.Scan(&id, &image); err != nil {
+			return nil, err
+		}
+		out[id] = image
+	}
+	return out, rows.Err()
+}

@@ -14,6 +14,11 @@ type BenchmarkRun struct {
 	CreatedAt          Timestamp      `json:"created_at"`
 	CompletedAt        *Timestamp     `json:"completed_at"`
 	Experiment         map[string]any `json:"experiment"`
+	ParentRunID        *string        `json:"parent_run_id"`
+	Label              *string        `json:"label"`
+	ComparisonID       *string        `json:"comparison_id"`
+	ComparisonArm      *string        `json:"comparison_arm"`
+	VariantIndex       *int           `json:"variant_index"`
 }
 
 // BenchmarkSummary aggregates one model's results within a run.
@@ -40,4 +45,16 @@ type BenchmarkStatus struct {
 	Retrying        int                `json:"retrying"`
 	Terminal        int                `json:"terminal"`
 	Summaries       []BenchmarkSummary `json:"summaries"`
+	// Issues explain tasks that are waiting or being retried.
+	Issues []BenchmarkIssue `json:"issues"`
+}
+
+// BenchmarkIssue is an unfinished task together with the reason it did not finish.
+type BenchmarkIssue struct {
+	ModelID   string     `json:"model_id"`
+	ReceiptID string     `json:"receipt_id"`
+	Status    string     `json:"status"`
+	Attempts  int        `json:"attempts"`
+	RetryAt   *Timestamp `json:"retry_at"`
+	Reason    string     `json:"reason"`
 }

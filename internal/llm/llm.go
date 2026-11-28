@@ -95,6 +95,9 @@ type Provider interface {
 // ChatOptions are per-request options (experiments).
 type ChatOptions struct {
 	Think *bool
+	// Options are whitelisted per-request provider options (see
+	// SanitizeProviderOptions); the provider maps them onto its request.
+	Options map[string]any
 	// Trace, when set, receives request telemetry after every chat call.
 	Trace func(map[string]any)
 }

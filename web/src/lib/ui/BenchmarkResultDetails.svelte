@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { resolve } from '$app/paths';
 	import type { IndividualResult } from '$lib/benchmark-experiments';
 	let { results }: { results: IndividualResult[] } = $props();
 	const percent = (value: number | null | undefined) =>
@@ -14,6 +15,12 @@
 					? `Extraction ${percent(result.scores?.normalized)}`
 					: 'Failed'}</summary
 			>
+			<p class="mt-3 text-sm">
+				Receipt:
+				<a class="font-mono underline" href={resolve(`/receipts/${result.receipt_id}`)}
+					>{result.receipt_id}</a
+				>
+			</p>
 			{#if result.error}<p class="mt-3 text-sm text-error">{result.error}</p>{/if}
 			{#if result.success}
 				<p class="mt-3 text-sm">
