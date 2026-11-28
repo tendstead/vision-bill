@@ -11,6 +11,7 @@
 		type Series
 	} from '$lib/benchmark-compare';
 	import ChartMarker from './ChartMarker.svelte';
+	import { previewProps } from './receipt-preview.svelte';
 
 	let { comparison, series }: { comparison: Comparison; series: Series[] } = $props();
 	const uid = $props.id();
@@ -80,14 +81,22 @@
 		{/each}
 		{#each comparison.receipts as receipt, ri (receipt.receipt_id)}
 			{@const cy = top + ri * rowH + rowH / 2}
-			<text
-				x={left - 8}
-				y={cy + 4}
-				text-anchor="end"
-				font-size="11"
-				font-family="monospace"
-				fill="currentColor">{shortId(receipt.receipt_id)}</text
+			<svelte:element
+				this={receipt.exists ? 'a' : 'g'}
+				href={receipt.exists ? resolve(`/receipts/${receipt.receipt_id}`) : undefined}
+				tabindex={receipt.exists ? -1 : undefined}
+				{...previewProps(receipt.image_id)}
 			>
+				<text
+					x={left - 8}
+					y={cy + 4}
+					text-anchor="end"
+					font-size="11"
+					font-family="monospace"
+					text-decoration={receipt.exists ? 'underline' : 'line-through'}
+					fill="currentColor">{shortId(receipt.receipt_id)}</text
+				>
+			</svelte:element>
 			{#each series as s, si (s.key)}
 				{@const cell = cellFor(receipt, s.runId, s.modelId)}
 				{#if cell?.latency_ms != null}
@@ -114,8 +123,10 @@
 							stroke-width="3"
 						/>
 					{/if}
-					<a
-						href={resolve(`/receipts/${receipt.receipt_id}`)}
+					<svelte:element
+						this={receipt.exists ? 'a' : 'g'}
+						href={receipt.exists ? resolve(`/receipts/${receipt.receipt_id}`) : undefined}
+						{...previewProps(receipt.image_id)}
 						aria-label="Receipt {shortId(receipt.receipt_id)}, {s.label}: {formatMs(
 							cell.latency_ms
 						)}{cell.latency_ms > 3 * median && median > 0 ? ', slow outlier' : ''}"
@@ -128,7 +139,7 @@
 							hollow={!cell.success}
 						/>
 						<title>{tip(receipt.receipt_id, s.label, cell)}</title> >
-					</a>
+					</svelte:element>
 				{/if}
 			{/each}
 		{/each}

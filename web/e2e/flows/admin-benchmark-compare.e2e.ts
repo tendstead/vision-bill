@@ -76,8 +76,25 @@ test.describe('admin: benchmark results, comparison and failures', () => {
 			page.getByTestId('run-details').locator('summary').filter({ hasText: receiptA })
 		).toContainText('Extraction 100.0%');
 
+		// Receipt ids are links; hovering one shows a small thumbnail of the photo.
+		const idLink = page
+			.getByTestId('receipt-table')
+			.getByRole('link', { name: receiptA.slice(0, 8) });
+		await idLink.hover();
+		await expect(page.getByTestId('receipt-preview')).toBeVisible();
+		await page.mouse.move(0, 0);
+		await expect(page.getByTestId('receipt-preview')).toHaveCount(0);
+		await expect(
+			page
+				.getByTestId('chart-score-dots')
+				.getByRole('link', { name: receiptA.slice(0, 8), exact: true })
+		).toHaveAttribute('href', new RegExp(`/receipts/${receiptA}$`));
+
 		// Hovering a dot pins its values; clicking it opens the receipt.
-		const dot = page.getByTestId('chart-score-dots').getByRole('link').first();
+		const dot = page
+			.getByTestId('chart-score-dots')
+			.getByRole('link', { name: /^Receipt .*: / })
+			.first();
 		await dot.focus();
 		await expect(page.getByTestId('chart-pinned')).toContainText(receiptA.slice(0, 8));
 		await dot.click();

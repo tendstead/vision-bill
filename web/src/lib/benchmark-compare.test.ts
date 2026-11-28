@@ -64,9 +64,16 @@ const cmp: Comparison = {
 	receipts: [
 		{
 			receipt_id: 'r1',
+			exists: true,
+			image_id: null,
 			cells: [cell('a', 'm1', 0.5), cell('a', 'm2', 0.9), cell('b', 'm1', 0.75)]
 		},
-		{ receipt_id: 'r2', cells: [cell('a', 'm1', 0.8), cell('b', 'm1', null)] }
+		{
+			receipt_id: 'r2',
+			exists: true,
+			image_id: null,
+			cells: [cell('a', 'm1', 0.8), cell('b', 'm1', null)]
+		}
 	]
 };
 

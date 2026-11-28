@@ -450,6 +450,23 @@ func TestBenchmarkRerunAndCompare(t *testing.T) {
 		t.Fatalf("not comparable: %s", cmp.Body)
 	}
 
+	// Receipts link to their page and thumbnail while they exist; a deleted one is flagged.
+	for _, rc := range cj["receipts"].([]any) {
+		m := rc.(map[string]any)
+		switch m["receipt_id"] {
+		case r1:
+			if m["exists"] != true || m["image_id"] == nil {
+				t.Fatalf("existing receipt: %v", m)
+			}
+		}
+	}
+	both := e.do("GET", "/api/v1/benchmarks/compare?runs="+runA+","+runC, nil, admin.cookie).json(t)
+	for _, rc := range both["receipts"].([]any) {
+		if m := rc.(map[string]any); m["receipt_id"] == r2 && (m["exists"] != false || m["image_id"] != nil) {
+			t.Fatalf("deleted receipt: %v", m)
+		}
+	}
+
 	// An unfinished run is reported as partial.
 	runE := e.do("POST", "/api/v1/benchmarks/"+runD+"/rerun", `{"model_ids": ["vis:2"]}`, admin.cookie).json(t)["id"].(string)
 	cj = e.do("GET", "/api/v1/benchmarks/compare?runs="+runD+","+runE, nil, admin.cookie).json(t)

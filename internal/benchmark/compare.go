@@ -218,8 +218,12 @@ type CompareCell struct {
 
 // CompareReceipt lists the cells of every run for one receipt.
 type CompareReceipt struct {
-	ReceiptID string        `json:"receipt_id"`
-	Cells     []CompareCell `json:"cells"`
+	ReceiptID string `json:"receipt_id"`
+	// Exists is false when the receipt was deleted since the run; ImageID
+	// (for thumbnails) is null then, or when the receipt has no image.
+	Exists  bool          `json:"exists"`
+	ImageID *string       `json:"image_id"`
+	Cells   []CompareCell `json:"cells"`
 }
 
 // VariedField is a setting that differs between the compared runs.
@@ -315,8 +319,13 @@ func (s *Service) Compare(ctx context.Context, ids []string) (*CompareResult, er
 		}
 	}
 	out.Receipts = []CompareReceipt{}
+	images, err := st.ReceiptImageIDs(ctx, order)
+	if err != nil {
+		return nil, err
+	}
 	for _, rid := range order {
-		row := CompareReceipt{ReceiptID: rid, Cells: []CompareCell{}}
+		image, exists := images[rid]
+		row := CompareReceipt{ReceiptID: rid, Exists: exists, ImageID: image, Cells: []CompareCell{}}
 		for _, in := range ins {
 			for _, model := range in.run.ModelIDs {
 				c, ok := in.cells[cellKey(model, rid)]

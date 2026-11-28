@@ -13,6 +13,7 @@
 		type Series
 	} from '$lib/benchmark-compare';
 	import ChartMarker from './ChartMarker.svelte';
+	import { hidePreview, previewProps, showPreview } from './receipt-preview.svelte';
 
 	let { comparison, series }: { comparison: Comparison; series: Series[] } = $props();
 	const uid = $props.id();
@@ -72,24 +73,42 @@
 				opacity="0.08"
 				stroke-dasharray="2 3"
 			/>
-			<text
-				x={left - 8}
-				y={cy + 4}
-				text-anchor="end"
-				font-size="11"
-				font-family="monospace"
-				fill="currentColor">{shortId(receipt.receipt_id)}</text
+			<svelte:element
+				this={receipt.exists ? 'a' : 'g'}
+				href={receipt.exists ? resolve(`/receipts/${receipt.receipt_id}`) : undefined}
+				tabindex={receipt.exists ? -1 : undefined}
+				{...previewProps(receipt.image_id)}
 			>
+				<text
+					x={left - 8}
+					y={cy + 4}
+					text-anchor="end"
+					font-size="11"
+					font-family="monospace"
+					text-decoration={receipt.exists ? 'underline' : 'line-through'}
+					fill="currentColor">{shortId(receipt.receipt_id)}</text
+				>
+			</svelte:element>
 			{#each series as s, si (s.key)}
 				{@const cell = cellFor(receipt, s.runId, s.modelId)}
 				{#if cell}
-					<a
-						href={resolve(`/receipts/${receipt.receipt_id}`)}
+					<!-- svelte-ignore a11y_no_static_element_interactions -->
+					<svelte:element
+						this={receipt.exists ? 'a' : 'g'}
+						href={receipt.exists ? resolve(`/receipts/${receipt.receipt_id}`) : undefined}
 						aria-label="Receipt {shortId(receipt.receipt_id)}, {s.label}: {cell.success
 							? formatPercent(cell.score)
 							: 'failed'}"
-						onpointerenter={() => (pinned = { receiptId: receipt.receipt_id, series: s, cell })}
-						onfocus={() => (pinned = { receiptId: receipt.receipt_id, series: s, cell })}
+						onpointerenter={(e: Event) => {
+							pinned = { receiptId: receipt.receipt_id, series: s, cell };
+							showPreview(receipt.image_id, e.currentTarget as Element);
+						}}
+						onfocus={(e: Event) => {
+							pinned = { receiptId: receipt.receipt_id, series: s, cell };
+							showPreview(receipt.image_id, e.currentTarget as Element);
+						}}
+						onpointerleave={hidePreview}
+						onblur={hidePreview}
 					>
 						<ChartMarker
 							x={x(cell.success ? (cell.score ?? 0) : 0)}
@@ -103,7 +122,7 @@
 								? formatPercent(cell.score)
 								: `failed (${failureLabel(cell.error_kind)}${cell.error ? `: ${cell.error}` : ''})`}</title
 						>
-					</a>
+					</svelte:element>
 				{/if}
 			{/each}
 		{/each}

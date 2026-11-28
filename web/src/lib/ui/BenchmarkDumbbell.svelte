@@ -13,10 +13,12 @@
 		type Series
 	} from '$lib/benchmark-compare';
 	import ChartMarker from './ChartMarker.svelte';
+	import { previewProps } from './receipt-preview.svelte';
 
 	let { comparison, series }: { comparison: Comparison; series: Series[] } = $props();
 	const uid = $props.id();
 	const rows = $derived(dumbbellRows(comparison));
+	const info = $derived(new Map(comparison.receipts.map((r) => [r.receipt_id, r])));
 	const multiModel = $derived(new Set(rows.map((r) => r.modelId)).size > 1);
 	const multiRun = $derived(new Set(rows.map((r) => r.runId)).size > 1);
 	const maxChars = 40;
@@ -85,19 +87,29 @@
 			{#each rows as r, i (`${r.receiptId}:${r.seriesKey}`)}
 				{@const cy = top + i * rowH + rowH / 2}
 				{@const tone = deltaTone(r.delta, true)}
-				<text
-					x={left - 8}
-					y={cy + 4}
-					text-anchor="end"
-					font-size="11"
-					font-family="monospace"
-					fill="currentColor"
-					>{truncateMiddle(rowLabel(r), maxChars)}<title>{rowLabel(r)}</title></text
+				<svelte:element
+					this={info.get(r.receiptId)?.exists ? 'a' : 'g'}
+					href={info.get(r.receiptId)?.exists ? resolve(`/receipts/${r.receiptId}`) : undefined}
+					tabindex={info.get(r.receiptId)?.exists ? -1 : undefined}
+					{...previewProps(info.get(r.receiptId)?.image_id)}
 				>
+					<text
+						x={left - 8}
+						y={cy + 4}
+						text-anchor="end"
+						font-size="11"
+						font-family="monospace"
+						text-decoration="underline"
+						fill="currentColor"
+						>{truncateMiddle(rowLabel(r), maxChars)}<title>{rowLabel(r)}</title></text
+					>
+				</svelte:element>
 				<line x1={x(r.from)} x2={x(r.to)} y1={cy} y2={cy} stroke={colors[tone]} stroke-width="3" />
 				<ChartMarker x={x(r.from)} y={cy} r={4} color={colors[tone]} hollow />
-				<a
-					href={resolve(`/receipts/${r.receiptId}`)}
+				<svelte:element
+					this={info.get(r.receiptId)?.exists ? 'a' : 'g'}
+					href={info.get(r.receiptId)?.exists ? resolve(`/receipts/${r.receiptId}`) : undefined}
+					{...previewProps(info.get(r.receiptId)?.image_id)}
 					aria-label="Receipt {shortId(r.receiptId)}, {r.modelId}: {formatPercent(
 						r.from
 					)} to {formatPercent(r.to)}"
@@ -108,7 +120,7 @@
 							r.delta
 						)})</title
 					>
-				</a>
+				</svelte:element>
 				<text x={W - right + 8} y={cy + 4} font-size="11" fill={colors[tone]}
 					>{formatPoints(r.delta)}</text
 				>

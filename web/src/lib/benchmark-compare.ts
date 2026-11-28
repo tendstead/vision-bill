@@ -51,6 +51,12 @@ export type CompareRun = {
 		failed: number;
 	}[];
 };
+export type CompareReceipt = {
+	receipt_id: string;
+	exists: boolean;
+	image_id: string | null;
+	cells: CompareCell[];
+};
 export type Comparison = {
 	baseline_run_id: string;
 	comparable: {
@@ -59,7 +65,7 @@ export type Comparison = {
 	};
 	varied: { field: string; values: Record<string, unknown> }[];
 	runs: CompareRun[];
-	receipts: { receipt_id: string; cells: CompareCell[] }[];
+	receipts: CompareReceipt[];
 };
 
 /** Okabe-Ito palette: distinguishable with the common colour-vision deficiencies. */
@@ -117,7 +123,7 @@ export function buildSeries(cmp: Comparison): Series[] {
 }
 
 export function cellFor(
-	receipt: Comparison['receipts'][number],
+	receipt: CompareReceipt,
 	runId: string,
 	modelId: string
 ): CompareCell | undefined {

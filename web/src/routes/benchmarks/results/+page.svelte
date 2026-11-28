@@ -3,6 +3,8 @@
 	import { resolve } from '$app/paths';
 	import { onMount } from 'svelte';
 	import { session } from '$lib/auth';
+	import ReceiptLink from '$lib/ui/ReceiptLink.svelte';
+	import ReceiptPreview from '$lib/ui/ReceiptPreview.svelte';
 	import BenchmarkResultDetails from '$lib/ui/BenchmarkResultDetails.svelte';
 	import BenchmarkScoreDots from '$lib/ui/BenchmarkScoreDots.svelte';
 	import BenchmarkSummaryBars from '$lib/ui/BenchmarkSummaryBars.svelte';
@@ -79,6 +81,7 @@
 				)
 			: []
 	);
+	const receiptInfo = (id: string) => comparison?.receipts.find((r) => r.receipt_id === id);
 	const fmt = (value: number | null | undefined, digits = 1) =>
 		value == null ? '—' : value.toFixed(digits);
 
@@ -381,9 +384,11 @@
 					</p>
 					<ul class="list-disc pl-5">
 						{#each changes as c, i (`${c.receipt_id}:${c.change}:${i}`)}<li>
-								<a class="font-mono underline" href={resolve(`/receipts/${c.receipt_id}`)}
-									>{c.receipt_id.slice(0, 8)}</a
-								>
+								<ReceiptLink
+									receiptId={c.receipt_id}
+									imageId={receiptInfo(c.receipt_id)?.image_id ?? null}
+									exists={receiptInfo(c.receipt_id)?.exists ?? true}
+								/>
 								— {c.change.replaceAll('_', ' ')}: {c.detail}
 							</li>{/each}
 					</ul>
@@ -431,9 +436,11 @@
 					{#each status.issues as issue (`${issue.model_id}:${issue.receipt_id}`)}
 						<li>
 							<strong>{issue.model_id}</strong> ·
-							<a class="font-mono underline" href={resolve(`/receipts/${issue.receipt_id}`)}
-								>{shortId(issue.receipt_id)}</a
-							>
+							<ReceiptLink
+								receiptId={issue.receipt_id}
+								imageId={receiptInfo(issue.receipt_id)?.image_id ?? null}
+								exists={receiptInfo(issue.receipt_id)?.exists ?? true}
+							/>
 							· {issue.status.replaceAll('_', ' ')}, {issue.attempts} attempt(s){issue.retry_at
 								? `, next try ${new Date(issue.retry_at).toLocaleTimeString()}`
 								: ''}: {issue.reason}
@@ -587,9 +594,11 @@
 						{#each failures as f (`${f.cell.run_id}:${f.cell.model_id}:${f.receiptId}`)}
 							<tr class="border-t border-outline-variant align-top">
 								<td class="p-2"
-									><a class="font-mono underline" href={resolve(`/receipts/${f.receiptId}`)}
-										>{shortId(f.receiptId)}</a
-									></td
+									><ReceiptLink
+										receiptId={f.receiptId}
+										imageId={receiptInfo(f.receiptId)?.image_id ?? null}
+										exists={receiptInfo(f.receiptId)?.exists ?? true}
+									/></td
 								>
 								<td class="p-2">{f.series?.label ?? f.cell.model_id}</td>
 								<td class="p-2" title={failureHelp(f.cell.error_kind)}
@@ -625,9 +634,11 @@
 					{#each comparison.receipts as receipt (receipt.receipt_id)}
 						<tr class="border-t border-outline-variant">
 							<td class="p-2"
-								><a class="font-mono underline" href={resolve(`/receipts/${receipt.receipt_id}`)}
-									>{shortId(receipt.receipt_id)}</a
-								></td
+								><ReceiptLink
+									receiptId={receipt.receipt_id}
+									imageId={receiptInfo(receipt.receipt_id)?.image_id ?? null}
+									exists={receiptInfo(receipt.receipt_id)?.exists ?? true}
+								/></td
 							>
 							{#each series as s (s.key)}
 								{@const cell = cellFor(receipt, s.runId, s.modelId)}
@@ -692,3 +703,4 @@
 		{/if}
 	{/if}
 </section>
+<ReceiptPreview />

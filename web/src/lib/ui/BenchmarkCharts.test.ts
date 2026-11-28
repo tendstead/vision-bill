@@ -8,6 +8,10 @@ import BenchmarkSummaryBars from './BenchmarkSummaryBars.svelte';
 
 afterEach(cleanup);
 
+// Markers carry an aria-label; the row labels are plain links to the same receipts.
+const markers = () => screen.getAllByRole('link').filter((l) => l.hasAttribute('aria-label'));
+const rowLabels = () => screen.getAllByRole('link').filter((l) => !l.hasAttribute('aria-label'));
+
 const R1 = '11111111-1111-1111-1111-111111111111';
 const R2 = '22222222-2222-2222-2222-222222222222';
 const cell = (
@@ -77,12 +81,19 @@ const comparison: Comparison = {
 	receipts: [
 		{
 			receipt_id: R1,
+			exists: true,
+			image_id: 'img1',
 			cells: [
 				cell('a', R1, 0.5),
 				cell('b', R1, 0.9, { score_delta: 0.4, load_ms: 300, generation_ms: 600, latency_ms: 950 })
 			]
 		},
-		{ receipt_id: R2, cells: [cell('a', R2, 0.8), cell('b', R2, null, { error: 'TimeoutError' })] }
+		{
+			receipt_id: R2,
+			exists: true,
+			image_id: null,
+			cells: [cell('a', R2, 0.8), cell('b', R2, null, { error: 'TimeoutError' })]
+		}
 	]
 };
 const series = buildSeries(comparison);
@@ -90,8 +101,14 @@ const series = buildSeries(comparison);
 describe('benchmark charts', () => {
 	it('score dots: every marker links to its receipt and focus pins the values', async () => {
 		render(BenchmarkScoreDots, { comparison, series });
-		const links = screen.getAllByRole('link');
+		const links = markers();
 		expect(links).toHaveLength(4);
+		// The receipt id in each row is a link too (without being another tab stop).
+		expect(rowLabels().map((l) => l.getAttribute('href'))).toEqual([
+			expect.stringContaining(`/receipts/${R1}`),
+			expect.stringContaining(`/receipts/${R2}`)
+		]);
+		expect(rowLabels()[0].getAttribute('tabindex')).toBe('-1');
 		expect(links[0].getAttribute('href')).toContain(`/receipts/${R1}`);
 		expect(links[3].getAttribute('href')).toContain(`/receipts/${R2}`);
 		expect(links[3].getAttribute('aria-label')).toContain('failed');
@@ -108,9 +125,10 @@ describe('benchmark charts', () => {
 	it('dumbbell: one line per comparable receipt, improvements and totals labelled', () => {
 		render(BenchmarkDumbbell, { comparison, series });
 		// Receipt 2 failed in the later run, so only receipt 1 is paired.
-		const links = screen.getAllByRole('link');
+		const links = markers();
 		expect(links).toHaveLength(1);
 		expect(links[0].getAttribute('href')).toContain(R1);
+		expect(rowLabels()).toHaveLength(1);
 		expect(screen.getByText('+40.0 pp')).toBeTruthy();
 	});
 
@@ -121,7 +139,8 @@ describe('benchmark charts', () => {
 
 	it('latency strip: links per marker and explains the load split', () => {
 		render(BenchmarkLatencyStrip, { comparison, series });
-		expect(screen.getAllByRole('link')).toHaveLength(4); // the failed cell still has a latency
+		expect(markers()).toHaveLength(4); // the failed cell still has a latency
+		expect(rowLabels()).toHaveLength(2);
 		expect(screen.getByText(/Pale bar: model load time/)).toBeTruthy();
 		cleanup();
 		render(BenchmarkLatencyStrip, {
@@ -145,5 +164,19 @@ describe('benchmark charts', () => {
 		expect(root.textContent).toContain('1200 ms');
 		expect(screen.getAllByRole('img')).toHaveLength(1);
 		expect(root.textContent).toContain('Failures');
+	});
+});
+
+describe('receipt preview', () => {
+	it('deleted receipts are not linked and show no preview', () => {
+		const gone: Comparison = {
+			...comparison,
+			receipts: comparison.receipts.map((r) =>
+				r.receipt_id === R2 ? { ...r, exists: false, image_id: null } : r
+			)
+		};
+		render(BenchmarkScoreDots, { comparison: gone, series });
+		expect(markers()).toHaveLength(2); // only receipt 1 is linked
+		expect(rowLabels()).toHaveLength(1);
 	});
 });
