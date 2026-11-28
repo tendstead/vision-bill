@@ -123,7 +123,11 @@ func TestBenchmarkRerunAndCompare(t *testing.T) {
 	if len(cells) != 2 || str(cells[1], "run_id") != secondID || mp(cells[1])["score"] != float64(1) || mp(cells[1])["score_delta"] != float64(0) {
 		t.Fatalf("%v", cells)
 	}
-	a.Get("/benchmarks/compare?runs=" + firstID).Is(422)
+	a.Get("/benchmarks/compare").Is(422)
+	a.Get("/benchmarks/compare?runs=" + firstID).Is(200)
+	if c := a.Get("/benchmarks/" + secondID + "/candidates").Is(200).L(); len(c) != 1 || c[0].(map[string]any)["selectable"] != true {
+		t.Fatalf("%v", c)
+	}
 	a.Post("/benchmarks/"+ids.UUID()+"/rerun", map[string]any{}).Is(404)
 }
 

@@ -1184,14 +1184,14 @@
      "Benchmarks"
     ],
     "summary": "Compare Benchmark Runs",
-    "description": "Compare 2-10 runs. The first run is the baseline unless a run's parent is part of the comparison. Runs are directly comparable only when dataset fingerprint, model digest, prompt/schema version, scoring version and council policy match; otherwise the reasons say which part differs.",
+    "description": "Compare 1-10 runs (one run gives its cells and charts without a baseline). Cells of failed tasks carry `error` and `error_kind` (timeout, unreadable, invalid_response, inputs_changed, error). The first run is the baseline unless a run's parent is part of the comparison. Runs are directly comparable only when dataset fingerprint, model digest, prompt/schema version, scoring version and council policy match; otherwise the reasons say which part differs.",
     "operationId": "compare_benchmark_runs_api_v1_benchmarks_compare_get",
     "parameters": [
      {
       "name": "runs",
       "in": "query",
       "required": true,
-      "description": "Comma-separated run ids (2-10).",
+      "description": "Comma-separated run ids (1-10).",
       "schema": {
        "type": "string",
        "title": "Runs"
@@ -1382,6 +1382,56 @@
         }
        }
       }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/benchmarks/{run_id}/candidates": {
+   "get": {
+    "tags": [
+     "Benchmarks"
+    ],
+    "summary": "Benchmark Compare Candidates",
+    "description": "Evaluates every other run against this (main) run with the compare rule. Runs with blocking reasons (other receipts or expected values, prompt, schema, scoring or council policy, unfinished) are not selectable; a changed model digest is reported but stays selectable.",
+    "operationId": "benchmark_compare_candidates_api_v1_benchmarks__run_id__candidates_get",
+    "parameters": [
+     {
+      "name": "run_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "format": "uuid",
+       "title": "Run Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "items": {
+          "$ref": "#/components/schemas/BenchmarkCandidate"
+         },
+         "type": "array"
+        }
+       }
+      }
+     },
+     "404": {
+      "description": "Run not found"
      },
      "422": {
       "description": "Validation Error",
@@ -2486,6 +2536,13 @@
       },
       "type": "array",
       "title": "Summaries"
+     },
+     "issues": {
+      "items": {
+       "$ref": "#/components/schemas/BenchmarkIssue"
+      },
+      "type": "array",
+      "title": "Issues"
      }
     },
     "type": "object",
@@ -2496,7 +2553,8 @@
      "waiting_for_model",
      "retrying",
      "terminal",
-     "summaries"
+     "summaries",
+     "issues"
     ],
     "title": "BenchmarkStatus"
    },
@@ -5146,6 +5204,88 @@
      "options"
     ],
     "title": "BenchmarkProviderOptions"
+   },
+   "BenchmarkIssue": {
+    "properties": {
+     "model_id": {
+      "type": "string",
+      "title": "Model Id"
+     },
+     "receipt_id": {
+      "type": "string",
+      "format": "uuid",
+      "title": "Receipt Id"
+     },
+     "status": {
+      "type": "string",
+      "title": "Status"
+     },
+     "attempts": {
+      "type": "integer",
+      "title": "Attempts"
+     },
+     "retry_at": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "date-time"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Retry At"
+     },
+     "reason": {
+      "type": "string",
+      "title": "Reason"
+     }
+    },
+    "type": "object",
+    "required": [
+     "model_id",
+     "receipt_id",
+     "status",
+     "attempts",
+     "reason"
+    ],
+    "title": "BenchmarkIssue",
+    "description": "A task that has not finished, with the reason (server unreachable, model missing or updated, transient failure)."
+   },
+   "BenchmarkCandidate": {
+    "properties": {
+     "run_id": {
+      "type": "string",
+      "format": "uuid",
+      "title": "Run Id"
+     },
+     "comparable": {
+      "type": "boolean",
+      "title": "Comparable",
+      "description": "Strict rule: nothing differs."
+     },
+     "selectable": {
+      "type": "boolean",
+      "title": "Selectable",
+      "description": "False when a reason blocks the comparison; a model update alone stays selectable."
+     },
+     "reasons": {
+      "items": {
+       "type": "object",
+       "additionalProperties": true
+      },
+      "type": "array",
+      "title": "Reasons"
+     }
+    },
+    "type": "object",
+    "required": [
+     "run_id",
+     "comparable",
+     "selectable",
+     "reasons"
+    ],
+    "title": "BenchmarkCandidate"
    }
   }
  }

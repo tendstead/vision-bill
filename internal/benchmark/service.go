@@ -580,7 +580,11 @@ func (s *Service) Status(ctx context.Context, id string) (*domain.BenchmarkStatu
 	if err != nil {
 		return nil, err
 	}
-	return &domain.BenchmarkStatus{Run: *run, Queued: q, Running: r, WaitingForModel: w, Retrying: rt, Terminal: term, Summaries: sums}, nil
+	issues, err := st.BenchmarkIssues(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return &domain.BenchmarkStatus{Run: *run, Queued: q, Running: r, WaitingForModel: w, Retrying: rt, Terminal: term, Summaries: sums, Issues: issues}, nil
 }
 
 // Results pages stored task results.
@@ -609,8 +613,8 @@ func parseManifest(raw json.RawMessage) (*manifest, error) {
 // Execute runs one leased task to a terminal outcome or schedules a retry.
 func (s *Service) Execute(ctx context.Context, st *store.Store, task store.BenchmarkTask) {
 	rec := context.WithoutCancel(ctx)
-	retry := func(waiting bool) {
-		if err := st.RetryBenchmarkTask(rec, task, waiting, s.now()); err != nil {
+	retry := func(waiting bool, reason string) {
+		if err := st.RetryBenchmarkTask(rec, task, waiting, s.now(), reason); err != nil {
 			s.log().Error("could not schedule benchmark retry", "err", err)
 		}
 	}
@@ -618,7 +622,7 @@ func (s *Service) Execute(ctx context.Context, st *store.Store, task store.Bench
 	models, err := s.Provider.Models(mctx)
 	cancel()
 	if err != nil {
-		retry(false)
+		retry(false, "The inference server could not be reached to list its models: "+err.Error())
 		return
 	}
 	run, err := st.BenchmarkRun(rec, task.RunID)
@@ -627,7 +631,7 @@ func (s *Service) Execute(ctx context.Context, st *store.Store, task store.Bench
 	}
 	digests, timeout, err := st.BenchmarkMeta(rec, task.RunID)
 	if err != nil {
-		retry(false)
+		retry(false, "Database error while loading the run: "+err.Error())
 		return
 	}
 	var model *llm.ModelInfo
@@ -637,16 +641,16 @@ func (s *Service) Execute(ctx context.Context, st *store.Store, task store.Bench
 		}
 	}
 	if model == nil {
-		retry(true)
+		retry(true, fmt.Sprintf("Model '%s' is not available on the inference server; the task waits until it is back", task.ModelID))
 		return
 	}
 	if want := digests[task.ModelID]; want != nil && *want != "" && model.Digest != nil && *model.Digest != "" && *want != *model.Digest {
-		retry(true)
+		retry(true, fmt.Sprintf("Model '%s' was updated since this run was created (digest differs); the task waits for the original version. Create a new run (rerun) to test the new version.", task.ModelID))
 		return
 	}
 	raw, err := st.BenchmarkManifest(rec, task.RunID)
 	if err != nil {
-		retry(false)
+		retry(false, "Database error while loading the run inputs: "+err.Error())
 		return
 	}
 	deadline := time.Duration(timeout) * time.Second
@@ -657,20 +661,23 @@ func (s *Service) Execute(ctx context.Context, st *store.Store, task store.Bench
 	s.executeLegacy(ctx, rec, st, task, deadline, retry)
 }
 
-func (s *Service) executeLegacy(ctx, rec context.Context, st *store.Store, task store.BenchmarkTask, deadline time.Duration, retry func(bool)) {
-	fail := func() { _ = st.FinishBenchmarkTask(rec, task, store.FinishBenchmark{Success: false, Attempts: 0}) }
+func (s *Service) executeLegacy(ctx, rec context.Context, st *store.Store, task store.BenchmarkTask, deadline time.Duration, retry func(bool, string)) {
+	fail := func(reason string) {
+		payload, _ := json.Marshal(map[string]any{"error": reason, "metadata": map[string]any{}})
+		_ = st.FinishBenchmarkTask(rec, task, store.FinishBenchmark{Success: false, Attempts: 0, Result: payload})
+	}
 	expected, details, err := s.expected(rec, st, task.ReceiptID)
 	if err != nil {
 		var ue *UserError
 		if errors.As(err, &ue) {
-			fail()
+			fail(ue.Msg)
 		} else {
-			retry(false)
+			retry(false, "Database error while loading the receipt: "+err.Error())
 		}
 		return
 	}
 	if details.ImagePath == nil || !fileExists(*details.ImagePath) {
-		fail()
+		fail("Receipt image is unavailable")
 		return
 	}
 	// The deadline starts once an inference slot is held: waiting for a slot
@@ -689,7 +696,7 @@ func (s *Service) executeLegacy(ctx, rec context.Context, st *store.Store, task 
 		return err
 	})
 	if loadFailed {
-		fail()
+		fail("The receipt image could not be prepared for the model: " + err.Error())
 		return
 	}
 	if err != nil {
@@ -697,10 +704,10 @@ func (s *Service) executeLegacy(ctx, rec context.Context, st *store.Store, task 
 		var vf *llm.ValidationFailure
 		switch {
 		case errors.As(err, &unreadable), errors.As(err, &vf), strings.HasPrefix(err.Error(), "Failed to get a valid response"):
-			fail()
+			fail(errKind(err) + ": " + err.Error())
 		default:
 			s.log().Warn("transient benchmark failure", "run", task.RunID, "model", task.ModelID, "receipt", task.ReceiptID, "err", err)
-			retry(false)
+			retry(false, "Transient failure, retrying with backoff: "+err.Error())
 		}
 		return
 	}
@@ -878,14 +885,14 @@ func (s *Service) runExperiment(ctx context.Context, m *manifest, receiptID, mod
 	return expected, &experimentResult{Receipt: a.Receipt, Attempts: n, Elapsed: elapsed, Metadata: metadata}, nil
 }
 
-func (s *Service) executeExperiment(ctx, rec context.Context, st *store.Store, task store.BenchmarkTask, raw json.RawMessage, deadline time.Duration, retry func(bool)) {
+func (s *Service) executeExperiment(ctx, rec context.Context, st *store.Store, task store.BenchmarkTask, raw json.RawMessage, deadline time.Duration, retry func(bool, string)) {
 	started := time.Now()
 	m, err := parseManifest(raw)
 	if err == nil {
 		expected, result, timedOut, runErr, waited := s.runInSlot(ctx, deadline, m, task.ReceiptID, task.ModelID)
 		if waited != nil {
 			// Shutting down before a slot was free: nothing ran, try again later.
-			retry(false)
+			retry(false, "Interrupted before an inference slot was free; will retry")
 			return
 		}
 		err = runErr
@@ -902,7 +909,7 @@ func (s *Service) executeExperiment(ctx, rec context.Context, st *store.Store, t
 			return
 		}
 		if timedOut {
-			err = errors.New("TimeoutError")
+			err = fmt.Errorf("TimeoutError: the model did not finish within the run timeout of %d s", int(deadline.Seconds()))
 		}
 	}
 	metadata := map[string]any{}

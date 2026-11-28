@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 
 	"github.com/tendstead/vision-bill/internal/domain"
 	"github.com/tendstead/vision-bill/internal/store"
@@ -210,6 +211,9 @@ type CompareCell struct {
 	GenerationMS *float64       `json:"generation_ms"` // prompt evaluation plus generation, when reported
 	Attempts     int            `json:"attempts"`
 	Error        *string        `json:"error"`
+	// ErrorKind classifies a failure: timeout, unreadable, invalid_response,
+	// inputs_changed or error. Null for successful cells.
+	ErrorKind *string `json:"error_kind"`
 }
 
 // CompareReceipt lists the cells of every run for one receipt.
@@ -258,38 +262,9 @@ func (s *Service) Compare(ctx context.Context, ids []string) (*CompareResult, er
 	ins := make([]*compareInput, 0, len(ids))
 	byID := map[string]*compareInput{}
 	for _, id := range ids {
-		run, err := st.BenchmarkRun(ctx, id)
+		in, err := loadCompareInput(ctx, st, id, true)
 		if err != nil {
 			return nil, err
-		}
-		if run == nil {
-			return nil, fmt.Errorf("%w: %s", ErrRunNotFound, id)
-		}
-		in := &compareInput{run: *run, cells: map[string]store.BenchmarkCell{}}
-		if in.settings, err = st.BenchmarkSettings(ctx, id); err != nil {
-			return nil, err
-		}
-		if in.digests, _, err = st.BenchmarkMeta(ctx, id); err != nil {
-			return nil, err
-		}
-		raw, err := st.BenchmarkManifest(ctx, id)
-		if err != nil {
-			return nil, err
-		}
-		if raw != nil {
-			if in.manifest, err = parseManifest(raw); err != nil {
-				return nil, err
-			}
-		}
-		if in.sums, err = st.BenchmarkSummaries(ctx, id); err != nil {
-			return nil, err
-		}
-		cells, err := st.BenchmarkCells(ctx, id)
-		if err != nil {
-			return nil, err
-		}
-		for _, c := range cells {
-			in.cells[cellKey(c.ModelID, c.ReceiptID)] = c
 		}
 		ins = append(ins, in)
 		byID[id] = in
@@ -350,6 +325,10 @@ func (s *Service) Compare(ctx context.Context, ids []string) (*CompareResult, er
 				}
 				cell := CompareCell{RunID: in.run.ID, ModelID: model, ModelDigest: in.digests[model], Success: c.Success, Scores: c.Scores,
 					LatencyMS: c.ElapsedMS, LoadMS: c.LoadMS, GenerationMS: c.GenMS, Attempts: max(c.Calls, 1), Error: c.Error}
+				if !c.Success {
+					k := FailureKind(deref(c.Error))
+					cell.ErrorKind = &k
+				}
 				if v, ok := c.Scores["normalized"].(float64); ok && c.Success {
 					cell.Score = &v
 				}
@@ -484,4 +463,122 @@ func variedFields(ins []*compareInput) []VariedField {
 		out = append(out, vf)
 	}
 	return out
+}
+
+func deref(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+// FailureKind classifies a stored failure message for display.
+func FailureKind(msg string) string {
+	switch {
+	case strings.HasPrefix(msg, "TimeoutError"), strings.HasPrefix(msg, "AnalysisTimeoutError"):
+		return "timeout"
+	case strings.HasPrefix(msg, "UnreadableReceiptError"):
+		return "unreadable"
+	case strings.Contains(msg, "Failed to get a valid response"), strings.Contains(msg, "returned a message indicating it cannot process images"):
+		return "invalid_response"
+	case strings.Contains(msg, "changed since run creation"), strings.Contains(msg, "changed since the run"),
+		strings.Contains(msg, "create a new run"), strings.Contains(msg, "absent from the frozen"):
+		return "inputs_changed"
+	}
+	return "error"
+}
+
+func loadCompareInput(ctx context.Context, st *store.Store, id string, withCells bool) (*compareInput, error) {
+	run, err := st.BenchmarkRun(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if run == nil {
+		return nil, fmt.Errorf("%w: %s", ErrRunNotFound, id)
+	}
+	in := &compareInput{run: *run, cells: map[string]store.BenchmarkCell{}}
+	if in.settings, err = st.BenchmarkSettings(ctx, id); err != nil {
+		return nil, err
+	}
+	if in.digests, _, err = st.BenchmarkMeta(ctx, id); err != nil {
+		return nil, err
+	}
+	raw, err := st.BenchmarkManifest(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if raw != nil {
+		if in.manifest, err = parseManifest(raw); err != nil {
+			return nil, err
+		}
+	}
+	if in.sums, err = st.BenchmarkSummaries(ctx, id); err != nil {
+		return nil, err
+	}
+	if withCells {
+		cells, err := st.BenchmarkCells(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		for _, c := range cells {
+			in.cells[cellKey(c.ModelID, c.ReceiptID)] = c
+		}
+	}
+	return in, nil
+}
+
+// Candidate tells whether another run can be selected next to a main run.
+type Candidate struct {
+	RunID string `json:"run_id"`
+	// Comparable is the strict rule; Selectable also allows a model update
+	// (changed digest), which is the main reason to compare a rerun.
+	Comparable bool            `json:"comparable"`
+	Selectable bool            `json:"selectable"`
+	Reasons    []CompareReason `json:"reasons"`
+}
+
+// nonBlocking reasons keep a run selectable; they are still reported.
+var nonBlocking = map[string]bool{"model_digest_changed": true}
+
+// CompareCandidates evaluates every other run against the main run, with the
+// same rule the compare endpoint uses.
+func (s *Service) CompareCandidates(ctx context.Context, mainID string) ([]Candidate, error) {
+	st := s.Store()
+	base, err := loadCompareInput(ctx, st, mainID, false)
+	if err != nil {
+		return nil, err
+	}
+	runs, err := st.BenchmarkRuns(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	out := []Candidate{}
+	for _, r := range runs {
+		if r.ID == mainID {
+			continue
+		}
+		in, err := loadCompareInput(ctx, st, r.ID, false)
+		if err != nil {
+			return nil, err
+		}
+		verdict := s.comparability([]*compareInput{base, in}, func(x *compareInput) *compareInput {
+			if x == in {
+				return base
+			}
+			return nil
+		})
+		c := Candidate{RunID: r.ID, Comparable: verdict.Comparable, Selectable: true, Reasons: []CompareReason{}}
+		for _, reason := range verdict.Reasons {
+			if !contains(reason.RunIDs, r.ID) {
+				continue // a problem of the main run alone does not block others
+			}
+			c.Reasons = append(c.Reasons, reason)
+			if !nonBlocking[reason.Code] {
+				c.Selectable = false
+			}
+		}
+		c.Comparable = len(c.Reasons) == 0
+		out = append(out, c)
+	}
+	return out, nil
 }

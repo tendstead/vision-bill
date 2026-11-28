@@ -45,4 +45,16 @@ type BenchmarkStatus struct {
 	Retrying        int                `json:"retrying"`
 	Terminal        int                `json:"terminal"`
 	Summaries       []BenchmarkSummary `json:"summaries"`
+	// Issues explain tasks that are waiting or being retried.
+	Issues []BenchmarkIssue `json:"issues"`
+}
+
+// BenchmarkIssue is an unfinished task together with the reason it did not finish.
+type BenchmarkIssue struct {
+	ModelID   string     `json:"model_id"`
+	ReceiptID string     `json:"receipt_id"`
+	Status    string     `json:"status"`
+	Attempts  int        `json:"attempts"`
+	RetryAt   *Timestamp `json:"retry_at"`
+	Reason    string     `json:"reason"`
 }

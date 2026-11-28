@@ -28,6 +28,7 @@ type fakeProvider struct {
 	chatCalls int
 	temp      float64
 	chatOpts  []map[string]any // Options of every Chat call
+	delay     time.Duration    // Chat blocks this long (or until ctx ends)
 }
 
 func (f *fakeProvider) Models(context.Context) ([]llm.ModelInfo, error) {
@@ -43,7 +44,17 @@ func (f *fakeProvider) CheckConnection(context.Context) bool {
 	defer f.mu.Unlock()
 	return !f.down
 }
-func (f *fakeProvider) Chat(_ context.Context, _ string, _ []llm.Message, opts llm.ChatOptions) (string, error) {
+func (f *fakeProvider) Chat(ctx context.Context, _ string, _ []llm.Message, opts llm.ChatOptions) (string, error) {
+	f.mu.Lock()
+	delay := f.delay
+	f.mu.Unlock()
+	if delay > 0 {
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(delay):
+		}
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.chatCalls++

@@ -255,6 +255,11 @@ func TestBenchmarkWaitsWhenModelDisappears(t *testing.T) {
 	if st["waiting_for_model"] != float64(1) || st["terminal"] != float64(0) {
 		t.Fatalf("%v", st)
 	}
+	issues := st["issues"].([]any)
+	if len(issues) != 1 || issues[0].(map[string]any)["model_id"] != "vis:2" || issues[0].(map[string]any)["status"] != "waiting_for_model" ||
+		!strings.Contains(issues[0].(map[string]any)["reason"].(string), "not available on the inference server") {
+		t.Fatalf("the waiting reason must be reported: %v", issues)
+	}
 	// Provider down => transient retry with backoff.
 	e.provider.set(true)
 	if next, _ := e.st.LeaseBenchmarkTask(ctx, time.Now()); next != nil {
@@ -469,8 +474,6 @@ func TestBenchmarkRerunAndCompareValidation(t *testing.T) {
 	}
 	for url, want := range map[string]int{
 		"/api/v1/benchmarks/compare":                             422,
-		"/api/v1/benchmarks/compare?runs=" + run:                 422,
-		"/api/v1/benchmarks/compare?runs=" + run + "," + run:     422,
 		"/api/v1/benchmarks/compare?runs=" + run + ",nope":       422,
 		"/api/v1/benchmarks/compare?runs=" + run + "," + unknown: 404,
 	} {
@@ -729,5 +732,112 @@ func TestBenchmarkCellsSplitLoadFromGeneration(t *testing.T) {
 	}
 	if b.LoadMS != nil || b.GenMS != nil || b.Calls != 1 {
 		t.Fatalf("cell without telemetry %+v", b)
+	}
+}
+
+func TestBenchmarkCandidates(t *testing.T) {
+	e := newEnv(t, true)
+	admin, user := e.user(t, "admin", true), e.user(t, "user", false)
+	r1 := e.verifiedReceiptWithPhoto(t, user, pngData)
+	e.verifiedReceiptWithPhoto(t, user, append(append([]byte{}, pngData...), 9))
+	e.provider.set(false, modelReceipt)
+	e.setDigests("sha-a")
+	post := func(url, body string) map[string]any {
+		r := e.do("POST", url, body, admin.cookie)
+		if r.Code != 202 {
+			t.Fatalf("%s: %d %s", url, r.Code, r.Body)
+		}
+		return r.json(t)
+	}
+	a := post("/api/v1/benchmarks", `{"model_ids": ["vis:1"], "label": "A"}`)["id"].(string)
+	e.drain(t)
+	c := post("/api/v1/benchmarks/"+a+"/rerun", `{"label": "C"}`)["id"].(string)
+	e.drain(t)
+	e.setDigests("sha-b")
+	d := post("/api/v1/benchmarks/"+a+"/rerun", `{"label": "D"}`)["id"].(string)
+	e.drain(t)
+	sub := post("/api/v1/benchmarks", `{"model_ids": ["vis:1"], "receipt_ids": ["`+r1+`"]}`)["id"].(string)
+	e.drain(t)
+	pending := post("/api/v1/benchmarks/"+a+"/rerun", `{}`)["id"].(string)
+
+	res := e.do("GET", "/api/v1/benchmarks/"+d+"/candidates", nil, admin.cookie)
+	if res.Code != 200 {
+		t.Fatalf("%d %s", res.Code, res.Body)
+	}
+	by := map[string]map[string]any{}
+	for _, x := range res.json2(t) {
+		by[x["run_id"].(string)] = x
+	}
+	codes := func(id string) []string {
+		var out []string
+		for _, r := range by[id]["reasons"].([]any) {
+			out = append(out, r.(map[string]any)["code"].(string))
+		}
+		return out
+	}
+	if _, self := by[d]; self || len(by) != 4 {
+		t.Fatalf("every other run is listed, the main run is not: %v", by)
+	}
+	// A model update stays selectable (it is the point of a rerun) but is reported.
+	for _, id := range []string{a, c} {
+		if by[id]["selectable"] != true || by[id]["comparable"] != false || !reflect.DeepEqual(codes(id), []string{"model_digest_changed"}) {
+			t.Errorf("run %s: %v", id, by[id])
+		}
+	}
+	if by[sub]["selectable"] != false || !reflect.DeepEqual(codes(sub), []string{"dataset_changed"}) {
+		t.Errorf("different receipts: %v", by[sub])
+	}
+	if by[pending]["selectable"] != false || !reflect.DeepEqual(codes(pending), []string{"run_incomplete"}) {
+		t.Errorf("unfinished run: %v", by[pending])
+	}
+	// Against a same-digest main run the sibling is strictly comparable.
+	e.setDigests("sha-a")
+	same := e.do("GET", "/api/v1/benchmarks/"+c+"/candidates", nil, admin.cookie).json2(t)
+	for _, x := range same {
+		if x["run_id"] == a && (x["comparable"] != true || x["selectable"] != true || len(x["reasons"].([]any)) != 0) {
+			t.Errorf("A vs C: %v", x)
+		}
+	}
+	if r := e.do("GET", "/api/v1/benchmarks/99999999-9999-9999-9999-999999999999/candidates", nil, admin.cookie); r.Code != 404 {
+		t.Fatalf("unknown: %d", r.Code)
+	}
+	if r := e.do("GET", "/api/v1/benchmarks/"+a+"/candidates", nil, user.cookie); r.Code != 403 {
+		t.Fatalf("non-admin: %d", r.Code)
+	}
+	// A single run can be compared (the page uses it for its charts).
+	if r := e.do("GET", "/api/v1/benchmarks/compare?runs="+a, nil, admin.cookie); r.Code != 200 {
+		t.Fatalf("single run compare: %d %s", r.Code, r.Body)
+	}
+}
+
+func TestBenchmarkFailureReasonsAreRecorded(t *testing.T) {
+	e := newEnv(t, true)
+	admin, user := e.user(t, "admin", true), e.user(t, "user", false)
+	e.verifiedReceiptWithPhoto(t, user, pngData)
+
+	// A model that never produces valid JSON.
+	e.provider.set(false, "garbage", "garbage", "garbage")
+	bad := e.do("POST", "/api/v1/benchmarks", `{"model_ids": ["vis:1"]}`, admin.cookie).json(t)["id"].(string)
+	e.provider.set(false, "garbage", "garbage", "garbage")
+	e.drain(t)
+	// A model that does not answer within the run timeout.
+	e.provider.set(false, modelReceipt)
+	slow := e.do("POST", "/api/v1/benchmarks", `{"model_ids": ["vis:1"], "request_timeout_seconds": 1}`, admin.cookie).json(t)["id"].(string)
+	e.provider.mu.Lock()
+	e.provider.delay = 10 * time.Second
+	e.provider.mu.Unlock()
+	e.drain(t)
+
+	cj := e.do("GET", "/api/v1/benchmarks/compare?runs="+bad+","+slow, nil, admin.cookie).json(t)
+	cells := cj["receipts"].([]any)[0].(map[string]any)["cells"].([]any)
+	if len(cells) != 2 {
+		t.Fatalf("cells %v", cells)
+	}
+	invalid, timeout := cells[0].(map[string]any), cells[1].(map[string]any)
+	if invalid["success"] != false || invalid["error_kind"] != "invalid_response" || !strings.Contains(invalid["error"].(string), "Failed to get a valid response") {
+		t.Fatalf("invalid response cell %v", invalid)
+	}
+	if timeout["success"] != false || timeout["error_kind"] != "timeout" || !strings.Contains(timeout["error"].(string), "run timeout of 1 s") {
+		t.Fatalf("timeout cell %v", timeout)
 	}
 }

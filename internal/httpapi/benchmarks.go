@@ -24,6 +24,7 @@ func (s *Server) benchmarkRoutes(mux *http.ServeMux) {
 		writeJSON(w, http.StatusOK, s.opts.Benchmarks.ProviderOptions())
 	}))
 	mux.HandleFunc("GET "+base+"/compare", s.admin(s.compareBenchmarks))
+	mux.HandleFunc("GET "+base+"/{run_id}/candidates", s.admin(s.compareCandidates))
 	mux.HandleFunc("POST "+base+"/{run_id}/rerun", s.admin(s.rerunBenchmark))
 	mux.HandleFunc("GET "+base+"/{run_id}/results", s.admin(s.benchmarkResults))
 	mux.HandleFunc("GET "+base+"/{run_id}", s.admin(s.benchmarkStatus))
@@ -523,8 +524,8 @@ func (s *Server) compareBenchmarks(w http.ResponseWriter, r *http.Request, _ use
 			ids = append(ids, u)
 		}
 	}
-	if len(errs) == 0 && (len(ids) < 2 || len(ids) > 10) {
-		errs.add(fieldError{Type: "value_error", Loc: []any{"query", "runs"}, Msg: "Value error, runs must list 2 to 10 distinct run ids", Input: raw})
+	if len(errs) == 0 && (len(ids) < 1 || len(ids) > 10) {
+		errs.add(fieldError{Type: "value_error", Loc: []any{"query", "runs"}, Msg: "Value error, runs must list 1 to 10 distinct run ids", Input: raw})
 	}
 	if len(errs) > 0 {
 		errs.write(w)
@@ -534,6 +535,23 @@ func (s *Server) compareBenchmarks(w http.ResponseWriter, r *http.Request, _ use
 	switch {
 	case errors.Is(err, benchmark.ErrRunNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
+	case err != nil:
+		s.internalError(w, r, err)
+	default:
+		writeJSON(w, http.StatusOK, res)
+	}
+}
+
+func (s *Server) compareCandidates(w http.ResponseWriter, r *http.Request, _ userView) {
+	p := newParams(r)
+	id := p.pathUUID("run_id")
+	if !p.ok(w) {
+		return
+	}
+	res, err := s.opts.Benchmarks.CompareCandidates(r.Context(), id)
+	switch {
+	case errors.Is(err, benchmark.ErrRunNotFound):
+		writeError(w, http.StatusNotFound, "Benchmark run not found")
 	case err != nil:
 		s.internalError(w, r, err)
 	default:

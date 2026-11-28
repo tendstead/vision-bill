@@ -286,7 +286,10 @@ func (s *Store) LeaseBenchmarkTask(ctx context.Context, now time.Time) (*Benchma
 }
 
 // RetryBenchmarkTask releases a task for a later attempt with capped backoff.
-func (s *Store) RetryBenchmarkTask(ctx context.Context, t BenchmarkTask, waiting bool, now time.Time) error {
+func (s *Store) RetryBenchmarkTask(ctx context.Context, t BenchmarkTask, waiting bool, now time.Time, reason string) error {
+	if r := []rune(reason); len(r) > 500 {
+		reason = string(r[:500])
+	}
 	exp := t.Attempts
 	if exp < 0 {
 		exp = 0
@@ -299,8 +302,8 @@ func (s *Store) RetryBenchmarkTask(ctx context.Context, t BenchmarkTask, waiting
 	if waiting {
 		status = "waiting_for_model"
 	}
-	_, err := s.Pool.Exec(ctx, `UPDATE benchmark_tasks SET status=$1, leased_until=NULL, retry_at=$2
-		WHERE run_id=$3::uuid AND model_id=$4 AND receipt_id=$5::uuid`, status, now.Add(time.Duration(delay)*time.Second), t.RunID, t.ModelID, t.ReceiptID)
+	_, err := s.Pool.Exec(ctx, `UPDATE benchmark_tasks SET status=$1, leased_until=NULL, retry_at=$2, last_error=NULLIF($6, '')
+		WHERE run_id=$3::uuid AND model_id=$4 AND receipt_id=$5::uuid`, status, now.Add(time.Duration(delay)*time.Second), t.RunID, t.ModelID, t.ReceiptID, reason)
 	return err
 }
 
@@ -441,6 +444,27 @@ func (s *Store) BenchmarkCells(ctx context.Context, id string) ([]BenchmarkCell,
 			}
 		}
 		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// BenchmarkIssues lists the unfinished tasks of a run that recorded a reason.
+func (s *Store) BenchmarkIssues(ctx context.Context, id string) ([]domain.BenchmarkIssue, error) {
+	rows, err := s.Pool.Query(ctx, `SELECT model_id, receipt_id::text, status, attempts, retry_at, last_error
+		FROM benchmark_tasks WHERE run_id = $1::uuid AND last_error IS NOT NULL ORDER BY model_id, receipt_id`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []domain.BenchmarkIssue{}
+	for rows.Next() {
+		var i domain.BenchmarkIssue
+		var retryAt *time.Time
+		if err := rows.Scan(&i.ModelID, &i.ReceiptID, &i.Status, &i.Attempts, &retryAt, &i.Reason); err != nil {
+			return nil, err
+		}
+		i.RetryAt = ts(retryAt)
+		out = append(out, i)
 	}
 	return out, rows.Err()
 }
