@@ -18,6 +18,10 @@
 		type CompareRunInfo,
 		type Comparison
 	} from '$lib/benchmark-compare';
+	import BenchmarkScoreDots from '$lib/ui/BenchmarkScoreDots.svelte';
+	import BenchmarkSummaryBars from '$lib/ui/BenchmarkSummaryBars.svelte';
+	import BenchmarkDumbbell from '$lib/ui/BenchmarkDumbbell.svelte';
+	import BenchmarkLatencyStrip from '$lib/ui/BenchmarkLatencyStrip.svelte';
 
 	let runs = $state<CompareRunInfo[]>([]),
 		selected = $state<string[]>([]),
@@ -261,6 +265,17 @@
 				</tbody>
 			</table>
 		</div>
+
+		{#if comparison.receipts.some((r) => r.cells.length)}
+			<div class="mt-5 space-y-5">
+				<BenchmarkSummaryBars {comparison} {series} />
+				<BenchmarkScoreDots {comparison} {series} />
+				<BenchmarkDumbbell {comparison} {series} />
+				<BenchmarkLatencyStrip {comparison} {series} />
+			</div>
+		{:else}
+			<p class="mt-5 text-sm text-on-surface-variant">No stored results yet to chart.</p>
+		{/if}
 
 		<div class="mt-6 overflow-x-auto rounded-xl border border-outline-variant">
 			<table class="w-full text-left text-sm" data-testid="receipt-table">

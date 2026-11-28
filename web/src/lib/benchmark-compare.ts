@@ -124,7 +124,13 @@ export const formatPercent = (v: number | null | undefined, digits = 1) =>
 export const formatPoints = (v: number | null | undefined) =>
 	v == null ? '—' : `${v > 0 ? '+' : ''}${(v * 100).toFixed(1)} pp`;
 export const formatMs = (v: number | null | undefined) =>
-	v == null ? '—' : v >= 10_000 ? `${(v / 1000).toFixed(1)} s` : `${Math.round(v)} ms`;
+	v == null
+		? '—'
+		: v >= 10_000
+			? `${(v / 1000).toFixed(1)} s`
+			: v < 10
+				? `${Number(v.toFixed(1))} ms`
+				: `${Math.round(v)} ms`;
 export const formatSignedMs = (v: number | null | undefined) =>
 	v == null ? '—' : `${v > 0 ? '+' : ''}${formatMs(v)}`;
 

@@ -70,6 +70,8 @@ describe('formatting', () => {
 		expect(formatPoints(-0.1)).toBe('-10.0 pp');
 		expect(formatMs(250.4)).toBe('250 ms');
 		expect(formatMs(12_500)).toBe('12.5 s');
+		expect(formatMs(0.4)).toBe('0.4 ms');
+		expect(formatMs(3)).toBe('3 ms');
 	});
 	it('judges the direction of a change', () => {
 		expect(deltaTone(0.1, true)).toBe('good');

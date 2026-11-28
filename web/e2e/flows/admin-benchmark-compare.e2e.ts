@@ -7,7 +7,7 @@ import { uploadFixture } from '../helpers/ui';
 test.describe('admin: compare benchmark runs', () => {
 	stubGuard();
 
-	test('rerun, compare and follow a receipt link', async ({ page, context }) => {
+	test('rerun, compare with charts, and follow a dot to its receipt', async ({ page, context }) => {
 		test.setTimeout(180_000);
 		await loginAdmin(context);
 		const receiptId = await uploadFixture(page, context, await loadFixture('a'));
@@ -45,15 +45,24 @@ test.describe('admin: compare benchmark runs', () => {
 		await expect(page).toHaveURL(new RegExp(`runs=${firstId},${second!.id}`));
 		await expect(page.getByTestId('summary-table')).toContainText('baseline');
 		await expect(page.getByTestId('summary-table')).toContainText('second try');
+		for (const id of [
+			'chart-summary-bars',
+			'chart-score-dots',
+			'chart-dumbbell',
+			'chart-latency'
+		]) {
+			await expect(page.getByTestId(id)).toBeVisible();
+		}
 		// The table links every receipt too.
 		await expect(
 			page.getByTestId('receipt-table').getByRole('link', { name: receiptId.slice(0, 8) })
 		).toBeVisible();
 
-		await page
-			.getByTestId('receipt-table')
-			.getByRole('link', { name: receiptId.slice(0, 8) })
-			.click();
+		// Hovering a dot pins its values; clicking it opens the receipt.
+		const dot = page.getByTestId('chart-score-dots').getByRole('link').first();
+		await dot.focus();
+		await expect(page.getByTestId('chart-pinned')).toContainText(receiptId.slice(0, 8));
+		await dot.click();
 		await expect(page).toHaveURL(new RegExp(`/receipts/${receiptId}$`));
 	});
 
