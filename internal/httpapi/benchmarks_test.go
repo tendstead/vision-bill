@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"context"
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -511,5 +513,187 @@ func TestBenchmarkRerunAndCompareValidation(t *testing.T) {
 	}
 	if !codes["legacy_run"] || !codes["dataset_changed"] || !codes["scoring_changed"] {
 		t.Fatalf("legacy compare: %v", cj["comparable"])
+	}
+}
+
+func TestBenchmarkProviderOptions(t *testing.T) {
+	e := newEnv(t, true)
+	admin, user := e.user(t, "admin", true), e.user(t, "user", false)
+	e.verifiedReceiptWithPhoto(t, user, pngData)
+	e.provider.set(false, modelReceipt)
+
+	info := e.do("GET", "/api/v1/benchmarks/provider-options", nil, admin.cookie).json(t)
+	names := map[string]bool{}
+	for _, o := range info["options"].([]any) {
+		names[o.(map[string]any)["name"].(string)] = true
+	}
+	if info["provider"] != "OllamaProvider" || !names["num_gpu"] || !names["num_ctx"] || !names["repeat_penalty"] || names["temperature"] {
+		t.Fatalf("whitelist %v", info)
+	}
+	if r := e.do("GET", "/api/v1/benchmarks/provider-options", nil, user.cookie); r.Code != 403 {
+		t.Fatalf("non-admin: %d", r.Code)
+	}
+
+	for body, want := range map[string]string{
+		`{"experiment": {"provider_options": {"temperature": 1}}}`: "not supported by this provider: temperature",
+		`{"experiment": {"provider_options": {"num_ctx": 0}}}`:     "must be at least 1",
+		`{"experiment": {"provider_options": {"top_p": 2}}}`:       "must be at most 1",
+		`{"experiment": {"provider_options": {"num_ctx": 1.5}}}`:   "must be an integer",
+		`{"experiment": {"provider_options": {"seed": "x"}}}`:      "must be a number",
+		`{"experiment": {"provider_options": [1]}}`:                "dict_type",
+	} {
+		if r := e.do("POST", "/api/v1/benchmarks", body, admin.cookie); r.Code != 422 || !strings.Contains(r.Body.String(), want) {
+			t.Errorf("%s: %d %s", body, r.Code, r.Body)
+		}
+	}
+	var n int
+	_ = e.st.Pool.QueryRow(context.Background(), "SELECT count(*) FROM benchmark_runs").Scan(&n)
+	if n != 0 {
+		t.Fatalf("rejected requests must not create runs: %d", n)
+	}
+
+	r := e.do("POST", "/api/v1/benchmarks", `{"model_ids": ["vis:1"], "experiment": {"provider_options": {"num_ctx": 4096, "num_gpu": 0, "top_p": 0.5}}}`, admin.cookie)
+	if r.Code != 202 {
+		t.Fatalf("create: %d %s", r.Code, r.Body)
+	}
+	run := r.json(t)
+	po := run["experiment"].(map[string]any)["options"].(map[string]any)["provider_options"].(map[string]any)
+	if po["num_ctx"] != 4096.0 || po["num_gpu"] != 0.0 || po["top_p"] != 0.5 {
+		t.Fatalf("manifest options %v", po)
+	}
+	e.drain(t)
+	e.provider.mu.Lock()
+	sent := e.provider.chatOpts[len(e.provider.chatOpts)-1]
+	e.provider.mu.Unlock()
+	if sent["num_ctx"] != int64(4096) && sent["num_ctx"] != float64(4096) || sent["num_gpu"] == nil {
+		t.Fatalf("options reached the provider as %v", sent)
+	}
+
+	// A rerun can replace or clear them; compare shows them as a varied setting.
+	runID := run["id"].(string)
+	rr := e.do("POST", "/api/v1/benchmarks/"+runID+"/rerun", `{"provider_options": {"num_ctx": 8192}}`, admin.cookie)
+	if rr.Code != 202 {
+		t.Fatalf("rerun: %d %s", rr.Code, rr.Body)
+	}
+	rj := rr.json(t)
+	po = rj["experiment"].(map[string]any)["options"].(map[string]any)["provider_options"].(map[string]any)
+	if len(po) != 1 || po["num_ctx"] != 8192.0 {
+		t.Fatalf("replaced options %v", po)
+	}
+	e.drain(t)
+	cj := e.do("GET", "/api/v1/benchmarks/compare?runs="+runID+","+rj["id"].(string), nil, admin.cookie).json(t)
+	found := false
+	for _, v := range cj["varied"].([]any) {
+		found = found || v.(map[string]any)["field"] == "provider_options"
+	}
+	if !found || cj["comparable"].(map[string]any)["comparable"] != true {
+		t.Fatalf("provider options are varied, not incomparable: %v", cj)
+	}
+	cleared := e.do("POST", "/api/v1/benchmarks/"+runID+"/rerun", `{"provider_options": null}`, admin.cookie).json(t)
+	if _, has := cleared["experiment"].(map[string]any)["options"].(map[string]any)["provider_options"]; has {
+		t.Fatalf("null clears the options: %v", cleared["experiment"])
+	}
+	if r := e.do("POST", "/api/v1/benchmarks/"+runID+"/rerun", `{"provider_options": {"bogus": 1}}`, admin.cookie); r.Code != 422 {
+		t.Fatalf("rerun whitelist: %d", r.Code)
+	}
+}
+
+func TestBenchmarkSweepAndLeaseOrder(t *testing.T) {
+	e := newEnv(t, true)
+	admin, user := e.user(t, "admin", true), e.user(t, "user", false)
+	e.verifiedReceiptWithPhoto(t, user, pngData)
+	e.verifiedReceiptWithPhoto(t, user, append(append([]byte{}, pngData...), 9))
+	e.provider.set(false, modelReceipt)
+	ctx := context.Background()
+
+	// A plain run queued first is finished before the sweep starts.
+	plain := e.do("POST", "/api/v1/benchmarks", `{"model_ids": ["vis:1"]}`, admin.cookie).json(t)["id"].(string)
+
+	body := `{"model_ids": ["vis:2", "vis:1"], "label": "gpu box", "experiment": {"think": false}, "variants": [
+		{"label": "cold", "experiment": {"temperature": 0}},
+		{"experiment": {"temperature": 0.1, "provider_options": {"num_ctx": 2048}}},
+		{"label": "hot", "experiment": {"temperature": 0.7}}]}`
+	r := e.do("POST", "/api/v1/benchmarks", body, admin.cookie)
+	if r.Code != 202 {
+		t.Fatalf("sweep: %d %s", r.Code, r.Body)
+	}
+	sw := r.json(t)
+	cid := sw["comparison_id"].(string)
+	runs := sw["runs"].([]any)
+	if len(runs) != 3 || r.Header().Get("Location") != "/api/v1/benchmarks?comparison_id="+cid {
+		t.Fatalf("sweep body %s", r.Body)
+	}
+	wantArm := []string{"cold", "variant 2", "hot"}
+	wantLabel := []any{"cold", "gpu box", "hot"}
+	temps := []float64{0, 0.1, 0.7}
+	byVariant := map[string]int{}
+	for i, x := range runs {
+		run := x.(map[string]any)
+		opts := run["experiment"].(map[string]any)["options"].(map[string]any)
+		if run["comparison_id"] != cid || run["variant_index"] != float64(i) || run["comparison_arm"] != wantArm[i] || run["label"] != wantLabel[i] ||
+			opts["temperature"] != temps[i] || opts["think"] != false || run["dataset_fingerprint"] != runs[0].(map[string]any)["dataset_fingerprint"] {
+			t.Fatalf("run %d: %v", i, run)
+		}
+		byVariant[run["id"].(string)] = i
+	}
+	list := e.do("GET", "/api/v1/benchmarks?comparison_id="+cid, nil, admin.cookie).json2(t)
+	if len(list) != 3 {
+		t.Fatalf("list by comparison: %d", len(list))
+	}
+	if r := e.do("GET", "/api/v1/benchmarks?comparison_id=nope", nil, admin.cookie); r.Code != 422 {
+		t.Fatalf("bad comparison id: %d", r.Code)
+	}
+
+	// Lease order: plain run first; then per model (requested order) every
+	// variant before the next model, then receipts.
+	type step struct {
+		model string
+		run   string
+	}
+	var order []step
+	for {
+		task, err := e.st.LeaseBenchmarkTask(ctx, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if task == nil {
+			break
+		}
+		name := "plain"
+		if task.RunID != plain {
+			name = strconv.Itoa(byVariant[task.RunID])
+		}
+		order = append(order, step{task.ModelID, name})
+	}
+	var want []step
+	want = append(want, step{"vis:1", "plain"}, step{"vis:1", "plain"})
+	for _, m := range []string{"vis:2", "vis:1"} {
+		for v := 0; v < 3; v++ {
+			want = append(want, step{m, strconv.Itoa(v)}, step{m, strconv.Itoa(v)}) // two receipts
+		}
+	}
+	if !reflect.DeepEqual(order, want) {
+		t.Fatalf("lease order\n got %v\nwant %v", order, want)
+	}
+
+	// An invalid arm rejects the whole sweep.
+	var before int
+	_ = e.st.Pool.QueryRow(ctx, "SELECT count(*) FROM benchmark_runs").Scan(&before)
+	for body, want := range map[string]string{
+		`{"variants": [{"experiment": {"provider_options": {"bogus": 1}}}]}`: "not supported by this provider",
+		`{"variants": [{"experiment": {"temperature": 9}}]}`:                 "less_than_equal",
+		`{"variants": []}`:              "too_short",
+		`{"variants": [{"label": ""}]}`: "string_too_short",
+		`{"variants": "x"}`:             "list_type",
+		`{"variants": [1]}`:             "model_attributes_type",
+	} {
+		if r := e.do("POST", "/api/v1/benchmarks", body, admin.cookie); r.Code != 422 || !strings.Contains(r.Body.String(), want) {
+			t.Errorf("%s: %d %s", body, r.Code, r.Body)
+		}
+	}
+	var after int
+	_ = e.st.Pool.QueryRow(ctx, "SELECT count(*) FROM benchmark_runs").Scan(&after)
+	if after != before {
+		t.Fatalf("rejected sweeps created runs: %d -> %d", before, after)
 	}
 }

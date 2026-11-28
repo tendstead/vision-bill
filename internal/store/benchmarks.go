@@ -69,8 +69,36 @@ func scanRun(row pgx.Row) (*domain.BenchmarkRun, error) {
 	return &r, nil
 }
 
-// CreateBenchmarkRun inserts a run with its tasks and summaries atomically.
+// CreateBenchmarkRun inserts one run with its tasks and summaries atomically.
 func (s *Store) CreateBenchmarkRun(ctx context.Context, n NewBenchmarkRun) (*domain.BenchmarkRun, error) {
+	runs, err := s.CreateBenchmarkRuns(ctx, []NewBenchmarkRun{n})
+	if err != nil {
+		return nil, err
+	}
+	return &runs[0], nil
+}
+
+// CreateBenchmarkRuns inserts several runs (a sweep) in one transaction so a
+// sweep is either fully queued or not at all.
+func (s *Store) CreateBenchmarkRuns(ctx context.Context, news []NewBenchmarkRun) ([]domain.BenchmarkRun, error) {
+	out := []domain.BenchmarkRun{}
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		for _, n := range news {
+			r, err := insertBenchmarkRun(ctx, tx, n)
+			if err != nil {
+				return err
+			}
+			out = append(out, *r)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func insertBenchmarkRun(ctx context.Context, tx pgx.Tx, n NewBenchmarkRun) (*domain.BenchmarkRun, error) {
 	models, _ := json.Marshal(n.ModelIDs)
 	receipts, _ := json.Marshal(n.ReceiptIDs)
 	digests, _ := json.Marshal(n.ModelDigests)
@@ -79,35 +107,29 @@ func (s *Store) CreateBenchmarkRun(ctx context.Context, n NewBenchmarkRun) (*dom
 		m := string(n.Manifest)
 		manifest = &m
 	}
-	var out *domain.BenchmarkRun
-	err := s.inTx(ctx, func(tx pgx.Tx) error {
-		var id string
-		if err := tx.QueryRow(ctx, `INSERT INTO benchmark_runs
-			(model_ids, receipt_ids, dataset_fingerprint, model_digests, request_timeout_seconds, council_policy,
-			 council_absolute_threshold, council_relative_threshold, apply_council_flags, prompt_version, scoring_version, experiment_manifest,
-			 parent_run_id, label, comparison_id, comparison_arm, variant_index)
-			VALUES ($1::jsonb,$2::jsonb,$3,$4::jsonb,$5,$6,$7::numeric,$8::numeric,$9,$10,$11,$12::jsonb,
-			        $13::uuid,$14,$15::uuid,$16,$17) RETURNING id::text`,
-			string(models), string(receipts), n.Fingerprint, string(digests), n.TimeoutSeconds, n.Policy,
-			n.AbsoluteThreshold, n.RelativeThreshold, n.ApplyFlags, n.PromptVersion, n.ScoringVersion, manifest,
-			n.ParentRunID, n.Label, n.ComparisonID, n.ComparisonArm, n.VariantIndex).Scan(&id); err != nil {
-			return err
-		}
-		for _, m := range n.ModelIDs {
-			for _, r := range n.ReceiptIDs {
-				if _, err := tx.Exec(ctx, `INSERT INTO benchmark_tasks (run_id, model_id, receipt_id) VALUES ($1::uuid,$2,$3::uuid)`, id, m, r); err != nil {
-					return err
-				}
-			}
-			if _, err := tx.Exec(ctx, `INSERT INTO benchmark_summaries (run_id, model_id, model_digest) VALUES ($1::uuid,$2,$3)`, id, m, n.ModelDigests[m]); err != nil {
-				return err
+	var id string
+	if err := tx.QueryRow(ctx, `INSERT INTO benchmark_runs
+		(model_ids, receipt_ids, dataset_fingerprint, model_digests, request_timeout_seconds, council_policy,
+		 council_absolute_threshold, council_relative_threshold, apply_council_flags, prompt_version, scoring_version, experiment_manifest,
+		 parent_run_id, label, comparison_id, comparison_arm, variant_index)
+		VALUES ($1::jsonb,$2::jsonb,$3,$4::jsonb,$5,$6,$7::numeric,$8::numeric,$9,$10,$11,$12::jsonb,
+		        $13::uuid,$14,$15::uuid,$16,$17) RETURNING id::text`,
+		string(models), string(receipts), n.Fingerprint, string(digests), n.TimeoutSeconds, n.Policy,
+		n.AbsoluteThreshold, n.RelativeThreshold, n.ApplyFlags, n.PromptVersion, n.ScoringVersion, manifest,
+		n.ParentRunID, n.Label, n.ComparisonID, n.ComparisonArm, n.VariantIndex).Scan(&id); err != nil {
+		return nil, err
+	}
+	for _, m := range n.ModelIDs {
+		for _, r := range n.ReceiptIDs {
+			if _, err := tx.Exec(ctx, `INSERT INTO benchmark_tasks (run_id, model_id, receipt_id) VALUES ($1::uuid,$2,$3::uuid)`, id, m, r); err != nil {
+				return nil, err
 			}
 		}
-		r, err := scanRun(tx.QueryRow(ctx, `SELECT `+runCols+` FROM benchmark_runs WHERE id = $1::uuid`, id))
-		out = r
-		return err
-	})
-	return out, err
+		if _, err := tx.Exec(ctx, `INSERT INTO benchmark_summaries (run_id, model_id, model_digest) VALUES ($1::uuid,$2,$3)`, id, m, n.ModelDigests[m]); err != nil {
+			return nil, err
+		}
+	}
+	return scanRun(tx.QueryRow(ctx, `SELECT `+runCols+` FROM benchmark_runs WHERE id = $1::uuid`, id))
 }
 
 // BenchmarkRun returns one run, or nil.
@@ -115,9 +137,10 @@ func (s *Store) BenchmarkRun(ctx context.Context, id string) (*domain.BenchmarkR
 	return scanRun(s.Pool.QueryRow(ctx, `SELECT `+runCols+` FROM benchmark_runs WHERE id = $1::uuid`, id))
 }
 
-// BenchmarkRuns lists runs, newest first.
-func (s *Store) BenchmarkRuns(ctx context.Context) ([]domain.BenchmarkRun, error) {
-	rows, err := s.Pool.Query(ctx, `SELECT `+runCols+` FROM benchmark_runs ORDER BY created_at DESC, id DESC`)
+// BenchmarkRuns lists runs, newest first, optionally only one comparison group.
+func (s *Store) BenchmarkRuns(ctx context.Context, comparisonID *string) ([]domain.BenchmarkRun, error) {
+	rows, err := s.Pool.Query(ctx, `SELECT `+runCols+` FROM benchmark_runs WHERE ($1::uuid IS NULL OR comparison_id = $1::uuid)
+		ORDER BY created_at DESC, variant_index DESC NULLS LAST, id DESC`, comparisonID)
 	if err != nil {
 		return nil, err
 	}
@@ -231,16 +254,19 @@ func (s *Store) LeaseBenchmarkTask(ctx context.Context, now time.Time) (*Benchma
 	var t *BenchmarkTask
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		var task BenchmarkTask
-		// Model-major order: runs first-come-first-served, then every receipt of
-		// one model (in the order the models were requested) before the next
-		// model starts, so the inference server loads each model once per run
-		// instead of swapping models for every receipt.
+		// Model-major order: a comparison group (a sweep; a plain run is its own
+		// group) first-come-first-served, then models in the order they were
+		// requested, then the variants of a sweep, then receipts. The inference
+		// server therefore loads each model once per group instead of swapping
+		// models for every receipt.
 		err := tx.QueryRow(ctx, `SELECT t.run_id::text, t.model_id, t.receipt_id::text, t.attempts
 			FROM benchmark_tasks t JOIN benchmark_runs r ON r.id = t.run_id
 			WHERE (t.status IN ('queued','retrying','waiting_for_model') AND (t.retry_at IS NULL OR t.retry_at <= $1))
 			   OR (t.status = 'running' AND t.leased_until < $1)
-			ORDER BY r.created_at, t.run_id,
+			ORDER BY (SELECT min(g.created_at) FROM benchmark_runs g WHERE COALESCE(g.comparison_id, g.id) = COALESCE(r.comparison_id, r.id)),
+			         COALESCE(r.comparison_id, r.id),
 			         (SELECT e.pos FROM jsonb_array_elements_text(r.model_ids) WITH ORDINALITY AS e(v, pos) WHERE e.v = t.model_id),
+			         COALESCE(r.variant_index, 0), r.created_at, t.run_id,
 			         t.receipt_id
 			FOR UPDATE OF t SKIP LOCKED LIMIT 1`, now).Scan(&task.RunID, &task.ModelID, &task.ReceiptID, &task.Attempts)
 		if errors.Is(err, pgx.ErrNoRows) {

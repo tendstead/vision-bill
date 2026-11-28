@@ -27,6 +27,7 @@ type fakeProvider struct {
 	chatErr   error
 	chatCalls int
 	temp      float64
+	chatOpts  []map[string]any // Options of every Chat call
 }
 
 func (f *fakeProvider) Models(context.Context) ([]llm.ModelInfo, error) {
@@ -42,10 +43,11 @@ func (f *fakeProvider) CheckConnection(context.Context) bool {
 	defer f.mu.Unlock()
 	return !f.down
 }
-func (f *fakeProvider) Chat(_ context.Context, _ string, _ []llm.Message, _ llm.ChatOptions) (string, error) {
+func (f *fakeProvider) Chat(_ context.Context, _ string, _ []llm.Message, opts llm.ChatOptions) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.chatCalls++
+	f.chatOpts = append(f.chatOpts, opts.Options)
 	if f.chatErr != nil {
 		return "", f.chatErr
 	}

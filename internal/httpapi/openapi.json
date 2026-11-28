@@ -1012,7 +1012,7 @@
      "Benchmarks"
     ],
     "summary": "Create Benchmark Run",
-    "description": "Queue a benchmark run and return immediately with its durable run id.",
+    "description": "Queue a benchmark run and return immediately with its durable run id. With `variants` it queues a sweep (one run per variant, shared comparison_id).",
     "operationId": "create_benchmark_run_api_v1_benchmarks_post",
     "requestBody": {
      "required": true,
@@ -1030,7 +1030,14 @@
       "content": {
        "application/json": {
         "schema": {
-         "$ref": "#/components/schemas/BenchmarkRun"
+         "anyOf": [
+          {
+           "$ref": "#/components/schemas/BenchmarkRun"
+          },
+          {
+           "$ref": "#/components/schemas/BenchmarkSweep"
+          }
+         ]
         }
        }
       }
@@ -1076,6 +1083,23 @@
        "minimum": 0,
        "default": 0,
        "title": "Offset"
+      }
+     },
+     {
+      "name": "comparison_id",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string",
+         "format": "uuid"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Comparison Id"
       }
      }
     ],
@@ -1125,6 +1149,28 @@
          },
          "type": "object",
          "title": "Response Experiment Capabilities Api V1 Benchmarks Capabilities Get"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/benchmarks/provider-options": {
+   "get": {
+    "tags": [
+     "Benchmarks"
+    ],
+    "summary": "Benchmark Provider Options",
+    "description": "The per-request inference options the configured provider accepts in experiments (settings in the inference server's start flags cannot be changed here; record them in the run label).",
+    "operationId": "benchmark_provider_options_api_v1_benchmarks_provider_options_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/BenchmarkProviderOptions"
         }
        }
       }
@@ -2218,6 +2264,23 @@
        }
       ],
       "title": "Label"
+     },
+     "variants": {
+      "anyOf": [
+       {
+        "items": {
+         "$ref": "#/components/schemas/BenchmarkVariant"
+        },
+        "type": "array",
+        "maxItems": 10,
+        "minItems": 1
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Variants",
+      "description": "Creates one run per variant (a sweep) sharing a comparison_id; the response is then a BenchmarkSweep."
      }
     },
     "type": "object",
@@ -3063,6 +3126,19 @@
       "type": "boolean",
       "title": "Allow Ocr Fallback",
       "default": false
+     },
+     "provider_options": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Provider Options",
+      "description": "Whitelisted per-request inference options; see GET /benchmarks/provider-options. null or {} clears them on a rerun."
      }
     },
     "type": "object",
@@ -4690,6 +4766,19 @@
        }
       ],
       "title": "Label"
+     },
+     "provider_options": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Provider Options",
+      "description": "Whitelisted per-request inference options; see GET /benchmarks/provider-options. null or {} clears them on a rerun."
      }
     },
     "type": "object",
@@ -4731,6 +4820,19 @@
      "allow_ocr_fallback": {
       "type": "boolean",
       "title": "Allow Ocr Fallback"
+     },
+     "provider_options": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Provider Options",
+      "description": "Whitelisted per-request inference options; see GET /benchmarks/provider-options. null or {} clears them on a rerun."
      }
     },
     "type": "object",
@@ -4970,6 +5072,80 @@
       "title": "Receipts"
      }
     }
+   },
+   "BenchmarkVariant": {
+    "properties": {
+     "label": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 200,
+        "minLength": 1
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Label"
+     },
+     "experiment": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/ExperimentOverride"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "type": "object",
+    "title": "BenchmarkVariant",
+    "description": "One arm of a sweep; its experiment overrides the request's experiment."
+   },
+   "BenchmarkSweep": {
+    "properties": {
+     "comparison_id": {
+      "type": "string",
+      "format": "uuid",
+      "title": "Comparison Id"
+     },
+     "runs": {
+      "items": {
+       "$ref": "#/components/schemas/BenchmarkRun"
+      },
+      "type": "array",
+      "title": "Runs"
+     }
+    },
+    "type": "object",
+    "required": [
+     "comparison_id",
+     "runs"
+    ],
+    "title": "BenchmarkSweep"
+   },
+   "BenchmarkProviderOptions": {
+    "properties": {
+     "provider": {
+      "type": "string",
+      "title": "Provider"
+     },
+     "options": {
+      "items": {
+       "type": "object",
+       "additionalProperties": true
+      },
+      "type": "array",
+      "title": "Options"
+     }
+    },
+    "type": "object",
+    "required": [
+     "provider",
+     "options"
+    ],
+    "title": "BenchmarkProviderOptions"
    }
   }
  }

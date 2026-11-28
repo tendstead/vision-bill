@@ -20,6 +20,9 @@ func (s *Server) benchmarkRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET "+base+"/capabilities", s.admin(func(w http.ResponseWriter, _ *http.Request, _ userView) {
 		writeJSON(w, http.StatusOK, s.opts.Benchmarks.Capabilities())
 	}))
+	mux.HandleFunc("GET "+base+"/provider-options", s.admin(func(w http.ResponseWriter, _ *http.Request, _ userView) {
+		writeJSON(w, http.StatusOK, s.opts.Benchmarks.ProviderOptions())
+	}))
 	mux.HandleFunc("GET "+base+"/compare", s.admin(s.compareBenchmarks))
 	mux.HandleFunc("POST "+base+"/{run_id}/rerun", s.admin(s.rerunBenchmark))
 	mux.HandleFunc("GET "+base+"/{run_id}/results", s.admin(s.benchmarkResults))
@@ -200,15 +203,18 @@ func (b *bodyReader) stringList(key string, uuids bool) []string {
 
 // parseExperiment reads the experiment options; only keys that are present
 // are set, the caller applies them to its defaults.
-func parseExperiment(raw any) (benchmark.ExperimentOverride, validationErrors) {
+func parseExperiment(raw any, loc ...any) (benchmark.ExperimentOverride, validationErrors) {
+	if len(loc) == 0 {
+		loc = []any{"body", "experiment"}
+	}
 	var ov benchmark.ExperimentOverride
 	em, isObj := raw.(map[string]any)
 	if !isObj {
 		var errs validationErrors
-		errs.add(fieldError{Type: "model_attributes_type", Loc: []any{"body", "experiment"}, Msg: "Input should be a valid dictionary or object to extract fields from", Input: raw})
+		errs.add(fieldError{Type: "model_attributes_type", Loc: loc, Msg: "Input should be a valid dictionary or object to extract fields from", Input: raw})
 		return ov, errs
 	}
-	eb := &bodyReader{m: em, loc: []any{"body", "experiment"}}
+	eb := &bodyReader{m: em, loc: loc}
 	if _, ok := em["pipeline"]; ok {
 		v := eb.enum("pipeline", "upload", "upload", "direct_vision", "ocr")
 		ov.Pipeline = &v
@@ -238,7 +244,52 @@ func parseExperiment(raw any) (benchmark.ExperimentOverride, validationErrors) {
 		v := eb.optBool("allow_ocr_fallback", false)
 		ov.AllowOCRFallback = &v
 	}
+	if raw, ok := em["provider_options"]; ok {
+		ov.ProviderOptionsSet = true
+		switch po := raw.(type) {
+		case nil:
+		case map[string]any:
+			ov.ProviderOptions = po
+		default:
+			eb.fail("provider_options", "dict_type", "Input should be a valid dictionary", raw, nil)
+		}
+	}
 	return ov, eb.errs
+}
+
+// parseVariants reads the sweep arms: [{label, experiment}].
+func parseVariants(b *bodyReader) []benchmark.Variant {
+	raw, ok := b.m["variants"]
+	if !ok || raw == nil {
+		return nil
+	}
+	arr, isArr := raw.([]any)
+	if !isArr {
+		b.fail("variants", "list_type", "Input should be a valid list", raw, nil)
+		return nil
+	}
+	if len(arr) < 1 || len(arr) > 10 {
+		b.fail("variants", "too_short", "List should have between 1 and 10 items", raw, map[string]any{"min_length": 1, "max_length": 10})
+		return nil
+	}
+	out := make([]benchmark.Variant, 0, len(arr))
+	for i, it := range arr {
+		vm, isObj := it.(map[string]any)
+		if !isObj {
+			b.errs.add(fieldError{Type: "model_attributes_type", Loc: []any{"body", "variants", i}, Msg: "Input should be a valid dictionary or object to extract fields from", Input: it})
+			continue
+		}
+		vb := &bodyReader{m: vm, loc: []any{"body", "variants", i}}
+		v := benchmark.Variant{Label: vb.label()}
+		if e, ok := vm["experiment"]; ok {
+			ov, errs := parseExperiment(e, "body", "variants", i, "experiment")
+			v.Experiment = ov
+			vb.errs = append(vb.errs, errs...)
+		}
+		b.errs = append(b.errs, vb.errs...)
+		out = append(out, v)
+	}
+	return out
 }
 
 func parseBenchmarkCreate(m map[string]any) (benchmark.CreateRequest, validationErrors) {
@@ -250,6 +301,7 @@ func parseBenchmarkCreate(m map[string]any) (benchmark.CreateRequest, validation
 		b.errs = append(b.errs, errs...)
 	}
 	req.Label = b.label()
+	req.Variants = parseVariants(b)
 	req.ModelIDs = b.stringList("model_ids", false)
 	req.ReceiptIDs = b.stringList("receipt_ids", true)
 	req.Category = b.optString("category")
@@ -276,7 +328,7 @@ func (s *Server) createBenchmark(w http.ResponseWriter, r *http.Request, _ userV
 		errs.write(w)
 		return
 	}
-	run, err := s.opts.Benchmarks.CreateRun(r.Context(), req)
+	runs, err := s.opts.Benchmarks.CreateRun(r.Context(), req)
 	var ue *benchmark.UserError
 	if errors.As(err, &ue) {
 		writeError(w, http.StatusUnprocessableEntity, ue.Msg)
@@ -286,17 +338,33 @@ func (s *Server) createBenchmark(w http.ResponseWriter, r *http.Request, _ userV
 		s.internalError(w, r, err)
 		return
 	}
-	w.Header().Set("Location", "/api/v1/benchmarks/"+run.ID)
-	writeJSON(w, http.StatusAccepted, run)
+	if len(req.Variants) > 0 {
+		// A sweep: the runs share a comparison_id; compare them with
+		// GET /benchmarks/compare?runs=... or list them by comparison_id.
+		cid := *runs[0].ComparisonID
+		w.Header().Set("Location", "/api/v1/benchmarks?comparison_id="+cid)
+		writeJSON(w, http.StatusAccepted, map[string]any{"comparison_id": cid, "runs": runs})
+		return
+	}
+	w.Header().Set("Location", "/api/v1/benchmarks/"+runs[0].ID)
+	writeJSON(w, http.StatusAccepted, runs[0])
 }
 
 func (s *Server) listBenchmarks(w http.ResponseWriter, r *http.Request, _ userView) {
 	p := newParams(r)
 	limit, offset := p.intParam("limit", 50, 1, 500), p.intParam("offset", 0, 0, 0)
+	var comparison *string
+	if q := r.URL.Query().Get("comparison_id"); q != "" {
+		if u, ok := domain.CanonicalUUID(q); ok {
+			comparison = &u
+		} else {
+			p.errs.add(fieldError{Type: "uuid_parsing", Loc: []any{"query", "comparison_id"}, Msg: "Input should be a valid UUID", Input: q})
+		}
+	}
 	if !p.ok(w) {
 		return
 	}
-	runs, err := s.db().BenchmarkRuns(r.Context())
+	runs, err := s.db().BenchmarkRuns(r.Context(), comparison)
 	if err != nil {
 		s.internalError(w, r, err)
 		return
@@ -408,6 +476,12 @@ func (s *Server) rerunBenchmark(w http.ResponseWriter, r *http.Request, _ userVi
 		b.errs = append(b.errs, errs...)
 	}
 	req.Label = b.label()
+	if _, ok := m["provider_options"]; ok {
+		// Top-level shorthand from the plan; it wins over experiment.provider_options.
+		ov, errs := parseExperiment(map[string]any{"provider_options": m["provider_options"]}, "body")
+		req.Experiment.ProviderOptions, req.Experiment.ProviderOptionsSet = ov.ProviderOptions, ov.ProviderOptionsSet
+		b.errs = append(b.errs, errs...)
+	}
 	if len(b.errs) > 0 {
 		b.errs.write(w)
 		return

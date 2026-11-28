@@ -23,6 +23,8 @@ type ExperimentOverride struct {
 	ThinkSet              bool // an explicit null clears the parent's override
 	IncludeClassification *bool
 	AllowOCRFallback      *bool
+	ProviderOptions       map[string]any
+	ProviderOptionsSet    bool // replaces the parent's options; null or {} clears them
 }
 
 // Apply returns base with the overrides applied.
@@ -41,6 +43,9 @@ func (o ExperimentOverride) Apply(base ExperimentOptions) ExperimentOptions {
 	}
 	if o.AllowOCRFallback != nil {
 		base.AllowOCRFallback = *o.AllowOCRFallback
+	}
+	if o.ProviderOptionsSet {
+		base.ProviderOptions = o.ProviderOptions
 	}
 	return base
 }
@@ -90,16 +95,16 @@ func (s *Service) Rerun(ctx context.Context, parentID string, req RerunRequest) 
 	if err != nil {
 		return nil, err
 	}
-	options := req.Experiment.Apply(m.Options)
+	options, err := s.prepareOptions(req.Experiment.Apply(m.Options))
+	if err != nil {
+		return nil, err
+	}
 	requested := req.ModelIDs
 	if len(requested) == 0 {
 		requested = parent.ModelIDs
 	}
 	selected, available, err := s.resolveModels(ctx, requested)
 	if err != nil {
-		return nil, err
-	}
-	if err := s.checkOptions(options); err != nil {
 		return nil, err
 	}
 	settings, err := st.BenchmarkSettings(ctx, parentID)
@@ -440,12 +445,15 @@ func (s *Service) comparability(ins []*compareInput, baselineOf func(*compareInp
 // variedFields lists the settings that are not identical across the runs; they
 // are what the comparison measures, not a reason for incomparability.
 func variedFields(ins []*compareInput) []VariedField {
-	fields := []string{"label", "pipeline", "temperature", "think", "include_classification", "allow_ocr_fallback", "provider", "endpoint_fingerprint"}
+	fields := []string{"label", "pipeline", "temperature", "think", "include_classification", "allow_ocr_fallback", "provider_options", "provider", "endpoint_fingerprint"}
 	values := func(in *compareInput) map[string]any {
 		v := map[string]any{"label": in.run.Label}
 		if m := in.manifest; m != nil {
 			v["pipeline"], v["temperature"], v["think"] = m.Options.Pipeline, m.Options.Temperature, m.Options.Think
 			v["include_classification"], v["allow_ocr_fallback"] = m.Options.IncludeClassification, m.Options.AllowOCRFallback
+			if len(m.Options.ProviderOptions) > 0 {
+				v["provider_options"] = m.Options.ProviderOptions
+			}
 			v["provider"], v["endpoint_fingerprint"] = m.Provider, m.EndpointFingerprint
 		}
 		return v

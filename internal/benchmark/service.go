@@ -20,6 +20,7 @@ import (
 
 	"github.com/tendstead/vision-bill/internal/analysis"
 	"github.com/tendstead/vision-bill/internal/domain"
+	"github.com/tendstead/vision-bill/internal/ids"
 	"github.com/tendstead/vision-bill/internal/llm"
 	"github.com/tendstead/vision-bill/internal/store"
 )
@@ -44,6 +45,10 @@ type ExperimentOptions struct {
 	Think                 *bool    `json:"think"`
 	IncludeClassification bool     `json:"include_classification"`
 	AllowOCRFallback      bool     `json:"allow_ocr_fallback"`
+	// ProviderOptions are whitelisted per-request inference options (num_ctx,
+	// num_gpu, seed, ...). They are part of the manifest, so runs show them
+	// as varied settings.
+	ProviderOptions map[string]any `json:"provider_options,omitempty"`
 }
 
 // CreateRequest is a validated run request.
@@ -60,6 +65,16 @@ type CreateRequest struct {
 	RelativeThreshold   *string
 	ApplyCouncilFlags   bool
 	Label               *string
+	// Variants turn the request into a sweep: one run per variant, all with the
+	// same frozen inputs and a shared comparison_id. Each variant's experiment
+	// overrides Experiment.
+	Variants []Variant
+}
+
+// Variant is one arm of a sweep.
+type Variant struct {
+	Label      *string
+	Experiment ExperimentOverride
 }
 
 // Service creates runs and executes their tasks.
@@ -93,6 +108,18 @@ func (s *Service) log() *slog.Logger {
 // extension that is not part of this build.
 func (s *Service) Capabilities() map[string]bool {
 	return map[string]bool{"ocr_available": false, "thinking_control": s.Provider.SupportsThinking()}
+}
+
+// ProviderOptionInfo lists the per-request inference options the configured
+// provider accepts in experiments.
+type ProviderOptionInfo struct {
+	Provider string           `json:"provider"`
+	Options  []llm.OptionSpec `json:"options"`
+}
+
+// ProviderOptions reports the whitelist of the configured provider.
+func (s *Service) ProviderOptions() ProviderOptionInfo {
+	return ProviderOptionInfo{Provider: s.Provider.Kind(), Options: llm.ProviderOptionSpecs(s.Provider.Kind())}
 }
 
 // Start launches the background worker.
@@ -351,19 +378,27 @@ func (s *Service) resolveModels(ctx context.Context, requested []string) ([]stri
 	return selected, available, nil
 }
 
-func (s *Service) checkOptions(o ExperimentOptions) error {
+// prepareOptions validates the experiment against the provider and
+// normalises its provider options.
+func (s *Service) prepareOptions(o ExperimentOptions) (ExperimentOptions, error) {
 	if o.Think != nil && !s.Provider.SupportsThinking() {
-		return userErr("Thinking override is supported only by the Ollama provider")
+		return o, userErr("Thinking override is supported only by the Ollama provider")
 	}
 	if o.Pipeline == "ocr" {
-		return userErr("OCR extension is not configured; choose normal upload or direct vision")
+		return o, userErr("OCR extension is not configured; choose normal upload or direct vision")
 	}
-	return nil
+	clean, err := llm.SanitizeProviderOptions(s.Provider.Kind(), o.ProviderOptions)
+	if err != nil {
+		return o, &UserError{err.Error()}
+	}
+	o.ProviderOptions = clean
+	return o, nil
 }
 
 // CreateRun validates the request, freezes the inputs and queues all
-// (model x receipt) tasks.
-func (s *Service) CreateRun(ctx context.Context, req CreateRequest) (*domain.BenchmarkRun, error) {
+// (model x receipt) tasks. With variants it creates one run per variant (a
+// sweep sharing one comparison_id); otherwise exactly one run.
+func (s *Service) CreateRun(ctx context.Context, req CreateRequest) ([]domain.BenchmarkRun, error) {
 	st := s.Store()
 	selected, available, err := s.resolveModels(ctx, req.ModelIDs)
 	if err != nil {
@@ -376,8 +411,33 @@ func (s *Service) CreateRun(ctx context.Context, req CreateRequest) (*domain.Ben
 	if len(receiptIDs) == 0 {
 		return nil, userErr("No verified receipts match the selection")
 	}
-	if err := s.checkOptions(req.Experiment); err != nil {
-		return nil, err
+	type arm struct {
+		options ExperimentOptions
+		label   *string
+		arm     *string
+	}
+	var arms []arm
+	if len(req.Variants) == 0 {
+		o, err := s.prepareOptions(req.Experiment)
+		if err != nil {
+			return nil, err
+		}
+		arms = []arm{{options: o, label: req.Label}}
+	}
+	for i, v := range req.Variants {
+		o, err := s.prepareOptions(v.Experiment.Apply(req.Experiment))
+		if err != nil {
+			return nil, err
+		}
+		name := fmt.Sprintf("variant %d", i+1)
+		if v.Label != nil {
+			name = *v.Label
+		}
+		label := v.Label
+		if label == nil && req.Label != nil {
+			label = req.Label
+		}
+		arms = append(arms, arm{options: o, label: label, arm: &name})
 	}
 	var inputs []manifestInput
 	var expected []*domain.Receipt
@@ -389,12 +449,29 @@ func (s *Service) CreateRun(ctx context.Context, req CreateRequest) (*domain.Ben
 		inputs = append(inputs, in)
 		expected = append(expected, exp)
 	}
-	return s.queueRun(ctx, st, queueParams{
-		Options: req.Experiment, Selected: selected, Available: available, ReceiptIDs: receiptIDs, Inputs: inputs, Expected: expected,
-		Settings: store.BenchmarkRunSettings{TimeoutSeconds: req.TimeoutSeconds, Policy: req.CouncilPolicy,
-			AbsoluteThreshold: req.AbsoluteThreshold, RelativeThreshold: req.RelativeThreshold, ApplyFlags: req.ApplyCouncilFlags},
-		Label: req.Label,
-	})
+	settings := store.BenchmarkRunSettings{TimeoutSeconds: req.TimeoutSeconds, Policy: req.CouncilPolicy,
+		AbsoluteThreshold: req.AbsoluteThreshold, RelativeThreshold: req.RelativeThreshold, ApplyFlags: req.ApplyCouncilFlags}
+	var comparison *string
+	if len(req.Variants) > 0 {
+		id := ids.UUID()
+		comparison = &id
+	}
+	var news []store.NewBenchmarkRun
+	for i, a := range arms {
+		n, err := s.buildRun(ctx, st, queueParams{
+			Options: a.options, Selected: selected, Available: available, ReceiptIDs: receiptIDs, Inputs: inputs, Expected: expected,
+			Settings: settings, Label: a.label,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if comparison != nil {
+			idx := i
+			n.ComparisonID, n.ComparisonArm, n.VariantIndex = comparison, a.arm, &idx
+		}
+		news = append(news, n)
+	}
+	return st.CreateBenchmarkRuns(ctx, news)
 }
 
 // queueParams is a fully validated run with frozen inputs, ready to be stored.
@@ -410,12 +487,25 @@ type queueParams struct {
 	Parent     *string
 }
 
-// queueRun records the manifest (current prompt, schema and endpoint) and
-// queues the run.
+// queueRun builds and stores one run.
 func (s *Service) queueRun(ctx context.Context, st *store.Store, p queueParams) (*domain.BenchmarkRun, error) {
-	tags, err := st.ListTags(ctx)
+	n, err := s.buildRun(ctx, st, p)
 	if err != nil {
 		return nil, err
+	}
+	runs, err := st.CreateBenchmarkRuns(ctx, []store.NewBenchmarkRun{n})
+	if err != nil {
+		return nil, err
+	}
+	return &runs[0], nil
+}
+
+// buildRun records the manifest (current prompt, schema and endpoint) of a run.
+func (s *Service) buildRun(ctx context.Context, st *store.Store, p queueParams) (store.NewBenchmarkRun, error) {
+	var zero store.NewBenchmarkRun
+	tags, err := st.ListTags(ctx)
+	if err != nil {
+		return zero, err
 	}
 	options := p.Options
 	if options.Temperature == nil {
@@ -439,19 +529,19 @@ func (s *Service) queueRun(ctx context.Context, st *store.Store, p queueParams) 
 		EndpointFingerprint: &endpoint, PromptHashes: hashes, ValidationSchemaSHA: llm.SchemaSHA256(), ThinkingDefault: thinking}
 	raw, err := json.Marshal(m)
 	if err != nil {
-		return nil, err
+		return zero, err
 	}
 	digests := map[string]*string{}
 	for _, id := range p.Selected {
 		digests[id] = p.Available[id].Digest
 	}
-	return st.CreateBenchmarkRun(ctx, store.NewBenchmarkRun{
+	return store.NewBenchmarkRun{
 		ModelIDs: dedupe(p.Selected), ReceiptIDs: p.ReceiptIDs, Fingerprint: DatasetFingerprint(p.Expected), ModelDigests: digests,
 		TimeoutSeconds: p.Settings.TimeoutSeconds, Policy: p.Settings.Policy, AbsoluteThreshold: p.Settings.AbsoluteThreshold,
 		RelativeThreshold: p.Settings.RelativeThreshold, ApplyFlags: p.Settings.ApplyFlags,
 		PromptVersion: PromptVersion, ScoringVersion: DetailScoringVersion, Manifest: raw,
 		ParentRunID: p.Parent, Label: p.Label,
-	})
+	}, nil
 }
 
 func orEmpty(s []string) []string {
@@ -731,7 +821,7 @@ func (s *Service) runExperiment(ctx context.Context, m *manifest, receiptID, mod
 	}
 	var calls []map[string]any
 	var callsMu sync.Mutex
-	copts := llm.ChatOptions{Think: m.Options.Think, Trace: func(t map[string]any) {
+	copts := llm.ChatOptions{Think: m.Options.Think, Options: m.Options.ProviderOptions, Trace: func(t map[string]any) {
 		callsMu.Lock()
 		calls = append(calls, t)
 		callsMu.Unlock()

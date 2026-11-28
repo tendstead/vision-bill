@@ -237,9 +237,14 @@ func (o *Ollama) Chat(ctx context.Context, model string, msgs []Message, opts Ch
 		}
 		wire[i] = w
 	}
+	options := map[string]any{}
+	for k, v := range opts.Options {
+		options[k] = v
+	}
+	options["temperature"] = o.temperature()
 	body := map[string]any{
 		"model": model, "messages": wire, "stream": false,
-		"options": map[string]any{"temperature": o.temperature()},
+		"options": options,
 	}
 	if opts.Think != nil {
 		body["think"] = *opts.Think

@@ -126,3 +126,57 @@ func TestBenchmarkRerunAndCompare(t *testing.T) {
 	a.Get("/benchmarks/compare?runs=" + firstID).Is(422)
 	a.Post("/benchmarks/"+ids.UUID()+"/rerun", map[string]any{}).Is(404)
 }
+
+func TestBenchmarkSweepAndProviderOptions(t *testing.T) {
+	newEnv(t)
+	a := admin(t)
+	rid, _ := adminVerifiedReceipt(t, a)
+	base := map[string]any{"model_ids": []string{"e2e-vision"}, "receipt_ids": []string{rid}}
+	with := func(extra map[string]any) map[string]any {
+		b := map[string]any{}
+		for k, v := range base {
+			b[k] = v
+		}
+		for k, v := range extra {
+			b[k] = v
+		}
+		return b
+	}
+	// The stub speaks the OpenAI protocol: only seed and top_p are supported there.
+	opts := a.Get("/benchmarks/provider-options").Is(200).M()
+	if str(opts, "provider") != "OpenAIProvider" || len(list(opts, "options")) != 2 {
+		t.Fatalf("%v", opts)
+	}
+	a.Post("/benchmarks", with(map[string]any{"experiment": map[string]any{"provider_options": map[string]any{"num_ctx": 4096}}})).Is(422)
+
+	sweep := a.Post("/benchmarks", with(map[string]any{"variants": []map[string]any{
+		{"label": "seed 1", "experiment": map[string]any{"provider_options": map[string]any{"seed": 1}}},
+		{"label": "seed 2", "experiment": map[string]any{"provider_options": map[string]any{"seed": 2, "top_p": 0.9}}},
+	}})).Is(202).M()
+	cid := str(sweep, "comparison_id")
+	runs := list(sweep, "runs")
+	if len(runs) != 2 || str(runs[1], "comparison_arm") != "seed 2" {
+		t.Fatalf("%v", sweep)
+	}
+	var runIDs []string
+	for _, r := range runs {
+		runIDs = append(runIDs, str(r, "id"))
+	}
+	for _, id := range runIDs {
+		id := id
+		waitUntil(t, 30*time.Second, "a sweep run", func() bool {
+			return a.Get("/benchmarks/" + id).Is(200).M()["terminal"] == float64(1)
+		})
+	}
+	if got := a.Get("/benchmarks?comparison_id=" + cid).Is(200).L(); len(got) != 2 {
+		t.Fatalf("%d runs in the sweep", len(got))
+	}
+	cmp := a.Get("/benchmarks/compare?runs=" + runIDs[0] + "," + runIDs[1]).Is(200).M()
+	varied := map[string]bool{}
+	for _, v := range list(cmp, "varied") {
+		varied[str(v, "field")] = true
+	}
+	if mp(cmp, "comparable")["comparable"] != true || !varied["provider_options"] || !varied["label"] {
+		t.Fatalf("%v", cmp)
+	}
+}
