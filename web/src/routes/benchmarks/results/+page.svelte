@@ -22,6 +22,8 @@
 		model_ids: string[];
 		receipt_ids: string[];
 		scoring_version: string;
+		label?: string | null;
+		parent_run_id?: string | null;
 		experiment?: Record<string, unknown> | null;
 	};
 	type Status = {
@@ -43,6 +45,38 @@
 			void goto(resolve('/'));
 		}
 	});
+	type Change = { receipt_id: string; change: string; detail: string };
+	let rerunLabel = $state(''),
+		rerunning = $state(false),
+		changes = $state<Change[]>([]),
+		rerunNotice = $state('');
+	async function rerun() {
+		if (!result) return;
+		rerunning = true;
+		rerunNotice = '';
+		changes = [];
+		try {
+			const response = await fetch(`/api/v1/benchmarks/${result.run.id}/rerun`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(rerunLabel.trim() ? { label: rerunLabel.trim() } : {})
+			});
+			const body = await response.json().catch(() => null);
+			if (!response.ok)
+				throw new Error(typeof body?.detail === 'string' ? body.detail : 'Unable to rerun.');
+			changes = (body.changes ?? []) as Change[];
+			rerunNotice = `Queued rerun #${body.id}.`;
+			rerunLabel = '';
+			selectedId = body.id as string;
+			details = [];
+			detailsOffset = 0;
+			await refresh();
+		} catch (cause) {
+			error = cause instanceof Error ? cause.message : 'Unable to rerun.';
+		} finally {
+			rerunning = false;
+		}
+	}
 	let details = $state<IndividualResult[]>([]);
 	let detailsOffset = $state(0),
 		loadingDetails = $state(false);
@@ -115,7 +149,8 @@
 					detailsOffset = 0;
 					void refresh();
 				}}
-				>{#each runs as run (run.id)}<option value={run.id}>#{run.id} — {run.status}</option
+				>{#each runs as run (run.id)}<option value={run.id}
+						>#{run.id}{run.label ? ` “${run.label}”` : ''} — {run.status}</option
 					>{/each}</select
 			></label
 		>
@@ -139,6 +174,52 @@
 						void goto(resolve('/benchmarks'));
 					}}>Reuse this receipt selection</a
 				>
+				<div class="mt-3 flex flex-wrap items-end gap-3">
+					<label class="text-xs"
+						>Label for the rerun (optional)<input
+							class="mt-1 block w-64 rounded-lg border border-outline-variant bg-surface p-2 text-sm"
+							bind:value={rerunLabel}
+							maxlength="200"
+							placeholder="e.g. after model update, ngl 20"
+						/></label
+					>
+					<button
+						class="rounded-lg border border-outline-variant px-3 py-2 text-sm"
+						disabled={rerunning || !result.run.experiment}
+						title={result.run.experiment
+							? 'Same receipts and expected values, new run'
+							: 'Runs without stored inputs cannot be rerun'}
+						onclick={rerun}>Rerun with the same inputs</button
+					>
+					{#if result.run.parent_run_id}<a
+							class="text-sm underline"
+							href={resolve('/benchmarks/compare')}
+							onclick={(event) => {
+								event.preventDefault();
+								if (!result?.run.parent_run_id) return;
+								window.sessionStorage.setItem(
+									'benchmark-compare-runs',
+									`${result.run.parent_run_id},${result.run.id}`
+								);
+								void goto(resolve('/benchmarks/compare'));
+							}}>Compare with the run it was derived from</a
+						>{/if}
+					<a class="text-sm underline" href={resolve('/benchmarks/compare')}>Compare runs…</a>
+				</div>
+				{#if rerunNotice}<p class="mt-2 text-xs" role="status">{rerunNotice}</p>{/if}
+				{#if changes.length}<div class="mt-2 text-xs" data-testid="rerun-changes">
+						<p class="font-medium">
+							Receipts changed since this run (the frozen values are still used):
+						</p>
+						<ul class="list-disc pl-5">
+							{#each changes as c, i (`${c.receipt_id}:${c.change}:${i}`)}<li>
+									<a class="font-mono underline" href={resolve(`/receipts/${c.receipt_id}`)}
+										>{c.receipt_id.slice(0, 8)}</a
+									>
+									— {c.change.replaceAll('_', ' ')}: {c.detail}
+								</li>{/each}
+						</ul>
+					</div>{/if}
 				{#if result.run.experiment}<details class="mt-2">
 						<summary class="cursor-pointer">Run settings</summary>
 						<pre class="mt-2 overflow-x-auto whitespace-pre-wrap text-xs">{JSON.stringify(
