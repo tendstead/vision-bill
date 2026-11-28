@@ -4,6 +4,9 @@ import {
 	candidateHint,
 	candidateTooltip,
 	failureLabel,
+	failureReason,
+	labelColumnWidth,
+	truncateMiddle,
 	orderForCompare,
 	defaultSelection,
 	deltaTone,
@@ -173,5 +176,30 @@ describe('failures and candidates', () => {
 	it('orders the selection oldest first', () => {
 		const runs = [{ id: 'new' }, { id: 'mid' }, { id: 'old' }];
 		expect(orderForCompare(runs, ['new', 'old', 'mid', 'new'])).toEqual(['old', 'mid', 'new']);
+	});
+});
+
+describe('labels', () => {
+	it('truncates in the middle and sizes the label column', () => {
+		expect(truncateMiddle('short', 10)).toBe('short');
+		const t = truncateMiddle('DeepSeek-V4-Pro-Qwen3.5-9B-Heretic-Q6_K · #7bf41841', 24);
+		expect(t).toHaveLength(24);
+		expect(t.startsWith('DeepSeek-V4')).toBe(true);
+		expect(t.endsWith('#7bf41841')).toBe(true);
+		expect(t).toContain('…');
+		expect(labelColumnWidth(['abc'], 6, 100, 300)).toBe(100);
+		expect(labelColumnWidth(['x'.repeat(30)], 6, 100, 300)).toBe(196);
+		expect(labelColumnWidth(['x'.repeat(200)], 6, 100, 300)).toBe(300);
+		expect(labelColumnWidth([], 6, 100, 300)).toBe(100);
+	});
+	it('explains old bare failure messages', () => {
+		expect(failureReason({ error: 'TimeoutError', error_kind: 'timeout' })).toContain(
+			'run timeout'
+		);
+		expect(failureReason({ error: null, error_kind: 'error' })).toContain('older version');
+		expect(failureReason({ error: 'boom', error_kind: 'error' })).toBe('boom');
+	});
+	it('labels the context failure', () => {
+		expect(failureLabel('context_too_small')).toBe('Context too small');
 	});
 });

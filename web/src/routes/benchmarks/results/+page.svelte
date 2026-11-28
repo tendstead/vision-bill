@@ -17,6 +17,7 @@
 		deltaTone,
 		failureHelp,
 		failureLabel,
+		failureReason,
 		formatMs,
 		formatPercent,
 		formatPoints,
@@ -25,6 +26,7 @@
 		reasonTitle,
 		runName,
 		shortId,
+		truncateMiddle,
 		type Candidate,
 		type CompareRunInfo,
 		type Comparison,
@@ -591,14 +593,13 @@
 								>
 								<td class="p-2">{f.series?.label ?? f.cell.model_id}</td>
 								<td class="p-2" title={failureHelp(f.cell.error_kind)}
-									><span class="rounded bg-surface-container px-1.5 py-0.5 text-xs text-error"
+									><span
+										class="whitespace-nowrap rounded bg-surface-container px-1.5 py-0.5 text-xs text-error"
 										>{failureLabel(f.cell.error_kind)}</span
 									></td
 								>
-								<td class="p-2 text-xs"
-									>{f.cell.error ?? 'No reason was recorded (run created by an older version).'}</td
-								>
-								<td class="p-2">{formatMs(f.cell.latency_ms)}</td>
+								<td class="p-2 text-xs">{failureReason(f.cell)}</td>
+								<td class="whitespace-nowrap p-2">{formatMs(f.cell.latency_ms)}</td>
 								<td class="p-2">{f.cell.attempts}</td>
 							</tr>
 						{/each}
@@ -614,7 +615,9 @@
 				>
 				<thead class="text-xs text-on-surface-variant"
 					><tr
-						><th class="p-2">Receipt</th>{#each series as s (s.key)}<th class="p-2">{s.label}</th
+						><th class="p-2">Receipt</th>{#each series as s (s.key)}<th
+								class="max-w-40 break-words p-2 align-bottom"
+								title={s.label}>{truncateMiddle(s.label, 36)}</th
 							>{/each}</tr
 					></thead
 				>
@@ -631,7 +634,7 @@
 								<td class="p-2">
 									{#if !cell}—{:else if !cell.success}<span
 											class="text-error"
-											title={cell.error ?? failureHelp(cell.error_kind)}
+											title={failureReason(cell)}
 											>{failureLabel(cell.error_kind).toLowerCase()}</span
 										>{:else}{formatPercent(
 											cell.score

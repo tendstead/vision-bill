@@ -211,8 +211,8 @@ type CompareCell struct {
 	GenerationMS *float64       `json:"generation_ms"` // prompt evaluation plus generation, when reported
 	Attempts     int            `json:"attempts"`
 	Error        *string        `json:"error"`
-	// ErrorKind classifies a failure: timeout, unreadable, invalid_response,
-	// inputs_changed or error. Null for successful cells.
+	// ErrorKind classifies a failure: timeout, unreadable, context_too_small,
+	// invalid_response, inputs_changed or error. Null for successful cells.
 	ErrorKind *string `json:"error_kind"`
 }
 
@@ -472,13 +472,17 @@ func deref(p *string) string {
 	return *p
 }
 
-// FailureKind classifies a stored failure message for display.
+// FailureKind classifies a stored failure message for display: timeout,
+// unreadable, context_too_small, invalid_response, inputs_changed or error.
 func FailureKind(msg string) string {
 	switch {
 	case strings.HasPrefix(msg, "TimeoutError"), strings.HasPrefix(msg, "AnalysisTimeoutError"):
 		return "timeout"
 	case strings.HasPrefix(msg, "UnreadableReceiptError"):
 		return "unreadable"
+	case strings.Contains(msg, "exceed_context_size"), strings.Contains(msg, "exceeds the available context size"),
+		strings.Contains(strings.ToLower(msg), "context length exceeded"), strings.Contains(strings.ToLower(msg), "context window"):
+		return "context_too_small"
 	case strings.Contains(msg, "Failed to get a valid response"), strings.Contains(msg, "returned a message indicating it cannot process images"):
 		return "invalid_response"
 	case strings.Contains(msg, "changed since run creation"), strings.Contains(msg, "changed since the run"),

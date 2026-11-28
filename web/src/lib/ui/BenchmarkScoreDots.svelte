@@ -110,10 +110,10 @@
 	</svg>
 	<ul class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs" aria-label="Legend">
 		{#each series as s (s.key)}
-			<li class="inline-flex items-center gap-1.5">
-				<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"
+			<li class="inline-flex max-w-[22rem] items-center gap-1.5" title={s.label}>
+				<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" class="shrink-0"
 					><ChartMarker x={7} y={7} r={4} shape={s.shape} color={s.color} /></svg
-				>{s.label}
+				><span class="truncate">{s.label}</span>
 			</li>
 		{/each}
 		<li class="text-on-surface-variant">Hollow marker = failed</li>

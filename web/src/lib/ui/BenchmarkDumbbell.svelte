@@ -5,7 +5,9 @@
 		dumbbellRows,
 		formatPercent,
 		formatPoints,
+		labelColumnWidth,
 		linearScale,
+		truncateMiddle,
 		shortId,
 		type Comparison,
 		type Series
@@ -17,14 +19,22 @@
 	const rows = $derived(dumbbellRows(comparison));
 	const multiModel = $derived(new Set(rows.map((r) => r.modelId)).size > 1);
 	const multiRun = $derived(new Set(rows.map((r) => r.runId)).size > 1);
+	const maxChars = 40;
 	const W = 720,
-		left = 150,
 		right = 70,
 		top = 26,
 		bottom = 32,
 		rowH = 24;
+	const left = $derived(
+		labelColumnWidth(
+			rows.map((r) => truncateMiddle(rowLabel(r), maxChars)),
+			6.6,
+			110,
+			300
+		)
+	);
 	const height = $derived(top + bottom + rows.length * rowH);
-	const x = linearScale(0, 1, left, W - right);
+	const x = $derived(linearScale(0, 1, left, W - right));
 	const ticks = [0, 0.25, 0.5, 0.75, 1];
 	const colors = { good: '#1a7f37', bad: '#cf222e', neutral: '#6e7781' };
 	const labelOf = (key: string) => series.find((s) => s.key === key);
@@ -81,7 +91,8 @@
 					text-anchor="end"
 					font-size="11"
 					font-family="monospace"
-					fill="currentColor">{rowLabel(r)}</text
+					fill="currentColor"
+					>{truncateMiddle(rowLabel(r), maxChars)}<title>{rowLabel(r)}</title></text
 				>
 				<line x1={x(r.from)} x2={x(r.to)} y1={cy} y2={cy} stroke={colors[tone]} stroke-width="3" />
 				<ChartMarker x={x(r.from)} y={cy} r={4} color={colors[tone]} hollow />

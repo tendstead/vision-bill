@@ -143,6 +143,7 @@ describe('benchmark charts', () => {
 		expect(root.textContent).toContain('50.0%');
 		expect(root.textContent).toContain('90.0%');
 		expect(root.textContent).toContain('1200 ms');
-		expect(screen.getAllByRole('img')).toHaveLength(3);
+		expect(screen.getAllByRole('img')).toHaveLength(1);
+		expect(root.textContent).toContain('Failures');
 	});
 });

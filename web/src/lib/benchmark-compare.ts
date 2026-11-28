@@ -16,7 +16,7 @@ export type CompareCell = {
 	error_kind: FailureKind | null;
 };
 export type FailureKind =
-	'timeout' | 'unreadable' | 'invalid_response' | 'inputs_changed' | 'error';
+	'timeout' | 'unreadable' | 'invalid_response' | 'context_too_small' | 'inputs_changed' | 'error';
 export type CompareSummary = {
 	model_id: string;
 	model_digest: string | null;
@@ -252,6 +252,7 @@ const FAILURE_TEXT: Record<FailureKind, string> = {
 	timeout: 'Timed out',
 	unreadable: 'Unreadable',
 	invalid_response: 'Invalid response',
+	context_too_small: 'Context too small',
 	inputs_changed: 'Inputs changed',
 	error: 'Error'
 };
@@ -259,6 +260,8 @@ const FAILURE_HELP: Record<FailureKind, string> = {
 	timeout: 'The model did not finish within the run timeout.',
 	unreadable: 'The model reported that the photo is not readable as a receipt.',
 	invalid_response: 'The model kept answering with output that is not a valid receipt.',
+	context_too_small:
+		'The prompt and photo did not fit into the context window of the model server. Raise its context size (for example num_ctx or the server -c flag) or use a smaller photo.',
 	inputs_changed: 'The photo, prompt or schema changed after the run was created.',
 	error: 'The request failed.'
 };
@@ -278,4 +281,26 @@ export const candidateHint = (c: Candidate) =>
 export function orderForCompare(runs: { id: string }[], ids: string[]): string[] {
 	const age = (id: string) => runs.findIndex((r) => r.id === id);
 	return [...new Set(ids)].sort((a, b) => age(b) - age(a));
+}
+
+/** The recorded reason, with a readable text for the bare messages older versions stored. */
+export function failureReason(cell: Pick<CompareCell, 'error' | 'error_kind'>): string {
+	if (!cell.error) return 'No reason was recorded (run created by an older version).';
+	if (cell.error === 'TimeoutError')
+		return 'TimeoutError: the model did not finish within the run timeout.';
+	return cell.error;
+}
+
+/** Shortens a long label in the middle so both its start and its end stay readable. */
+export function truncateMiddle(text: string, max: number): string {
+	if (text.length <= max) return text;
+	const keep = max - 1;
+	const head = Math.ceil(keep * 0.6);
+	return `${text.slice(0, head)}…${text.slice(text.length - (keep - head))}`;
+}
+
+/** Width in px of a label column for the given (already truncated) labels. */
+export function labelColumnWidth(labels: string[], charPx: number, min: number, max: number) {
+	const longest = Math.max(0, ...labels.map((l) => l.length));
+	return Math.min(max, Math.max(min, Math.ceil(longest * charPx) + 16));
 }

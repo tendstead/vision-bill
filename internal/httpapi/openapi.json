@@ -1184,7 +1184,7 @@
      "Benchmarks"
     ],
     "summary": "Compare Benchmark Runs",
-    "description": "Compare 1-10 runs (one run gives its cells and charts without a baseline). Cells of failed tasks carry `error` and `error_kind` (timeout, unreadable, invalid_response, inputs_changed, error). The first run is the baseline unless a run's parent is part of the comparison. Runs are directly comparable only when dataset fingerprint, model digest, prompt/schema version, scoring version and council policy match; otherwise the reasons say which part differs.",
+    "description": "Compare 1-10 runs (one run gives its cells and charts without a baseline). Cells of failed tasks carry `error` and `error_kind` (timeout, unreadable, context_too_small, invalid_response, inputs_changed, error). The first run is the baseline unless a run's parent is part of the comparison. Runs are directly comparable only when dataset fingerprint, model digest, prompt/schema version, scoring version and council policy match; otherwise the reasons say which part differs.",
     "operationId": "compare_benchmark_runs_api_v1_benchmarks_compare_get",
     "parameters": [
      {
